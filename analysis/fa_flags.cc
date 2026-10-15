@@ -11,40 +11,6 @@
 #include "fa.h"
 #include "fa_flags.h"
 
-// ifa/148: PYC_FILTEREQ=1 -- filtered-contour reuse requires matching
-// filters. See the comment at the use.
-int filtereq_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_FILTEREQ"); e = v ? atoi(v) : 0; }
-  return e;
-}
-// ifa/148: PYC_ESPATH=1 -- split the whole EntrySet path to a confluence
-// in one pass, instead of one contour per pass. See the comment at the use.
-int espath_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ESPATH"); e = v ? atoi(v) : 0; }
-  return e;
-}
-// ifa/129: PYC_ESDEFS1=1 -- a violation on a single-creation-point
-// CreationSet splits the contour that makes its site occur once. See the
-// comment at the use.
-int esdefs1_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ESDEFS1"); e = v ? atoi(v) : 0; }
-  return e;
-}
-// ifa/146 E: PYC_ESRECV=1 -- a violation inside a contour makes that
-// contour's RECEIVER an imprecision. See the comment at the use.
-int esrecv_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ESRECV"); e = v ? atoi(v) : 0; }
-  return e;
-}
-int confdemand_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CONFDEMAND"); e = v ? atoi(v) : 0; }
-  return e;
-}
 // ifa/074: a creation point in a split-child EntrySet joins the CreationSet
 // its split parent's creation point is in, BEFORE the start-merged (dcpa1)
 // route sends it to the sym's root. An ES split must not split -- or
@@ -58,20 +24,6 @@ int csparentfirst_enabled() {
   }
   return e;
 }
-// ifa/074: CS_DEF_PART's partition JOINS an existing CreationSet whose
-// element type equals the group's, instead of always minting (shedskin's
-// "reuse contour"). OFF: on top of PYC_CSPARENTFIRST it regresses sudoku5
-// (compile fails) and sunfish (compile timeout) and fixes nothing parent-
-// first does not -- the wanted element type names a CS whose identity is
-// still moving, so exact equality rarely matches (sweep 9dfbf0fc+71fbd58a).
-int csdefreuse_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSDEFREUSE");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
 // ifa/133: make the split-parent route survive the pass it was created in.
 // PYC_ESLINEAGE=0 restores the old `es->split`-only behaviour, for
 // attributing a corpus change to this clause.
@@ -80,16 +32,6 @@ int eslineage_enabled() {
   if (e < 0) {
     cchar *v = getenv("PYC_ESLINEAGE");
     e = v ? atoi(v) : 1;
-  }
-  return e;
-}
-// ifa/issues/109: record a violation when sizeof_element's receiver spans
-// CreationSets that cannot share one concrete container type.
-int sizeof_viol_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_SIZEOF_VIOL");
-    e = v ? atoi(v) : 0;
   }
   return e;
 }
@@ -146,50 +88,6 @@ int strictviol_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_STRICTVIOL"); e = v ? atoi(v) : 1; }
   return e;
 }
-int confnil_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CONFNIL"); e = v ? atoi(v) : 0; }
-  return e;
-}
-int splithomo_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SPLITHOMO"); e = v ? atoi(v) : 0; }
-  return e;
-}
-// ifa/issues/101: include the return types in group_signature. 1 is the
-// historical behaviour and stays the DEFAULT; 0 drops the term.
-//
-// Dropping it was the obvious repair for the ledger cycle described at
-// the use site, and it measured EXACTLY INERT -- byte-identical
-// final_pass/violations/ess/css on go, linalg, plcfrs and sudoku5. So the
-// two cycling signatures do NOT differ in their return term, and the
-// hypothesis behind this flag is wrong: the difference is in the argument
-// term, which means linalg's 792/692 pair is most likely two distinct
-// groups SWAPPING contours rather than one group cycling. Kept as a
-// measured negative result, defaulted to the historical behaviour since
-// it buys nothing and has not been swept.
-int gsigret_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_GSIGRET");
-    e = v ? atoi(v) : 1;
-  }
-  return e;
-}
-// ifa/issues/075: element-CS container-method separation (pyc's analog
-// of shedskin's func_copy-per-dcpa). 0 off (default, byte-identical to
-// baseline), 2 split (fans split_edges per (CS x display), Piece 1; the
-// demand-driven stage itself is split_container_methods_per_element_cs
-// below). 1 is reserved for a future side-effect-free dump/probe mode
-// (see 075 Piece 1) -- not yet built, treated as off.
-int csm_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSM");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
 // ifa/issues/074 (detach-route growth): on the DETACH route
 // (`make_entry_set` with a non-null `split`), offer the edge an existing
 // contour when that contour is a HARD match -- `entry_set_compatibility`
@@ -216,39 +114,8 @@ int csm_enabled() {
 // a POSITIVE type-level match; 3 = that AND a positive CreationSet-level
 // match (see edge_type_identical_to_entry_set); 4 = LOOKUP BY DURABLE
 // TYPE KEY -- shedskin's model, where the type tuple names the contour
-// rather than being a property compatibility-tested against it. Requires
-// PYC_TYPEKEY.
-// ifa/issues/074: match compatibility against EntrySet::type_key (the
-// previous pass's CONVERGED formal types) rather than the contour's
-// momentary mid-pass accumulation. The point is durability: shedskin
-// binds a contour to a fixed type tuple and keeps that binding across
-// passes, so routing is a lookup rather than a race. Off by default.
-int typekey_enabled() {
-  static int e = -1;
-  if (e < 0) e = getenv("PYC_TYPEKEY") ? 1 : 0;
-  return e;
-}
-// ifa/issues/074: canonicalize contour creation on the durable type key
-// -- at most one contour per (fun, type tuple), found by lookup and
-// created on miss, the way find_or_make_filtered_entry_set already works
-// for CS partitions. Durable keys alone (PYC_TYPEKEY) proved necessary
-// but not sufficient: they make matching stable in TIME but not unique
-// in SPACE, so two same-keyed contours still let the `x != split` veto
-// alternate. Canonicalization removes the duplicates, so there is
-// nothing to alternate between.
-//   1 = canonicalize, but never hand an edge back to the contour the
-//       splitter is detaching it FROM (conflicts logged, split honored)
-//   2 = full canonicalization: reuse even then, so a split that
-//       disagrees with the canonical key becomes a no-op
-// IFA_DBG_CANON=1 logs every conflict and prints per-pass stats.
-int canon_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CANON");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
+// rather than being a property compatibility-tested against it (it reads
+// EntrySet::type_key, captured each pass since PYC_SELFPROD >= 3).
 // Defaults to 5 as of 2026-08-16 (was 0 -- off). Mode 5 is mode 4's
 // durable-type-key reuse on the detach route, RESTRICTED to splits whose
 // own discriminator was argument types (see cur_split_type_only).
@@ -275,67 +142,6 @@ int hard_reuse_enabled() {
   if (e < 0) {
     cchar *v = getenv("PYC_HARDREUSE");
     e = v ? atoi(v) : 5;
-  }
-  return e;
-}
-// ifa/146 D: every mark-based splitting stage is removed (MARK_TYPE 2026-09-08,
-// MARK_SETTER / MARK_SETTER_OF_SETTER 2026-10-13). Mark distance is provenance.
-// ifa/issues/074: extend the self-product complement eviction to the
-// `v > 0` case (residual violations). See the comment at the eviction
-// site for what each mode tests.
-//
-//   0 = off: eviction only at whole-program convergence (pre-074 shape)
-//   1 = evict only the type-disjoint complement          (unsound)
-//   2 = keep the group, evict nothing                    (unsound)
-//   3,4 = durable key == the recorded partition          (never fires)
-//   5 = durable key stable across two passes: per-contour convergence
-//
-// **5 is the default.** The eviction's real precondition is that THIS
-// CONTOUR has stopped moving, which `nviol_this_pass == 0` only ever
-// approximated whole-program-wide.
-// ifa/issues/074: gate the ES ledger ROUTE on the recorded product still
-// being a compatible home for the group; =2 also refreshes an entry
-// proven stale. OFF by default, and kept only as a measured control:
-// both modes do stop the churn, but by declining a route you only mint
-// instead, so the growth comes straight back (repro ess 144 -> 279 for
-// mode 1, 257 for mode 2). PYC_SELFPROD=6 fixes the same oscillation
-// from the other end without that cost.
-// ifa/issues/101: canonicalize CONTAINER CreationSet identity on the
-// durable element type instead of the creation site x contour. Off by
-// default. See capture_elem_keys() and creation_point's Lcanon.
-//
-// 3 = ifa/issues/074: key on the RECEIVER's structural element SHAPE
-// instead (`list<list<float64>>`), which is what shedskin gets free from
-// `list<T>` being keyed on T. Off by default, and MEASURED:
-//
-//   deepcopy_recursive_nested_growth.py, guards off, ess/css by pass
-//     mode 0   0:77/599  20:175/782  40:280/997  60:385/1212
-//              80:490/1427  100:595/1642      -- dead linear, +5.25/pass
-//     mode 3   0:77/599  20:159/749  40:157/740  60:211/852
-//              80:223/877  100:207/850        -- bounded, band ~210
-//
-// That is 074's headline defect gone: the growth is UNBOUNDED at the
-// default and BOUNDED here (-62% ess, -46% css at pass 101). What is
-// left is an oscillation inside the band, which is a different and much
-// smaller problem than divergence -- but CONVERGED is still 0, and the
-// repro still does not compile.
-//
-// Not the default because of the cost: pyc suite is identical
-// (301/0/14), corpus goes from 5 failing to 9 -- kanoodle, plcfrs and
-// rdb time out and quameon fails to compile. The likely reason is in
-// cselem_shape_key: the canon map is MONOTONE and global, and the shape
-// it keys on is read LIVE on the pass the contour is created, because
-// that is the only moment creation_point is ever consulted (`cs_map`
-// answers ever after). A merge decided from an incomplete shape can
-// never be revisited, and the splitter then has to work around it. That
-// is ifa/issues/066 -- the decision is keyed per pass, not per creation
-// site -- and making the canonicalization revisitable is the next step,
-// not a wider or narrower key.
-int cselem_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSELEM");
-    e = v ? atoi(v) : 0;
   }
   return e;
 }
@@ -377,29 +183,6 @@ int csmold_enabled() {
   }
   return e;
 }
-// ifa/129 step 4: drop the PER-SITE component from the mode-3 shape key.
-//
-// cselem_shape_key composes `v<id>|class#id|shape`. The leading `v<id>` is
-// `v->var->id` -- WHERE the value was allocated -- so the canon is keyed per
-// allocation site and the fewest contours it can ever name is the number of
-// distinct (site, class, shape) triples rather than of (class, shape) pairs.
-// Measured on the corpus: 1670 against 660, a 2.53x fragmentation, and the
-// 660 lands within 5% of `shapes` (626), the independent content census.
-// Contour identity is supposed to key on types and CS partitioning, never on
-// provenance, and `v->var->id` is provenance.
-//
-// OFF by default: it merges contours of UNRELATED allocation sites, which is
-// a bigger merge than anything mode 3 does today, and it is only safe with
-// cselem_resplit_diverged armed to take the merge back. Turn both on
-// together (PYC_CSSITELESS=1 PYC_CSRESPLIT=1) or neither.
-int cssiteless_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSSITELESS");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
 // ifa/128, and the architecture CLAUDE.md's goal statement describes:
 // START MERGED. One CreationSet per sym, program-wide, and it multiplies
 // ONLY by demand splitting -- `split_css` peeling off a setter-equivalence
@@ -412,9 +195,9 @@ int cssiteless_enabled() {
 // makes a contour: an ES split separates creation points so that a CS
 // split BECOMES POSSIBLE, which is the opposite direction of service.
 //
-// Independent of PYC_CSELEM -- this is not a keying question. The shape
-// canon exists to canonicalize per-site contours, and with one contour per
-// sym there is nothing for it to canonicalize.
+// This is not a keying question. PYC_CSELEM's shape canon (deleted, ifa/146)
+// existed to canonicalize per-site contours; with one contour per sym there
+// is nothing to canonicalize.
 // ifa/129: START MERGED -- one CreationSet per sym -- is the DEFAULT.
 //
 // CLAUDE.md's premise is that IFA starts from the MINIMUM data contours and
@@ -493,14 +276,19 @@ int routestable_enabled() {
   }
   return e;
 }
-int routegate_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_ROUTEGATE");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
+// ifa/issues/074: extend the self-product complement eviction to the
+// `v > 0` case (residual violations). See the comment at the eviction
+// site for what each mode tests.
+//
+//   0 = off: eviction only at whole-program convergence (pre-074 shape)
+//   1 = evict only the type-disjoint complement          (unsound)
+//   2 = keep the group, evict nothing                    (unsound)
+//   3,4 = durable key == the recorded partition          (never fires)
+//   5 = durable key stable across two passes: per-contour convergence
+//
+// **5 is the default.** The eviction's real precondition is that THIS
+// CONTOUR has stopped moving, which `nviol_this_pass == 0` only ever
+// approximated whole-program-wide.
 // Defaults to 6 as of 2026-08-16 (was 5): accept a period-2 flip-flop as
 // a settled contour, not just a constant one. Measured over the whole
 // shedskin corpus as EXACTLY inert -- 77 programs, zero changes to
@@ -578,31 +366,6 @@ int cskey_enabled() {
     cchar *v = getenv("PYC_CSKEY");
     e = v ? atoi(v) : 3;
   }
-  return e;
-}
-int elemsetter_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_ELEMSETTER"); e = v ? atoi(v) : 0; }
-  return e;
-}
-// ifa/157: PYC_SETTERMIN -- partition to the COARSEST setter-induced grouping
-// that discharges the demand, instead of the finest one setter equivalence
-// induces.
-//
-// A union has no representation exactly when it mixes a basic type with a
-// pointer-shaped one, or two distinct basic kinds. So a group is representable
-// exactly when its written types are all pointer-shaped or all one basic kind,
-// and the unique coarsest valid partition is "one group for every
-// pointer-shaped writer, one group per basic kind" -- computable in one pass
-// from `s->out` over each starter's setters.
-//
-// This is the partition CLAUDE.md's premise asks for: the minimum contours
-// demand requires, and no more. Where it currently costs programs
-// (`plcfrs`, `sudoku5`), the finest partition was HIDING a defect that this
-// surfaces -- root cause that, do not accept the over-split.
-int settermin_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SETTERMIN"); e = v ? atoi(v) : 0; }
   return e;
 }
 // ifa/issues/133: partition a CreationSet by its CREATION POINTS.
@@ -754,41 +517,6 @@ int esblock_enabled() {
 // exactly this: a `<placeholder>` member in the emitted C means
 // `has[i]->type` is null, and that is set from these AVars -- so this says
 // whether the analysis or the cloning lost the field.
-// ifa/129 third clause: split an EntrySet BY CALL SITE, because a container
-// it allocates has an irrepresentable element and nothing type-shaped can
-// name the contributors.
-//
-// The reason/mechanism distinction matters here and is the only thing that
-// makes this legal under CLAUDE.md's provenance rule. The REASON is demand:
-// an element union with no representation, on a CreationSet that CS-side
-// partitioning cannot touch (one creation point) and that type-side
-// splitting has already declined (`no_groups` -- every formal's callers
-// agree). The call site is only the HANDLE that says which caller goes
-// where. Take the demand away and nothing splits: this never fires on a
-// contour whose containers are representable, so it is not 1-CFA by the
-// back door.
-//
-// Measured on sudoku3 before building (IFA_DBG_THIRD): of 428 single-def
-// candidates, 427 decline type-side with `no_groups`, and 361 of those have
-// a single in-edge so there is no call site to split on either. This route
-// is aimed at the remaining 67 -- `__pyc_getslice__` (1 contour, 7 callers)
-// and `__pyc_tolist__` -- where the flag has FEWER contours than the
-// default (getslice: 2 -> 1), because dcpa1 merged the receiver
-// CreationSets that gave CPA its distinction.
-int cscallsite_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSCALLSITE");
-    e = v ? atoi(v) : 0;
-  }
-  return e;
-}
-// ifa/133: PYC_CSSLOTDEMAND=0 restores the element-only demand test.
-int csslotdemand_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CSSLOTDEMAND"); e = v ? atoi(v) : 0; }
-  return e;
-}
 // ifa/152: PYC_CSBACKTRACK=1 -- when a demanded CreationSet cannot be
 // partitioned because it has ONE creation point, backtrack the demand along
 // the value flow to the nearest CreationSet that HAS several, and offer that
@@ -824,34 +552,6 @@ int csbacktrack_enabled() {
   if (e < 0) { cchar *v = getenv("PYC_CSBACKTRACK"); e = v ? atoi(v) : 1; }
   return e;
 }
-// ifa/133: the MEMBER partition key.
-//
-// The content key above (`build_cs_flow_graph` over `cs_content_avars`)
-// asks what is IN a container. This asks what the container is IN: the set
-// of instance variables / members its creation point can reach. Those are
-// different graphs, and on `bh` only the second separates the lists --
-// by the time an element union is observable EVERY creation point carries
-// the whole union, so the content key collapses them (measured: 2 groups
-// from 8 creation points, both still `{str, Body}`), while the members they
-// reach are distinct (`Tree.bodies` reached by exactly one of the eight).
-//
-// This is a TYPE-side key, not provenance: a member is part of a class's
-// declared structure (`Sym::has`), so "which field holds this container" is
-// a structural fact about the program's types, the same family as arity
-// (ifa/132). It is keyed on `Sym::id`, never on the name (CLAUDE.md).
-//
-// It is also observable BEFORE the union forms, which is what the
-// violation-gated experiments in ifa/133 could not manage.
-int csmember_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_CSMEMBER"); e = v ? atoi(v) : 0; }
-  return e;
-}
-int settergate_level() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_SETTERGATE"); e = v ? atoi(v) : 0; }
-  return e;
-}
 // ifa/157 THE LINK (PYC_RETDEMAND). Stage 1 observes a demand on a value it
 // has no actuator for and drops it (`census.tc_skip_rval`, 769 of 923 per pass on
 // softrender). Both halves of the answer already exist: a CS-contoured
@@ -868,13 +568,6 @@ int settergate_level() {
 int retdemand_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_RETDEMAND"); e = v ? atoi(v) : 0; }
-  return e;
-}
-// ifa/133: route a CS-contoured violation to route 4. PYC_VIOLCS=0 restores
-// the old behaviour (drop it) for attribution.
-int violcs_enabled() {
-  static int e = -1;
-  if (e < 0) { cchar *v = getenv("PYC_VIOLCS"); e = v ? atoi(v) : 0; }
   return e;
 }
 // ifa/132: PYC_SLOTARITY=1 -- when one AVar must hold two CreationSets of ONE
@@ -903,73 +596,5 @@ int violcs_enabled() {
 int slotarity_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_SLOTARITY"); e = v ? atoi(v) : 0; }
-  return e;
-}
-// ifa/129 STEP 4, first increment: RE-DECIDE a CreationSet that was minted
-// while the receiver shape was unknown.
-//
-// This is the first place in pyc where a site->CreationSet decision is taken
-// back. Everything it needs already existed:
-//
-//   - Flow state is not the obstacle. analyze_to_convergence resets BEFORE
-//     each pass, not after, so every pass re-derives from bottom already.
-//     The one thing that survives and is in the way is the DECISION,
-//     av->cs_map (see clear_results's header).
-//   - Re-pointing cs_map is a shipped primitive: split_css does exactly
-//     `v->cs_map->put(cs->sym, new_cs)`, and its ledger `route` path aims a
-//     group at a CreationSet that ALREADY EXISTS. It has simply never had a
-//     caller that runs in the joining direction. This is that caller.
-//   - The invariant the cs_map pin cites (issue 030 / make_closure_var: a
-//     CS's positional vars[i] must be fed by every pass that feeds the CS)
-//     is about a CS LOSING a feeder, not about a site being re-aimed. The
-//     CS joined here keeps every feeder it had and gains one; the CS
-//     abandoned here stops being fed at all, so it leaves `fa->css` and no
-//     consumer sees it.
-//
-// WHEN: only once the pass has otherwise settled (see the call site). The
-// question being answered is "would this decision have been reusable had it
-// waited", so waiting is the point, and running it against a half-derived
-// pass would just re-ask it on worse information. It is also the ifa/055
-// lesson -- interleaving a decision change with the splitter re-perturbs
-// contours the splitter had just settled.
-//
-// TERMINATION: each entry is re-decided at most once, because after the
-// re-point `cs_map` names the joined CS and the `!= u.cs` test below skips
-// it forever. The batch is done in one call, so this costs a bounded few
-// extra passes, not one per join.
-int cselem_rejoin_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSREJOIN");
-    e = v ? atoi(v) : 1;  // on whenever mode 3 is; mode 3 is itself opt-in
-  }
-  return e;
-}
-// ifa/129 STEP 4, the SPLIT-BACK direction.
-//
-// cselem_rejoin_unknown_mints widens: it moves a site onto a CreationSet
-// that already exists. This narrows, and narrowing is the direction a
-// growing fixed point does NOT absorb for free -- which is exactly why it
-// has to exist before the merge is widened. Without it, a merge that later
-// turns out to be wrong is permanent, and that is ifa/105's measured
-// failure: a split child handed its parent's container came back with
-// element type {list<itself>, int64, int64, list, int64}, self-referential
-// and container/scalar mixed.
-//
-// The test is symmetric with the join's, and it is a DEMAND test: the join
-// merges two sites whose shapes are known and EQUAL; this separates the
-// defs of one CreationSet whose shapes are known and DIFFER. Divergence is
-// an observed distinction, so acting on it is demand splitting rather than
-// structural splitting.
-//
-// A def whose key is not known does not move and does not vote. Separating
-// on an unknown is the mint-side error running in the other direction, and
-// the whole point of this issue is not to make contours out of ignorance.
-int csresplit_enabled() {
-  static int e = -1;
-  if (e < 0) {
-    cchar *v = getenv("PYC_CSRESPLIT");
-    e = v ? atoi(v) : 0;  // see cssiteless_enabled: arm the two together
-  }
   return e;
 }

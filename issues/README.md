@@ -65,7 +65,7 @@ one is a lesson this directory paid for.
 | issue | what |
 | --- | --- |
 | [129](129-plan-demand-driven-creation-set-splitting.md) | **the plan**: start-merged CreationSets, demand-driven separation, a ledger. What landed, what is open (the shared-writer decline, the one-creation-point family), what is settled. |
-| [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (no default-path violation is known as of 2026-10-13), and a verdict for every off-by-default splitting lever. |
+| [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (no default-path violation is known as of 2026-10-13), and a verdict for every off-by-default splitting lever. Every DELETE and MEASURE lever was deleted 2026-10-15; three PENDING remain. |
 | [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) | **when demand is asked**: the gate is a cascade priority, not quiescence. Give each stage route 4's shape; route ES-side demands to an actuator; terminate on a fixed point. |
 | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
 | [134](134-remove-the-frontend-forced-split-opt-in.md) | constants: 9 `__pyc_clone_constants__` annotations remain, each with a named replacement. |

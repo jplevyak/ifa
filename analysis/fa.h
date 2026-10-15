@@ -201,14 +201,6 @@ class EntrySet : public gc {
   // comparable by identity across passes.
   Map<MPosition *, AType *> type_key;
   int type_key_pass = -1;
-  // ifa/issues/074 (PYC_CANON): the type tuple this contour was CREATED
-  // for. Immutable once stamped, unlike `type_key` which is refreshed
-  // each pass. Canonicalization keeps at most one contour per (fun,
-  // canon_key), so the type tuple NAMES the contour -- shedskin's model
-  // -- and a routing decision becomes a lookup with no symmetric choice
-  // to alternate between.
-  Map<MPosition *, AType *> canon_key;
-  int canon_key_set = 0;
   // ifa/issues/074 (IFA_DBG_KEYDRIFT): last two passes' type_key hashes,
   // so a period-2 flip-flop (key(N) == key(N-2) != key(N-1)) can be told
   // from a key that is merely still moving. Probe-only.
@@ -298,17 +290,8 @@ class CreationSet : public gc {
   // clone of. Already collapsed to the root at construction time, so one
   // deref suffices; nullptr for an original.
   CreationSet *split_origin = nullptr;
-  // ifa/issues/101 (PYC_CSELEM): the DURABLE element type of this
-  // container CS -- captured in complete_pass, after the flow fixpoint,
-  // exactly like EntrySet::type_key. Container CSs are minted per
-  // allocation-site x contour but their element types collapse to far
-  // fewer distinct values (corpus: 1994 CS -> 341 element shapes, 4.6x;
-  // `stereo` 185 -> 2), so this is the key a container CS *should* have
-  // been identified by. nullptr until first captured.
-  AType *elem_key = nullptr;
-  int elem_key_pass = -1;
-  // The Var whose creation_point minted this CS, so a later pass can ask
-  // "what element type did this site converge to?".
+  // The Var whose creation_point minted this CS (read by the mold route and
+  // the prototype test in creation_point).
   Var *creation_var = nullptr;
   Vec<CreationSet *> *equiv;     // used by clone.cpp & fa.cpp
   Vec<CreationSet *> not_equiv;  // used by clone.cpp
@@ -764,13 +747,6 @@ class FA : public gc {
   // ANY length -- i.e. the routing relation is kept acyclic by
   // construction rather than by pattern-matching one shape.
   Map<EntrySet *, Vec<EntrySet *> *> route_adj;
-  // ifa/issues/101 (PYC_CSELEM): per creation-site durable element type,
-  // rebuilt each pass from CreationSet::elem_key. A Var whose CSs
-  // converged to DIFFERENT element types maps to null (ambiguous) and is
-  // never canonicalized -- those are the sites where the extra
-  // CreationSets are earning their keep.
-  Map<Var *, AType *> var_elem_key;
-  Map<Var *, int> var_elem_ambig;
   // ifa/issues/074: the divergence guard's actual input. Both counters
   // above conflate two opposite things -- the ledger ROUTING a group back
   // into the product it recorded on an earlier pass (the anti-oscillation
@@ -904,11 +880,8 @@ enum class FAPassStage {
                           // method contours per receiver CS for
                           // clone_methods_per_cs classes; runs only
                           // on quiescence of all stages above)
-  CSM_ELEMENT_CS,          // split_container_methods_per_element_cs
-                          // (ifa/issues/075, PYC_CSM: element-CS
-                          // container-method split for list/dict
-                          // receivers with divergent element types;
-                          // runs every pass, before TYPE_CONFLUENCE)
+  CSM_ELEMENT_CS,         // deleted (ifa/075 PYC_CSM, ifa/146); the slot
+                          // stays so stage numbering and names are stable
   CARTESIAN_PRODUCT,      // split_ess_cartesian_product (ifa/issues/074,
                           // PYC_CPA: fan a positional formal whose type
                           // is a union of >=2 CreationSets into one

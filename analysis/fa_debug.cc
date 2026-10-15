@@ -1468,47 +1468,6 @@ void report_degenerate_avars() {
   for (auto &kv : by_site) fprintf(stderr, "[degen] %s x%d\n", kv.first.c_str(), kv.second);
 }
 
-// ifa/issues/074: the structural shape of a type, spelled `list<list<int64>>`.
-//
-// Reads the DURABLE elem_key (captured at the end of the previous pass),
-// never the live element AVar: every container starts out empty and
-// acquires its elements later, so a live read would call two containers
-// equal merely because neither has filled in yet -- the same trap the
-// mode-1 key comments already record. The depth is capped: an unbounded
-// structural walk is the very non-termination this is meant to fix, and the
-// cap alone bounds it -- a container that holds itself simply reaches
-// `<...>` like any other 6-deep nest.
-
-// A sub-shape is emitted as an ID, never as its own text (ifa/issues/130).
-//
-// Unfolding the whole structure into one flat string is exponential in
-// (union width)^(depth) on any type whose members repeat, and the repeats
-// are not exotic -- they are ifa/128's over-discrimination arriving here as
-// type width. Measured on `kanoodle` under PYC_CSELEM=3: a 93-member union
-// at EVERY depth 1..6 (77 of the 93 are CreationSets of one class, `list`),
-// 1131 bytes of output per call, 1.13 GB of string at 10^6 calls, on a walk
-// needing 93^5 ~ 7e9 calls -- about 8 TB. It does not finish slowly, it does
-// not finish: one `pyc` reached 47 GB RSS and the kernel OOM-killer took the
-// whole corpus sweep with it, nine times over one afternoon. `plcfrs`,
-// `quameon` and `rdb` are the same failure.
-//
-// Ids are handed out by CONTENT, so two structurally equal sub-shapes always
-// get the same id and two different ones never do. The key therefore compares
-// exactly as the unfolded string did -- same merges, same splits -- at
-// O(width) per level instead of O(width^depth). Content-keyed and not
-// pointer-keyed on purpose: the shape deliberately erases CreationSet
-// identity (it emits the CLASS, `name#id`), so two distinct CSs of one class
-// with equal element shapes must land on one id. That is the whole point of
-// the mode, and a pointer-keyed table would miss exactly those.
-//
-// `cselem_shape_ids` is global and monotone ON PURPOSE, like the
-// `cselem_shape_canon` that consumes its output. Clearing it per pass would
-// let id 7 name one structure in pass 3 and a different one in pass 5, and
-// since the canon map never revisits an entry, that is a permanent mis-merge
-// -- the same hazard ifa/130 A2 fixed for `Sym::name`. The (AType, depth)
-// memo below is the opposite: it MUST be cleared per pass, because elem_key
-// moves.
-
 void report_incompat() {
   if (!getenv("IFA_DBG_INCOMPAT")) return;
   fprintf(stderr,
@@ -1537,12 +1496,6 @@ void report_keydrift() {
   kd_flip_funs.clear();
 }
 
-void report_canon_stats() {
-  if (!canon_enabled() || !getenv("IFA_DBG_CANON")) return;
-  fprintf(stderr, "CANON p=%d hit=%ld miss=%ld conflict=%ld conflict_honored=%ld\n", analysis_pass, census.canon_hit,
-          census.canon_miss, census.canon_conflict, census.canon_conflict_honored);
-  census.canon_hit = census.canon_miss = census.canon_conflict = census.canon_conflict_honored = 0;
-}
 
 // ifa/issues/074: how many contours would each NAMING scheme give this
 // function, versus how many IFA actually built?
@@ -2353,45 +2306,20 @@ void report_demand_ratio() {
   ElemCensus c;
   element_census(c);
   int shapes = c.total_shapes(), pshapes = c.total_pshapes();
-  int unkmint = 0, unkres = 0, unkjoin = 0, unkstill = 0;
-  cselem_unknown_mint_census(unkmint, unkres, unkjoin, unkstill);
   // Same question over EVERY CreationSet, not just containers: a gate that
   // is vacuous on containers but not in general would be worth knowing about.
   int multidef_all = 0;
   for (CreationSet *x : fa->css) if (x && x->defs.set_count() > 1) ++multidef_all;
-  // ifa/129 step 4: how much of the canon's size is the PER-SITE component?
-  // cselem_shape_key composes `v<id>|name#id|shape`, so the canon is keyed
-  // per allocation site and the floor on CS count is the number of distinct
-  // (site, class, shape) triples rather than of (class, shape) pairs. Strip
-  // the leading `v<id>|` and count what is left: `canonsiteless` is the
-  // number of contours a site-free key would keep, and canon/canonsiteless
-  // is the fragmentation the site component costs. Counterfactual only --
-  // nothing here changes a decision.
   int nstrip = 0, nmulti = 0, nsame = 0;
   constant_strip_census(nstrip, nmulti, nsame);
-  int canon = (int)cselem_shape_canon.size(), canon_siteless = 0;
-  if (cssiteless_enabled()) {
-    canon_siteless = canon;  // the key already is site-free; nothing to strip
-  } else {
-    std::set<std::string> sl;
-    for (auto &kv : cselem_shape_canon) {
-      size_t bar = kv.first.find('|');
-      sl.insert(bar == std::string::npos ? kv.first : kv.first.substr(bar + 1));
-    }
-    canon_siteless = (int)sl.size();
-  }
   fprintf(stderr,
           "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
-          "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d "
-          "multidef=%d multidefall=%d rejoin=%d mintwhy=%d/%d/%d/%d canon=%d canonsiteless=%d resplit=%d/%d cstrip=%d/%d/%d capstrip=%ld\n",
+          "elemtypes=%d empty=%d mixed=%d novar=%d "
+          "multidef=%d multidefall=%d cstrip=%d/%d/%d capstrip=%ld\n",
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
-          c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all,
-          census.cselem_rejoins, census.cselem_mint_why[kMintNoSiteCS], census.cselem_mint_why[kMintMoldSplitChild],
-          census.cselem_mint_why[kMintMoldCMC], census.cselem_mint_why[kMintMoldIneligible], canon, canon_siteless, census.cselem_resplits,
-          census.cselem_resplit_mints, nstrip, nmulti, nsame, census.fa_cap_strips);
-  if (getenv("PYC_ELEMSETTER") && (census.es_added + census.es_seeded))
-    fprintf(stderr, "ELEMSETTER demand_added=%d starters_seeded=%d\n", census.es_added, census.es_seeded);
+          c.n_empty, c.n_mixed, c.n_novar, c.n_multidef, multidef_all,
+          nstrip, nmulti, nsame, census.fa_cap_strips);
   // ifa/133: IFA_DBG_CSDUMP=<csid>, or -1 for every list CS -- dump the
   // and every backward writer, with the writer's function and contribution.
   if (cchar *cw = getenv("IFA_DBG_CSDUMP")) {
@@ -2459,7 +2387,6 @@ void report_demand_ratio() {
       if (e->value > 1) ++multi;
       if (e->value > mx) { mx = e->value; worst = e->key; }
     }
-    if (census.cd_kept + census.cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d prospective_differs=%d no_trigger=%d\n", census.cd_kept, census.cd_dropped, census.cd_prospective_differs, census.cd_no_trigger);
   if (census.ck_single + census.ck_irrep + census.ck_samesym + census.ck_repr)
     fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", census.ck_single, census.ck_irrep, census.ck_samesym, census.ck_repr);
   if (census.grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", census.grp_total, census.grp_scattered);

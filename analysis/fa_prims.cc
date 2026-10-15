@@ -665,30 +665,11 @@ switch (p->prim->index) {
       case P_prim_sizeof_element: {
         AVar *t = make_AVar(p->rvals[2], es);
         AType *rtype = fa->type_world.bottom_type;
-        // ifa/issues/109: sizeof_element needs ONE container layout. If
-        // the receiver spans CreationSets that will become distinct
-        // concrete types -- different sym, or different arity, which for
-        // a record-shaped tuple means a different type -- their sum has
-        // no `element` and codegen fails with "sizeof_element of
-        // non-container type". FA used to just union the sizes and say
-        // nothing, so the splitter had no reason to separate them.
-        //
-        // Recording a violation here is what makes the EXISTING backward
-        // machinery do the work: split_for_violations (stage 5) splits
-        // the offending AVar, and that split propagates back to the
-        // caller's contour automatically. No annotation, no special case
-        // in codegen -- FA simply has to know the constraint.
-        if (sizeof_viol_enabled() && t->out->sorted.n > 1) {
-          Sym *sym0 = nullptr;
-          int arity0 = -1;
-          bool uniform = true;
-          for (CreationSet *cs : t->out->sorted) {
-            if (!cs->sym) continue;
-            if (!sym0) { sym0 = cs->sym; arity0 = cs->vars.n; }
-            else if (sym0 != cs->sym || arity0 != cs->vars.n) { uniform = false; break; }
-          }
-          if (!uniform) type_violation(ATypeViolation_kind::BOXING, t, t->out, nullptr, nullptr);
-        }
+        // ifa/issues/109: PYC_SIZEOF_VIOL recorded a BOXING violation when the
+        // receiver spans CreationSets of different sym or arity (mode 2 also
+        // lifted stage 5's gate). It fixed no program; mode 1 broke 6 corpus
+        // programs and mode 2 broke 48 (sweeps
+        // check__PYC_SIZEOF_VIOL_{1,2}__e254f017+dcb2b1b0). Deleted by ifa/146.
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem) {

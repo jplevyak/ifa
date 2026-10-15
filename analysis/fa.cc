@@ -27,9 +27,6 @@
 
 // ifa/167: shared with fa_debug.cc -- declared in fa_internal.h.
 Vec<EntrySet *> ed_applied;  // one split per contour per pass
-const int kShapeDepth = 6;
-std::map<std::string, int> cselem_shape_ids;
-std::vector<std::string> cselem_shape_by_id;  // id -> text, diagnostics
 const char *kStageName[FA::kNumFAPassStages] = {
     "TYPE_CONFL",  "MARK_TYPE",   "SETTER",      "SETTER_OF_SETTER", "MARK_SETTER",
     "MARK_SET_OF_SET", "VIOLATION", "PER_CS_RECV", "CSM_ELEM_CS",  "CPA",
@@ -442,129 +439,17 @@ static int cs_live_defs(CreationSet *cs);  // ifa/168: defined with route 4
 
 
 
-extern int viol_cs_deferred;
 
 
-// ifa/133 (author, 2026-09-09): "there should be no conflict if violations
-// and dynamic dispatch are the demand. that is the precision which matters
-// because it affects codegen."  Mode 2 is exactly that test.
-//
-// (a) VIOLATION -- this AVar carries a recorded type violation. Rebuilt
-//     once per pass from fa->type_violations rather than scanned per
-//     confluence.
-// (b) DYNAMIC DISPATCH -- this AVar is an argument of a send whose edges
-//     reach more than one target Fun, so the receiver distinction is what
-//     decides which body runs. That is codegen-visible by definition.
-static Vec<AVar *> cd_viol_avars;
-static void cd_rebuild_violation_set() {
-  cd_viol_avars.clear();
-  for (ATypeViolation *v : fa->type_violations)
-    if (v && v->av) cd_viol_avars.set_add(v->av);
-}
-// Mode 3: the demand is observed at the USE, but the split has to happen
-// at the confluence UPSTREAM of it -- keeping types apart from where they
-// diverge down to where codegen cares. So seed with every demanded AVar
-// (violation, or an argument of a send with >1 target) and take the
-// BACKWARD closure: everything that flows into one. Same shape as stage
-// 5's collect_violation_imprecisions/back_reaching, applied to stage 1.
-static Vec<AVar *> cd_reach;
-static bool cd_is_dispatch_arg(AVar *av);
-static void cd_build_reach() {
-  cd_reach.clear();
-  Vec<AVar *> work;
-  for (ATypeViolation *v : fa->type_violations)
-    if (v && v->av && cd_reach.set_add(v->av)) work.add(v->av);
-  for (EntrySet *es : fa->ess)
-    for (Var *var : es->fun->fa_all_Vars) {
-      AVar *a = make_AVar(var, es);
-      if (a && cd_is_dispatch_arg(a) && cd_reach.set_add(a)) work.add(a);
-    }
-  for (int i = 0; i < work.n && i < 4000000; i++)
-    for (AVar *b : work.v[i]->backward)
-      if (b && cd_reach.set_add(b)) work.add(b);
-}
-
-static bool confluence_is_demanded(AVar *av) {
-  if (confdemand_enabled() >= 3) return cd_reach.set_in(av) != 0;
-  if (cd_viol_avars.set_in(av)) return true;
-  return cd_is_dispatch_arg(av);
-}
-
-static bool cd_is_dispatch_arg(AVar *av) {
-  for (AVar *r : av->arg_of_send.asvec) {
-    if (!r || !r->contour_is_entry_set || !r->var) continue;
-    PNode *pn = r->var->def;
-    if (!pn) continue;
-    Vec<AEdge *> *ve = ((EntrySet *)r->contour)->out_edge_map.get(pn);
-    if (!ve) continue;
-    Fun *f0 = nullptr;
-    for (AEdge *e : *ve) if (e && e->to && e->to->fun) {
-      if (!f0) f0 = e->to->fun;
-      else if (f0 != e->to->fun) return true;  // >1 target: dynamic dispatch
-    }
-  }
-  return false;
-}
+// ifa/133: PYC_CONFDEMAND (stage 1 kept only confluences that were a
+// demand -- an irrepresentable union, mode 2 also a violation or a >1-target
+// send, mode 3 the backward closure of those) was DELETED by ifa/146 on
+// 2026-10-15. Every mode failed to compile all 77 corpus programs (sweeps
+// check__PYC_CONFDEMAND_{1,2,3}__e254f017+dcb2b1b0): stage 1 confluences
+// are also what separates dispatch and precision, which the probe dropped.
 // ifa/133 probe: where do CreationSets actually come from? One counter per
 // creation_point route, dumped by IFA_DBG_CSROUTES at convergence.
 // ifa/133 counters live with the flag definition below
-// ifa/issues/074 (PYC_CSELEM=3): re-key container CreationSet identity on
-// the RECEIVER's structural element shape. Defined with capture_elem_keys.
-static bool cselem_shape_key(AVar *v, Sym *s, std::string &out);
-static CreationSet *cselem_shape_reuse(AVar *v, Sym *s);
-static void cselem_shape_claim(const std::string &key, CreationSet *cs);
-
-// ifa/129 step 2c: how much of the remaining over-discrimination is
-// IGNORANCE rather than evidence. A mode-3 mint taken while the receiver
-// shape was `unfilled` is a split caused by ABSENCE of evidence -- and
-// because `cs_map` survives every pass and creation_point is memo-first,
-// it is never revisited. After convergence the shape IS known, so we can
-// ask the counterfactual the guard cannot: would that CreationSet have
-// been reusable had the decision waited a pass?
-enum CselemDecline { kCselemOk = 0, kCselemUnfilled, kCselemOther };
-static CselemDecline cselem_last_decline = kCselemOther;
-
-// ifa/129 step 4, second increment: WHY did a mint taken on an unknown
-// shape have nothing to join to?
-//
-// The first increment could only re-decide a mint AFTER the shape arrived,
-// and 2c measured that 390 of 795 such mints never get a shape at all --
-// unreachable that way. The remedy is to stop minting on absence of
-// evidence, which requires knowing what the alternative would have been.
-// creation_point cannot defer: it must return a CreationSet. So "do not
-// mint on an unknown" can only mean "return an existing one", and the
-// question is whether an existing one was available and a guard refused
-// it, or whether none existed at all.
-//
-// Measured, not guessed -- if most unknown mints are kMintNoSiteCS there
-// is nothing to join to at this site and relaxing a guard is the wrong
-// answer. Probe only.
-
-// Classify at the mint site, recomputing the mold predicates (they are
-// block-scoped there, and this must not perturb them).
-static CselemMintWhy cselem_classify_mint(AVar *v, Sym *s, EntrySet *es) {
-  bool have_site_cs = false;
-  if (v->var)
-    for (CreationSet *x : s->creators)
-      if (x && x->creation_var == v->var && !(s->abstract_type && x == s->abstract_type->v[0])) {
-        have_site_cs = true;
-        break;
-      }
-  if (!have_site_cs) return kMintNoSiteCS;
-  int mold = csmold_enabled();
-  bool split_child = v->contour_is_entry_set && es && es->split;
-  if (mold == 3 && split_child) return kMintMoldSplitChild;
-  Sym *cmc0 = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
-  if (cmc0 && cmc0->clone_methods_per_cs) return kMintMoldCMC;
-  return kMintMoldIneligible;
-}
-struct CselemUnknownMint {
-  AVar *v;
-  Sym *s;
-  CreationSet *cs;
-};
-static std::vector<CselemUnknownMint> cselem_unknown_mints;
-
 static cchar *dbg_cs_route = nullptr;      // ifa/issues/055: which reuse route fired
 static cchar *dbg_cs_route_want = getenv("IFA_DBG_CSROUTE");
 
@@ -631,7 +516,7 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   }
   // ifa/128 start-merged route, for a creation point with no split parent
   // (the ifa/074 route above answers first when there is one). BEFORE the
-  // cselem and mold routes: those answer "which of this site's contours
+  // mold route: it answers "which of this site's contours
   // should this be", a question that does not arise when a sym has one
   // contour. Takes the FIRST creator, which is the unsplit root --
   // `new CreationSet(cs)` appends, so splits never displace it. Start
@@ -930,100 +815,15 @@ CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   // `ifa_class_types`/`classes_nr` index, which MOVES an allocation site
   // onto an existing contour whose deduced element types agree. That is
   // keyed on the converged CONTENT, not on arity, and it is 129 step 3
-  // route 6. `cselem_shape_reuse` below is its per-site approximation.
+  // route 6.
 Lno_split_parent:;
-  // ifa/128, 2026-09-12: the three routes below -- cselem, csshape, csmold
-  // -- are 0 hits at BOTH the default and the start-merged arm, and that is
-  // NOT a bug to fix. They all answer "which of this site's CONTOURS should
-  // this be", a question that only exists because identity is
-  // (allocation site x contour). The dcpa1 route above makes it void: when a
-  // sym has one contour there is nothing to choose between, which is why it
-  // is deliberately ordered first.
-  //
-  // Nor can they be rescued as a better key. Each decides at MINT time,
-  // when the receiver's element is unfilled by construction -- measured,
-  // 402 of 795 such mints never acquire a shape at all. Keying cannot get
-  // ahead of a decision taken before the evidence exists, which is why
-  // PYC_CSELEM=3 is suite-clean and still regresses `rdb` on the corpus.
-  //
-  // They are kept as the reproduction of that experiment (ifa/129), not as
-  // a mechanism awaiting repair. The design is: coarse identity (dcpa1) ->
-  // demand-driven separation (split_css / CS_DEF_PARTITION) -> the split
-  // ledger so a re-derived separation re-attaches. There is no reuse step
-  // in it. A `creators` route that stood here was deleted for the same
-  // reason (see above).
-  // ifa/issues/101 (PYC_CSELEM): before minting another container CS for
-  // this site, ask what element type the site converged to on the
-  // PREVIOUS pass, and reuse an existing CS of the same sym that
-  // converged to the same thing. Container CSs are minted per
-  // allocation-site x contour but their element types collapse to far
-  // fewer distinct values -- corpus-wide 1994 CS for 341 element shapes,
-  // and `stereo` alone is 185 CS for 2. shedskin gets this for free
-  // because its `list<T>` is keyed on T; here the element type is an
-  // ATTRIBUTE of a CS identified by its creation site, so equivalent
-  // containers stay distinct and every container METHOD is then split
-  // per CS rather than per element type.
-  //
-  // Deliberately keyed on the durable, converged element type and never
-  // on the current one: every container CS starts empty and acquires
-  // elements later, so canonicalizing on "currently empty" would merge a
-  // list that will become list<int> with one that will become list<str>.
-  // Sites whose CSs converged to DIFFERENT element types are marked
-  // ambiguous and left alone -- there the extra CreationSets are earning
-  // their keep.
-  if (cselem_enabled() && cselem_enabled() != 3 && s != sym_closure && s->element) {
-    AType *want = v->var ? fa->var_elem_key.get(v->var) : nullptr;
-    bool ambig = v->var && fa->var_elem_ambig.get(v->var);
-    if (getenv("IFA_DBG_CSELEM"))
-      fprintf(stderr, "[cselem-try] p=%d sym=%s var=%s want=%p ambig=%d creators=%d keyed=%d\n", analysis_pass,
-              s->name ? s->name : "?", (v->var && v->var->sym->name) ? v->var->sym->name : "?", (void *)want,
-              ambig ? 1 : 0, s->creators.n, [&] {
-                int n = 0;
-                for (CreationSet *x : s->creators) if (x && x->elem_key_pass >= 0) ++n;
-                return n;
-              }());
-    if (want && !ambig) {
-      for (CreationSet *x : s->creators)
-        if (x && x->elem_key_pass >= 0 && x->elem_key == want &&
-            !(s->abstract_type && x == s->abstract_type->v[0])) {
-          if (getenv("IFA_DBG_CSELEM"))
-            fprintf(stderr, "[cselem] p=%d sym=%s var=%s -> reuse cs=%d (elem_key %p)\n", analysis_pass,
-                    s->name ? s->name : "?", v->var->sym->name ? v->var->sym->name : "?", x->id, (void *)want);
-          cs = x;
-          dbg_cs_route = "cselem"; ++census.cs_route_count[kR_cselem];
-          goto Lfound;
-        }
-    }
-  }
-  // ifa/issues/074 (PYC_CSELEM=3): re-key on the RECEIVER's element SHAPE.
-  //
-  // shedskin never has this problem because `list<T>` IS keyed on T: one
-  // template instantiation per element type, and `list<T>::__deepcopy__`
-  // returns `list<T>` by signature. Here the element type is an ATTRIBUTE
-  // of a CreationSet identified by its creation SITE x contour, so
-  // `list<int64>` built at one site in two contours is two CreationSets
-  // that nothing downstream can see as the same type -- which is why
-  // copy-of-copy-of-copy never closes: every level mints a fresh CS, that
-  // CS is a fresh element type for the level above, and the recursion has
-  // no fixed point to reach.
-  //
-  // Mode 1 (var_elem_key) cannot do this. It keys on the durable element
-  // type of the SITE and vetoes any site that converged to more than one
-  // -- and `r` in list.__deepcopy__ converges to a different element type
-  // in every contour, so it is exactly the case mode 1 declines.
-  //
-  // Keyed on (site, receiver shape) rather than on the shape alone: this
-  // canonicalizes the contours of ONE allocation site, it does not fuse
-  // unrelated sites.
-  if (cselem_enabled() == 3 && s != sym_closure && s->element) {
-    if (CreationSet *x = cselem_shape_reuse(v, s)) {
-      if (!(s->abstract_type && x == s->abstract_type->v[0])) {
-        cs = x;
-        dbg_cs_route = "csshape"; ++census.cs_route_count[kR_csshape];
-        goto Lfound;
-      }
-    }
-  }
+  // ifa/128, 2026-09-12: the cselem and csshape routes that stood here
+  // (PYC_CSELEM modes 1-3) answered "which of this site's CONTOURS should
+  // this be", a question that exists only when identity is (allocation site
+  // x contour); the dcpa1 route above makes it void. Each decided at MINT
+  // time, before the receiver's element exists (402 of 795 such mints never
+  // acquired a shape), which is why mode 3 was suite-clean and still
+  // regressed `rdb`. Deleted with their canon, rejoin and resplit (ifa/146).
   // ifa/issues/101 direction 2: the mold fallback (see csmold_enabled).
   // Last resort before minting -- every earlier path (cs_map memo, split
   // parent inheritance) has already declined. clone_methods_per_cs
@@ -1097,18 +897,7 @@ Lunique:
   }
   dbg_cs_route = "MINT"; ++census.cs_route_count[kR_MINT];
   cs = new CreationSet(s);
-  cs->creation_var = v->var;  // ifa/issues/101: for the per-site element key
-  // ifa/issues/074: claim this (site, receiver-shape) so the next contour
-  // with the same receiver shape reuses it instead of minting again.
-  if (cselem_enabled() == 3 && s != sym_closure && s->element) {
-    std::string shape_key;
-    if (cselem_shape_key(v, s, shape_key))
-      cselem_shape_claim(shape_key, cs);
-    else if (cselem_last_decline == kCselemUnfilled) {
-      cselem_unknown_mints.push_back({v, s, cs});  // minted on an unknown (ifa/129 2c)
-      ++census.cselem_mint_why[cselem_classify_mint(v, s, es)];  // ...and why it had to (step 4)
-    }
-  }
+  cs->creation_var = v->var;  // the mold route and the prototype test read this
   if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
   s->creators.add(cs);
   for (Sym *h : s->has) {
@@ -1370,10 +1159,6 @@ static int edge_type_compatible_with_entry_set(AEdge *e, EntrySet *es, int fmark
       if (!e_arg) continue;
       AType *etype = edge_arg_type(e_arg, e->match->formal_filters.get(p), es_wants_constants(es, p));
       AType *stype = es_arg->out->type;
-      if (typekey_enabled() && es->type_key_pass >= 0) {
-        AType *k = es->type_key.get(p);
-        if (k) stype = k;  // durable key wins over the mid-pass value
-      }
       if (etype->n && stype->n && etype != stype) return ++census.ic_arg, 0;
     }
     if (es->rets.n != e->rets.n) return ++census.ic_retn, 0;
@@ -1844,44 +1629,6 @@ static int check_split(AEdge *e, Vec<AEdge *> &ees, EntrySet *avoid = nullptr) {
   return 0;
 }
 
-// ifa/issues/074 canonicalization stats (IFA_DBG_CANON).
-
-// This edge's type tuple: the filtered actual type at each positional
-// argument. Canonical ATypes are hash-consed for the life of the FA, so
-// these pointers compare by identity and stay valid across passes.
-static bool edge_canon_key(AEdge *e, Map<MPosition *, AType *> &key) {
-  if (!e->args.n) return false;
-  int n = 0;
-  for (MPosition *p : e->match->fun->positional_arg_positions) {
-    AVar *a = e->args.get(p);
-    if (!a) continue;
-    AType *t = type_intersection(a->out->type, e->match->formal_filters.get(p));
-    if (!t->n) return false;  // no evidence yet -- do not canonicalize on it
-    key.put(p, t);
-    n++;
-  }
-  return n > 0;
-}
-
-static bool same_canon_key(Map<MPosition *, AType *> &a, Map<MPosition *, AType *> &b) {
-  int na = 0, nb = 0;
-  form_MPositionAType(x, a) if (x->key) {
-    na++;
-    if (b.get(x->key) != x->value) return false;
-  }
-  form_MPositionAType(x, b) if (x->key) nb++;
-  return na && na == nb;
-}
-
-// Find the contour of this edge's callee already named by `key`.
-static EntrySet *find_canonical_entry_set(AEdge *e, Map<MPosition *, AType *> &key) {
-  EntrySet *found = nullptr;
-  for (EntrySet *x : e->match->fun->ess)
-    if (x && x->canon_key_set && same_canon_key(key, x->canon_key))
-      if (!found || x->id < found->id) found = x;  // deterministic (issue 035)
-  return found;
-}
-
 // ifa/issues/101: what DISCRIMINATOR the split currently being applied
 // used. Hard reuse matches candidate contours on argument types, so it is
 // only sound evidence when types are what the split separated on -- a
@@ -1962,32 +1709,7 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
     }
   }
   if (!es) es = preference;
-  Map<MPosition *, AType *> ckey;
-  bool have_key = canon_enabled() && !e->match->fun->split_unique && edge_canon_key(e, ckey);
-  if (have_key && !es) {
-    EntrySet *canon = find_canonical_entry_set(e, ckey);
-    if (canon && canon == split) {
-      // The canonical home for this edge's types IS the contour the
-      // splitter is detaching it from: the split is asking for a
-      // separation the type tuple says does not exist. This is the
-      // measurement the canonicalization exists to produce.
-      ++census.canon_conflict;
-      if (getenv("IFA_DBG_CANON"))
-        fprintf(stderr, "CANON-CONFLICT p=%d fun=%s#%d e=%d split=es%d (fun has %d ess)\n", analysis_pass,
-                e->match->fun->sym && e->match->fun->sym->name ? e->match->fun->sym->name : "?",
-                e->match->fun->sym ? e->match->fun->sym->id : -1, e->id, split->id, e->match->fun->ess.n);
-      if (canon_enabled() >= 2) es = canon; else ++census.canon_conflict_honored;
-    } else if (canon) {
-      ++census.canon_hit;
-      es = canon;
-    } else
-      ++census.canon_miss;
-  }
   set_entry_set(e, es);
-  if (have_key && !e->to->canon_key_set) {
-    e->to->canon_key.copy(ckey);
-    e->to->canon_key_set = 1;
-  }
   if (!es) {
     e->to->split = split;
     // ifa/133: the same parent, recorded durably. `split` is cleared every
@@ -4927,7 +4649,7 @@ SplitDecision *FA::ledger_add_cs(uint sig, CreationSet *product) {
 // **Closing it buys nothing, and that is measured, not assumed.** The level
 // question -- "does this AVar HOLD an irrepresentable union?", asked of the
 // converged type, in three formulations including one gated on
-// `confluence_is_demanded` -- was built as PYC_CONFLEVEL, measured, and
+// the violation-or-dispatch test of PYC_CONFDEMAND=2 (since deleted) -- was built as PYC_CONFLEVEL, measured, and
 // DELETED (2026-09-15). On `softrender` it took stage 1 from 923 candidates
 // per pass to 3295 and `d_ess` from 347 to 348; on `sudoku4` it took warnings
 // from 39 to 206, which is ifa/146's non-monotone diagnostic. Two reasons,
@@ -5031,20 +4753,17 @@ static void seed_probe(AVar *av) {
 static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   dbg_dump_av(av);
   seed_probe(av);
-  AVar *trigger = nullptr;  // ifa/133: the writer that made this a confluence
   const bool keep_consts = av->var->sym->clone_for_constants || es_wants_constants_at(av);
   for (AVar *x : av->backward) if (x) {
-    if (!x->out->type->n && !(confnil_enabled() && x->out->n)) continue;
+    if (!x->out->type->n) continue;
     if (keep_consts) {
       if (type_diff(av->in, x->out) != fa->type_world.bottom_type) {
         confluences.set_add(av);
-        trigger = x;
         break;
       }
     } else {
       if (x->out->type->n && type_diff(av->in->type, x->out->type) != fa->type_world.bottom_type) {
         confluences.set_add(av);
-        trigger = x;
         break;
       }
     }
@@ -5054,45 +4773,6 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
   // only; nothing is added to `confluences`.
   if (conflevel_probe() && av->in && atype_irrepresentable(av->in->type)) {
     if (confluences.set_in(av)) ++census.cl_flagged; else ++census.cl_unflagged;
-  }
-  // ifa/133 EXPERIMENT (PYC_CONFDEMAND=1): drop confluences whose union is
-  // representable -- i.e. keep only the ones something could not proceed on.
-  // A probe of "is stage 1 demand-driven?", NOT a proposed change: it also
-  // discards dispatch-driven and precision-driven splits, which are real.
-  if (confdemand_enabled() && confluences.set_in(av)) {
-    // ifa/133, corrected: a confluence fires AS the union forms, so
-    // `av->in->type` is still the OLD type and does not yet contain the
-    // writer's contribution. Test the union that WOULD result -- which for
-    // `{int64} <- str` is `{int64, str}`, irrepresentable, and a demand.
-    // Testing the accumulated type instead dropped exactly those, which is
-    // what made this gate look circular.
-    AType *t = av->in ? av->in->type : nullptr;
-    AType *acc = t;
-    if (t && trigger && trigger->out && trigger->out->type)
-      t = type_union(t, trigger->out->type);
-    if (t != acc) ++census.cd_prospective_differs;
-    if (!trigger) ++census.cd_no_trigger;
-    int nnonbasic = 0; Vec<Sym *> basics;
-    if (t) for (CreationSet *c : t->sorted) {
-      if (!c || !c->sym || c->sym == sym_nil_type) continue;
-      if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b); else ++nnonbasic;
-    }
-    const int nb = basics.set_count();
-    bool irrep = (nb >= 1 && nnonbasic > 0) || nb > 1;
-    bool keep = (confdemand_enabled() >= 2) ? (irrep || confluence_is_demanded(av)) : irrep;
-    if (!keep) {
-      confluences.set_remove(av); ++census.cd_dropped;
-      if (getenv("IFA_DBG_CONFDROP") && census.cd_dropped < 40) {
-        fprintf(stderr, "[confdrop] p=%d fun=%s var=%s type=", analysis_pass,
-                (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun &&
-                 ((EntrySet *)av->contour)->fun->sym && ((EntrySet *)av->contour)->fun->sym->name)
-                    ? ((EntrySet *)av->contour)->fun->sym->name : "?",
-                (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)");
-        if (t) for (CreationSet *c : t->sorted) if (c && c->sym)
-          fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
-        fprintf(stderr, "\n");
-      }
-    } else ++census.cd_kept;
   }
   // ifa/133: classify each confluence -- is the union it fires on one that
   // something could not PROCEED on (a demand), or merely one that exists
@@ -5121,8 +4801,6 @@ static void collect_type_confluence(AVar *av, Vec<AVar *> &confluences) {
 
 static void collect_type_confluences(Vec<AVar *> &confluences) {
   confluences.clear();
-  if (confdemand_enabled() >= 2) cd_rebuild_violation_set();
-  if (confdemand_enabled() >= 3) cd_build_reach();
   for (EntrySet *es : fa->ess) {
     for (Var *v : es->fun->fa_all_Vars) {
       AVar *xav = make_AVar(v, es);
@@ -5216,32 +4894,15 @@ static void record_backedges(AEdge *e, EntrySet *es, PendingAEdgeEntrySetsMap &u
 
 typedef MapElem<MPosition *, AType *> MapElemMPositionAType;
 
-// ifa/148: do two filter maps agree everywhere they are both defined AND
-// cover the same positions?
-static bool filters_equal(Map<MPosition *, AType *> &a, Map<MPosition *, AType *> &b) {
-  form_Map(MapElemMPositionAType, x, a) if (x->key && x->value && b.get(x->key) != x->value) return false;
-  form_Map(MapElemMPositionAType, y, b) if (y->key && y->value && a.get(y->key) != y->value) return false;
-  return true;
-}
-
 static EntrySet *find_or_make_filtered_entry_set(EntrySet *orig_es, Map<MPosition *, AType *> &filters) {
   Fun *f = orig_es->fun;
   EntrySet *res = nullptr;
-  // ifa/148: REUSE REQUIRES THE FILTERS TO MATCH, not merely to be
-  // non-disjoint.
-  //
-  // `some_disjunction` is false whenever the two filter sets do not
-  // actively contradict each other -- so a product created for one filter
-  // set is handed back for a DIFFERENT, merely-compatible one, silently
-  // merging the two contexts. In a recursive function that merges the
-  // outer and inner invocations.
-  //
-  // Measured on `tests/tuple_compare.py` (nested tuples, so `<tuple_cmp>`
-  // recurses) with stage 5 un-starved: `illegal primitive argument type
-  // 'x' illegal: tuple` -- a nested tuple reaching a slot comparison that
-  // should only see scalars. PYC_FILTEREQ=0 restores the old test.
+  // Reuse a contour whose filters do not contradict these. Requiring them
+  // to MATCH looked like it would stop a recursive `<tuple_cmp>` merging its
+  // outer and inner invocations; measured, it changed nothing, and the
+  // switch for it (PYC_FILTEREQ) was deleted (ifa/148, ifa/146).
   for (EntrySet *es : f->ess)
-    if (filtereq_enabled() ? filters_equal(es->filters, filters) : !es->filters.some_disjunction(filters)) {
+    if (!es->filters.some_disjunction(filters)) {
       res = es;
       break;
     }
@@ -5315,34 +4976,6 @@ static bool cs_slot_sig_equal(CreationSet *a, CreationSet *b) {
 
 
 
-// All slots the same representation class: all pointer-shaped, or all one
-// basic kind. One slot or none is trivially homogeneous.
-// -1 = UNKNOWN (not record-shaped, or a slot whose type is not derived yet),
-//  1 = homogeneous, 0 = heterogeneous.
-//
-// UNKNOWN is a separate answer and not adefault, because both ways of
-// collapsing it were measured wrong. Treating a non-record container as
-// homogeneous put every `list` and `dict` receiver in the homogeneous group --
-// `__getitem__` is shared across all container types, and its receiver spans 23
-// CreationSets on `sudoku5`. Treating an underived slot as homogeneous made the
-// partition fire at p=0, recording a durable decision from types that did not
-// exist yet, which is the very defect this issue opens with.
-static int cs_slots_homogeneous(CreationSet *cs) {
-  if (!cs || !cs->vars.n) return -1;            // element-channel container
-  Vec<Sym *> basics;
-  int nonbasic = 0;
-  for (AVar *v : cs->vars) {
-    if (!v || !v->out || !v->out->type || !v->out->type->n) return -1;  // not derived yet
-    for (CreationSet *c : v->out->type->sorted) {
-      if (!c || !c->sym || c->sym == sym_nil_type) continue;
-      if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b); else ++nonbasic;
-    }
-  }
-  const int nb = basics.set_count();
-  if (nb && nonbasic) return 0;   // basic + pointer in one tuple
-  return nb <= 1 ? 1 : 0;         // >=2 distinct basic kinds is heterogeneous
-}
-
 [[nodiscard]] static int split_edges(AVar *av, int fsetters, int fmark) {
   int again = 0;
   EntrySet *es = (EntrySet *)av->contour;
@@ -5386,26 +5019,9 @@ static int cs_slots_homogeneous(CreationSet *cs) {
   // Partition size is 2 by construction and cannot track the CreationSet
   // count.
   Vec<CreationSet *> &rcs = av->out->type->sorted;
-  // ifa/157: partition the receiver by SLOT HOMOGENEITY when both shapes are
-  // present. Two groups by construction, and unlike `splitedges2`'s
-  // first-vs-rest it DISCHARGES: the homogeneous group's slots are all one
-  // representation class, so indexing it is representable immediately, and the
-  // heterogeneous group is what `__pyc_clone_constants__(key)` already handles
-  // per constant index.
-  int homo = 0, hetero = 0, unknown = 0;
-  if (splithomo_enabled())
-    for (CreationSet *c : rcs) if (c) {
-      int k = cs_slots_homogeneous(c);
-      if (k < 0) ++unknown; else if (k) ++homo; else ++hetero;
-    }
-  // If the key has nothing to say -- every receiver is the same shape -- then
-  // DECLINE. Falling through to the per-CreationSet fan below is what made the
-  // first attempt non-terminating: the all-heterogeneous group re-demanded
-  // every pass and got fanned N ways each time. Split only on the
-  // representation distinction, never arbitrarily.
   // ifa/157: SLOT HOMOGENEITY AND SLOT SIGNATURE, BOTH BUILT, BOTH DEAD AS
-  // SPLITTING KEYS. Probe only (IFA_DBG_SPLITHOMO); it counts and splits
-  // nothing.
+  // SPLITTING KEYS. Both were PYC_SPLITHOMO, deleted (ifa/146); this is the
+  // record.
   //
   // The goal was shedskin's distinction: `tuple<__ss_int>` (homogeneous,
   // element-typed, variable-indexable) versus `tuple2<str *, tuple<...> *>`
@@ -5433,17 +5049,6 @@ static int cs_slots_homogeneous(CreationSet *cs) {
   // Any future attempt has to make the distinction at the ALLOCATION SITE, from
   // the literal's shape, the way `static_arity` is recorded in `make_kind` --
   // not from converged types at split time.
-  if (splithomo_enabled() && getenv("IFA_DBG_SPLITHOMO") && !unknown && rcs.n > 1) {
-    Vec<CreationSet *> reps;
-    for (CreationSet *c : rcs) if (c) {
-      bool seen = false;
-      for (CreationSet *r : reps) if (r && cs_slot_sig_equal(r, c)) { seen = true; break; }
-      if (!seen) reps.add(c);
-    }
-    fprintf(stderr, "[splitsig] p=%d es=%d fun=%s recv spans=%d -> %d signature(s) (homo=%d hetero=%d)\n",
-            analysis_pass, es->id, (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
-            rcs.n, reps.n, homo, hetero);
-  }
   // DECLINE when the receiver's CreationSets are identical BY TYPE: one
   // class, one arity, and every slot the same constant-stripped type. They
   // then differ only in which constants their slots hold (or in identity),
@@ -5570,24 +5175,6 @@ static int cs_slots_homogeneous(CreationSet *cs) {
   // contour (the pystone/tictactoe/amaze/othello/score4/voronoi2
   // SIGSEGV family, pyc issue 025), and guarding just that moves the
   // crash to the rets[i] flow below it.
-  // ifa/issues/075 Piece 1+3: a bare cs_es_map product can be display-
-  // incompatible with some of the edges that share its CS (the same
-  // list/dict method called from multiple lexical displays) -- the
-  // pre-075 behavior below just leaves such an edge un-split, which is
-  // exactly what keeps a container-method's element AVar a cross-
-  // instance union (063/075). When csm_enabled(), fan an incompatible
-  // edge into its OWN product instead: keyed on (cs_es_map target x
-  // this edge's display), via find_or_make_display_variant (above),
-  // which reuses an existing sibling -- durably, across passes, since
-  // it searches tes->fun->ess exactly like find_or_make_filtered_
-  // entry_set does -- rather than one each. 073 proved (type x
-  // display) is bounded, so this is a finite fan-out, not a new
-  // divergence source. Flag off (default): identical to the original
-  // skip-on-incompatible behavior.
-  // Resolve cs_es_map's target for THIS edge: the shared product if
-  // display-compatible (or already where the edge is), else -- CSM only
-  // -- a per-display sibling of it; else null (caller must leave the
-  // edge alone, the pre-075 behavior).
   // The display no longer gates this route: it is built for make_AVar's
   // enclosing-scope resolution, not used as contour identity, so an edge
   // whose lexical display differs from the product's is routed into the
@@ -5774,33 +5361,21 @@ static uint group_signature(Vec<AEdge *> &these_edges, Fun *f) {
     }
     h += (uint)(uintptr_t)t * open_hash_primes[i++ % 256];
   }
-  // ifa/issues/101: the RETURN term makes this signature depend on which
-  // contour the group is CURRENTLY routed to -- `x->rets[r]->lvalue` gets
-  // its type from the callee, so the same group hashes differently
-  // depending on where it already sits. That lets the ledger hold a
-  // CYCLE: measured on linalg's __deepcopy__, gsig 16821760 (recorded
-  // p40) says the home is es 692 and gsig 33861632 (p58) says it is es
-  // 792, so the group alternates 792 -> 692 -> 792 to the pass cap with
-  // no growth and no progress.
-  //
-  // A group's identity should be a property of the GROUP -- the callers,
-  // their argument types, the callee function -- not of the routing
-  // decision already made about it. For a fixed `f` and fixed argument
-  // types the return type is a consequence of the analysis, not an
-  // independent discriminator, so dropping the term collapses the two
-  // signatures into one. PYC_GSIGRET=1 restores the old behaviour.
-  if (gsigret_enabled()) {
-    int nrets = these_edges[0]->rets.n;
-    for (int r = 0; r < nrets; r++) {
-      AType *t = fa->type_world.bottom_type;
-      for (AEdge *x : these_edges)
-        if (r < x->rets.n && x->rets[r]->lvalue) {
-          AType *rt = x->rets[r]->lvalue->out->type;
-          if (!rt->n) return 0;  // wildcard: no identity yet
-          t = type_union(t, rt);
-        }
-      h += (uint)(uintptr_t)t * open_hash_primes[i++ % 256];
-    }
+  // The RETURN term. It makes this signature depend on which contour the
+  // group is currently routed to, which looked like the cause of linalg's
+  // __deepcopy__ ledger cycle (ifa/101). Dropping it (PYC_GSIGRET=0)
+  // measured exactly inert on go, linalg, plcfrs and sudoku5, so the cycle
+  // is in the argument term; the switch was deleted (ifa/146).
+  int nrets = these_edges[0]->rets.n;
+  for (int r = 0; r < nrets; r++) {
+    AType *t = fa->type_world.bottom_type;
+    for (AEdge *x : these_edges)
+      if (r < x->rets.n && x->rets[r]->lvalue) {
+        AType *rt = x->rets[r]->lvalue->out->type;
+        if (!rt->n) return 0;  // wildcard: no identity yet
+        t = type_union(t, rt);
+      }
+    h += (uint)(uintptr_t)t * open_hash_primes[i++ % 256];
   }
   return h ? h : 1;  // 0 is reserved for "no identity" / filtered-path keys
 }
@@ -6439,10 +6014,6 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       }
     }
   Lnormal_split:;
-    // ifa/issues/074: set when the ledger's recorded home is proven to be
-    // no longer a home for this group. Read again in the record path
-    // below, where mode 2 refreshes the entry.
-    bool home_ok = true;
     if (avpos && gsig) {
       SplitDecision *d = fa->ledger_find(es->fun, cur_split_stage, avpos, part, gsig);
       route_d = d;  // ifa/issues/055: visible at the routing block below
@@ -6465,28 +6036,11 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       // it was the dominant reason a group with a recorded product
       // re-minted instead of routing (074's `es_othermint`, 064's
       // phantom method display).
-      // ifa/issues/074: is the recorded home still a home for THIS
-      // group? The self-product branch above has an elaborate staleness
-      // test (SELFPROD modes 3/4/5, on the durable type key); this ROUTE
-      // had none at all, and the asymmetry is a period-2 generator.
-      // Measured on tests/deepcopy_recursive_nested_growth.py: the
-      // ledger routes a group of `total` into es 119 every even pass,
-      // and the splitter -- correctly, because 119 also holds
-      // stay_edges the group is type-incompatible with -- ejects it
-      // again every odd pass, for ever. Re-check the group against what
-      // actually lives in the product now, and treat an incompatible
-      // home as a stale entry.
-      if (routegate_enabled() && d && d->product && d->product != es && these_edges.n && these_edges[0]->args.n) {
-        for (AEdge *y : d->product->edges) if (y && y->args.n) {
-          bool c = fsetters ? edge_sset_compatible_with_edge(these_edges[0], y)
-                            : (bool)edge_type_compatible_with_edge(these_edges[0], y, d->product, fmark);
-          if (!c) { home_ok = false; break; }
-        }
-        if (getenv("IFA_DBG_CHURN") && !home_ok)
-          fprintf(stderr, "[churn-stale] p=%d fun=%s es=%d product=%d INCOMPATIBLE-HOME\n", analysis_pass,
-                  es->fun->sym->name ? es->fun->sym->name : "?", es->id, d->product->id);
-      }
-      if (d && d->pass_made != analysis_pass && d->product && d->product != es && home_ok) {
+      // A route is not re-checked against what now lives in the product.
+      // Gating it (PYC_ROUTEGATE) stopped deepcopy_recursive_nested_growth's
+      // period-2 churn only by minting instead (ess 144 -> 279); deleted
+      // (ifa/074, ifa/146). PYC_SELFPROD=6 fixes the oscillation instead.
+      if (d && d->pass_made != analysis_pass && d->product && d->product != es) {
         product = d->product;
         // ifa/issues/101: break a ledger cycle. If `product` was itself
         // routed to `es` earlier, the two contours are, by the ledger's
@@ -6671,24 +6225,6 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
           else if (d->pass_made != analysis_pass) {  // intra-pass repeats aren't re-derivation
             ++fa->dup_split_attempts;
             ++fa->rederive_churn;  // minted a product the ledger already named
-            // ifa/issues/074 mode 2: the recorded home was proven stale
-            // above (the group is type-incompatible with what now lives
-            // in it), and the splitter has just re-homed the group
-            // somewhere that IS compatible. Freezing the pass-11 answer
-            // is what makes the oscillation permanent -- the route drags
-            // the group back every other pass and the splitter correctly
-            // ejects it again. Adopt the new home instead. Deliberately
-            // NOT an unconditional refresh: the ledger's value is that a
-            // decision is durable, so it is only revised on proof that
-            // it has become wrong.
-            if (routegate_enabled() >= 2 && !home_ok) {
-              if (getenv("IFA_DBG_CHURN"))
-                fprintf(stderr, "[churn-refresh] p=%d fun=%s es=%d %d -> %d\n", analysis_pass,
-                        es->fun->sym->name ? es->fun->sym->name : "?", es->id, d->product ? d->product->id : -1,
-                        gproduct->id);
-              d->product = gproduct;
-              d->pass_made = analysis_pass;
-            }
             if (getenv("IFA_DBG_INCOMPAT"))
               fprintf(stderr, "REDERIVE p=%d GROUP fun=%s#%d es=%d recorded=%d now=%d first_pass=%d\n",
                       analysis_pass, es->fun->sym->name ? es->fun->sym->name : "?", es->fun->sym->id, es->id,
@@ -7820,71 +7356,19 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
 
 
 
-// 0 = pointer-shaped, 1 = already-mixed (undischargeable), otherwise the basic
-// type Sym. Comparable by value, which is all the partition needs.
-// ifa/157 probe: is this key STABLE across passes? A split decision is durable
-// (`cs_map->put`), so a key derived from types that move between passes records
-// a decision the next pass would not have made.
-static Map<AVar *, uintptr_t> rk_last;
-
-static uintptr_t setter_repr_key_raw(AVar *starter);
-static uintptr_t setter_repr_key(AVar *starter) {
-  uintptr_t k = setter_repr_key_raw(starter);
-  if (getenv("IFA_DBG_REPRKEY")) {
-    uintptr_t prev = rk_last.get(starter);
-    if (!prev) ++census.rk_new; else if (prev == k + 2) ++census.rk_same; else ++census.rk_changed;
-    rk_last.put(starter, k + 2);  // +2 so 0 means "unseen"
-  }
-  return k;
-}
-static uintptr_t setter_repr_key_raw(AVar *starter) {
-  if (!starter->setters) return 0;
-  Vec<Sym *> basics;
-  int nonbasic = 0;
-  for (AVar *s : *starter->setters) if (s && s->out && s->out->type)
-    for (CreationSet *c : s->out->type->sorted) {
-      if (!c || !c->sym || c->sym == sym_nil_type) continue;
-      if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b); else ++nonbasic;
-    }
-  const int nb = basics.set_count();
-  if (!nb) return 0;
-  if (nb == 1 && !nonbasic) {
-    for (Sym *b : basics) if (b) return (uintptr_t)b;
-  }
-  return 1;
-}
-
 [[nodiscard]] static int split_css(Vec<AVar *> &starters) {
   int analyze_again = 0;
   Vec<CreationSet *> css;
   for (AVar *av : starters) form_Map(CSMapElem, x, *av->cs_map) if (fa->css_set.set_in(x->value)) css.set_add(x->value);
-  // ifa/133: a CreationSet whose element cannot be represented is a demand to
-  // SPLIT THAT CreationSet, and setter equivalence is the partition that can
-  // express it -- a `str` writer and a `Body` writer are different setters.
-  // Candidates were derived only from `starters`, i.e. only from setter
-  // confluences, so a CS carrying the demand was never offered here at all.
-  // Measured on `bh`: cs=1180 (8 defs, elem {str, Body, tuple, Cell}) appears
-  // ZERO times in this function.
-  if (elemsetter_enabled())
-    for (CreationSet *cs : fa->css)
-      if (cs && cs->sym && fa->css_set.set_in(cs) && !css.set_in(cs) && cs_elem_irrepresentable(cs)) {
-        css.set_add(cs);
-        ++census.es_added;
-      }
+  // ifa/133: PYC_ELEMSETTER (offer an irrepresentable-element CreationSet
+  // here and seed it from its own creation points) was inert on all 77
+  // corpus programs (sweep check__PYC_ELEMSETTER_1__e254f017+dcb2b1b0);
+  // deleted by ifa/146.
   css.set_to_vec();
   qsort_by_id(css);
   for (CreationSet *cs : css) {
     Vec<AVar *> starter_set, save;
     for (AVar *av : starters) if (av->cs_map->get(cs->sym) == cs) starter_set.add(av);
-    // ifa/133: a demand-added CS has no starters by construction (they come
-    // from setter confluences). Seed from its OWN creation points that carry
-    // setters -- those are exactly the AVars this partition is over.
-    if (elemsetter_enabled() && starter_set.n < 2)
-      for (AVar *d : cs->defs)
-        if (d && d->setters && d->cs_map && d->cs_map->get(cs->sym) == cs && !starter_set.in(d)) {
-          starter_set.add(d);
-          ++census.es_seeded;
-        }
     if (getenv("IFA_DBG_SCSS")) {
       fprintf(stderr, "[scss] p=%d cs=%d sym=%s starters=%d defs=%d\n", analysis_pass, cs->id,
               (cs->sym && cs->sym->name) ? cs->sym->name : "?", starter_set.n, cs->defs.set_count());
@@ -7918,12 +7402,11 @@ static uintptr_t setter_repr_key_raw(AVar *starter) {
     while (starter_set.n > 1) {
       AVar *av = starter_set[0];
       Vec<AVar *> compatible_set;
-      const int minmode = settermin_enabled();
-      const uintptr_t avkey = minmode ? setter_repr_key(av) : 0;
+      // The finest partition setter equivalence induces. The coarsest
+      // representable one (PYC_SETTERMIN) broke the dict split, and its
+      // "exposed bug" was its own damage (ifa/157 Correction 2); deleted.
       for (AVar *v : starter_set) {
-        const bool together = minmode ? (setter_repr_key(v) == avkey)
-                                      : (same_eq_classes(v->setters, av->setters) != 0);
-        if (together)
+        if (same_eq_classes(v->setters, av->setters))
           compatible_set.set_add(v);
         else
           save.add(v);
@@ -8725,75 +8208,6 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
   return nullptr;
 }
 
-// ifa/129: split a contour by the TYPES its callers pass, so a shared
-// allocation site becomes more than one creation point. See the use in
-// split_css_by_defs' defs==1 rung.
-[[nodiscard]] static int split_es_by_arg_types(CreationSet *cs, EntrySet *bes, AVar *demand_av, bool dbg) {
-  if (!bes || bes->split) return 0;
-  Vec<AEdge *> all_edges;
-  for (AEdge *e : bes->edges) if (e && e->args.n) all_edges.add(e);
-  qsort_by_id(all_edges);
-  if (all_edges.n < 2) {
-    if (dbg)
-      fprintf(stderr, "[esdefs1] p=%d cs=%d es=%d fun=%s DECLINED: %d arg-carrying in-edge(s)\n", analysis_pass,
-              cs->id, bes->id, (bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "?",
-              all_edges.n);
-    return 0;
-  }
-
-  Vec<Vec<AEdge *> *> groups;
-  std::vector<std::string> sigs;
-  for (AEdge *e : all_edges) {
-    // Signature: the canonical AType pointers this edge passes, at every
-    // position except the receiver. ATypes are hash-consed, so identity is
-    // a sound key. Position 0 is the function symbol, 1 the receiver.
-    Vec<int> ids;
-    int i = 0;
-    form_Map(MapElemMPositionAVarPair, mp, e->args) {
-      AVar *a = mp->value;
-      if (i++ < 2 || !a || !a->out || !a->out->type) continue;
-      for (CreationSet *c : a->out->type->sorted)
-        if (c && c->sym) ids.set_add(c->sym->type ? c->sym->type->id : c->sym->id);
-    }
-    ids.set_to_vec();
-    qsort(ids.v, ids.n, sizeof(ids[0]), [](const void *x, const void *y) {
-      return *(const int *)x - *(const int *)y;
-    });
-    std::string sig;
-    char buf[24];
-    for (int id : ids) { snprintf(buf, sizeof(buf), "%d,", id); sig += buf; }
-    int gi = -1;
-    for (size_t k = 0; k < sigs.size(); k++) if (sigs[k] == sig) { gi = (int)k; break; }
-    if (gi < 0) { sigs.push_back(sig); groups.add(new Vec<AEdge *>); gi = (int)sigs.size() - 1; }
-    groups.v[gi]->add(e);
-  }
-  if (groups.n < 2) {
-    if (dbg)
-      fprintf(stderr, "[esdefs1] p=%d cs=%d es=%d DECLINED: all %d edge(s) pass the same types\n", analysis_pass,
-              cs->id, bes->id, all_edges.n);
-    return 0;
-  }
-  if (groups.n > 2) {
-    for (int i = 2; i < groups.n; i++)
-      for (AEdge *e : *groups.v[i]) groups.v[1]->add(e);
-    groups.n = 2;
-  }
-  ESSplitDecision *dec = new ESSplitDecision;
-  dec->av = demand_av;
-  dec->es = bes;
-  dec->avpos = nullptr;
-  dec->fsetters = SPLIT_TYPE;
-  dec->fmark = SPLIT_VALUE;
-  dec->all_edges.copy(all_edges);
-  dec->groups.add(groups.v[1]);
-  if (dbg)
-    fprintf(stderr, "[esdefs1] p=%d cs=%d SPLIT es=%d fun=%s edges=%d -> 2 group(s) by argument types\n",
-            analysis_pass, cs->id, bes->id,
-            (bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "?", all_edges.n);
-  log(LOG_SPLITTING, "SPLIT ES BY ARG TYPES es %d edges %d\n", bes->id, all_edges.n);
-  return apply_entry_set_split(dec);
-}
-
 // ifa/133: split the blocking contour, grouping its in-edges by WHICH
 // CREATION POINTS of `cs` each one can reach.
 //
@@ -8908,8 +8322,8 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
 // Rebuilt from the CURRENT contours on every call, exactly as
 // `ifa_class_types` does (`for dcpa in range(1, cl.dcpa)`, reading each
 // contour's types now). ifa/129 step 2b item 1 records why that matters:
-// pyc's `cselem_shape_canon` never rebuilds, so an entry that drifts keeps
-// answering forever. There is no index here to go stale.
+// pyc's old `cselem_shape_canon` (deleted) never rebuilt, so an entry that
+// drifted kept answering forever. There is no index here to go stale.
 //
 // Read-only on purpose: only contours that ALREADY have an element AVar are
 // considered (`x->added_element_var`), so this never calls the accessor that
@@ -9285,102 +8699,15 @@ static bool cs_elem_irrepresentable(CreationSet *cs) {
   if (!cs || !cs->sym) return false;
   if (cs->sym->element && cs->sym->element->var && cs->added_element_var)
     if (elem_irrepresentable(unique_AVar(cs->sym->element->var, cs))) return true;
-  // ifa/133: a container has TWO content channels (ifa/104) -- the generic
-  // element, and the per-index positional `cs->vars` a literal fills. This
-  // test only ever looked at the first, so a CreationSet whose POSITIONAL
-  // SLOT is irrepresentable raised no demand at all.
-  //
-  // `sudoku3`: `TRIPLETS = [[0,1,2],[3,4,5],[6,7,8]]` puts the outer arity-3
-  // list and its three inner arity-3 lists on ONE contour (identity is
-  // sym x arity), so cs=1022's slots hold {int64, list, tuple} -- one basic
-  // and two non-basics, which `elem_irrepresentable` already calls
-  // irrepresentable -- while its element channel is EMPTY. Measured: cs=1022
-  // is DEMAND-ADDED zero times. The demand exists; nothing was looking at
-  // the channel holding it.
-  //
-  // Same fallback shape `cs_content_avars` already uses for the CS flow
-  // graph (ifa/146 C): element if there is one, positional vars otherwise.
-  if (csslotdemand_enabled())
-    for (AVar *v : cs->vars)
-      if (v && v->out && elem_irrepresentable(v)) return true;
+  // ifa/133: PYC_CSSLOTDEMAND also asked the per-index positional slots
+  // (`sudoku3`'s TRIPLETS). Measured, it fixed nothing, cost +575
+  // EntrySets / +2804 CreationSets on the programs that still compiled,
+  // and made plcfrs time out (sweep
+  // check__PYC_CSSLOTDEMAND_1__e254f017+dcb2b1b0); deleted by ifa/146.
   return false;
 }
 
 
-
-// ifa/133/143: the CONSTRUCTION-TIME SLOT key. What types was this creation
-// point built with? For a literal that is `make_kind`'s operands, read in
-// the def's own contour -- so `[0,1,2]` (int slots), the outer
-// `[[0,1,2],[3,4,5],[6,7,8]]` (list slots) and a same-arity tuple literal
-// all get different signatures even though they share a CreationSet.
-//
-// This is the key ifa/133's "what other representation properties are
-// knowable AT CONSTRUCTION" asks for. It is type-side and legitimate --
-// CLAUDE.md allows identity to key on deduced TYPES -- and unlike an
-// element union it is observable at the moment of the merge, so it does not
-// have the lag that defeats demand-driven tests. Keyed on Sym::id, never a
-// name.
-//
-// Needed because the MEMBER key is empty for a container that never reaches
-// an instance variable: `sudoku3`'s TRIPLETS is a module-level global, so
-// all five of its creation points have the same (empty) member signature.
-static void cs_slot_signature(AVar *d, std::string &out) {
-  out.clear();
-  if (!d || !d->var || !d->var->def || !d->contour_is_entry_set) return;
-  PNode *pn = d->var->def;
-  EntrySet *des = (EntrySet *)d->contour;
-  char buf[32];
-  for (int i = 0; i < pn->rvals.n; i++) {
-    AVar *a = make_AVar(pn->rvals.v[i], des);
-    out += "|";
-    if (!a || !a->out || !a->out->type) continue;
-    Vec<int> ids;
-    for (CreationSet *c : a->out->type->sorted)
-      if (c && c->sym) ids.set_add(c->sym->type ? c->sym->type->id : c->sym->id);
-    ids.set_to_vec();
-    qsort(ids.v, ids.n, sizeof(ids[0]),
-          [](const void *x, const void *y) { return *(const int *)x - *(const int *)y; });
-    for (int id : ids) { snprintf(buf, sizeof(buf), "%d,", id); out += buf; }
-  }
-}
-
-// Members reachable forward from `d`, as a canonical string of Sym ids.
-static void cs_member_signature(AVar *d, std::string &out) {
-  out.clear();
-  if (!d) return;
-  Vec<AVar *> seen, work;
-  seen.set_add(d);
-  work.add(d);
-  Vec<int> ids;
-  const int cap = 20000;  // bounded: this runs per def, per candidate, per pass
-  for (int i = 0; i < work.n && i < cap; i++)
-    for (AVar *f : work.v[i]->forward)
-      if (f && seen.set_add(f)) {
-        work.add(f);
-        // A CreationSet-contoured AVar with a named Var IS a member -- but
-        // only members of REAL objects name a distinction worth splitting
-        // on. A closure's captured slots are per-contour by construction
-        // (creation_point mints closures unique per site x contour), so
-        // counting them makes the signature nearly unique per creation
-        // point, which is a FAN wearing a type key -- measured: defs=8 ->
-        // 8 groups, defs=4 -> 4 groups. Structural test on `sym_closure`,
-        // never on the name (CLAUDE.md).
-        if (!f->contour_is_entry_set && f->contour != GLOBAL_CONTOUR && f->var && f->var->sym &&
-            f->var->sym->name) {
-          CreationSet *oc = (CreationSet *)f->contour;
-          if (oc && oc->sym && oc->sym != sym_closure) ids.set_add(f->var->sym->id);
-        }
-      }
-  ids.set_to_vec();
-  qsort(ids.v, ids.n, sizeof(ids[0]), [](const void *a, const void *b) {
-    return *(const int *)a - *(const int *)b;
-  });
-  char buf[24];
-  for (int id : ids) {
-    snprintf(buf, sizeof(buf), "%d,", id);
-    out += buf;
-  }
-}
 
 // ifa/074 option 0b: THE OWNER LIFT -- setter splitting through a
 // container's own containers.
@@ -9733,27 +9060,6 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   // CreationSet. So walk each violation backward and offer every CreationSet
   // on the path -- the one that MERGED is generally upstream of the one where
   // the union is observed.
-  // ifa/129: which CreationSets a VIOLATION named, kept apart from the ones
-  // a mere type confluence named. The defs==1 rung below needs a demand,
-  // and "this CreationSet has a union" is a fact, not one.
-  Vec<CreationSet *> viol_named;
-  if (violcs_enabled() >= 3)
-    for (ATypeViolation *v : fa->type_violations) if (v && v->av) {
-      Vec<AVar *> seen, work;
-      seen.set_add(v->av);
-      work.add(v->av);
-      for (int i = 0; i < work.n && i < 20000; i++)
-        for (AVar *b : work.v[i]->backward)
-          if (b && seen.set_add(b)) {
-            work.add(b);
-            if (!b->contour_is_entry_set && b->contour != GLOBAL_CONTOUR)
-              if (CreationSet *bcs = (CreationSet *)b->contour)
-                if (fa->css_set.set_in(bcs)) {
-                  viol_named.set_add(bcs);
-                  if (tc_cs_dropped.set_add(bcs)) ++viol_cs_deferred;
-                }
-          }
-    }
   // issues/128 step 3: a MIXED field write is a demand. Asked on the
   // CONVERGED types, from this pass's writes: a receiver whose record
   // classes split into those with their OWN evidence for the field (a write
@@ -9762,7 +9068,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   // cannot see this at convergence: the promotion itself makes every member
   // "have" the field.) The union is formed upstream of the write, so walk
   // the receiver's value flow backward and name every CreationSet on it,
-  // exactly as a violation does (viol_named). The rungs below then
+  // exactly as a violation does. The rungs below then
   // partition the one that merged, or decline when the union is genuine.
   Vec<CreationSet *> field_named;
   // Only when no higher stage acted this pass (`quiescent`). Not because
@@ -10052,8 +9358,8 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   }
   Vec<CreationSet *> demanded;
   for (CreationSet *cs : css)
-    if (cs && cs->sym && (viol_reach.set_in(cs) || viol_named.set_in(cs) || field_named.set_in(cs) ||
-                          dispatch_named.set_in(cs) || cs_elem_irrepresentable(cs)))
+    if (cs && cs->sym && (viol_reach.set_in(cs) || field_named.set_in(cs) || dispatch_named.set_in(cs) ||
+                          cs_elem_irrepresentable(cs)))
       demanded.set_add(cs);
   // ifa/152: BACKTRACK THE DEMAND. Every candidate gathered above was
   // nominated because the union is observed AT it; a candidate with one
@@ -10169,70 +9475,14 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
                 des ? des->edges.n : -1, formals, splittable, last_why);
       }
     }
-    // ifa/129 third clause. One creation point means CS-side partitioning
-    // has nothing to work with, so if the element is irrepresentable the
-    // separation must come from duplicating the SITE -- which means
-    // splitting the EntrySet that owns it. Type-side splitting has already
-    // declined for these (that is why the confluence reached this stage),
-    // so the caller identity is the only remaining handle. Demand decides
-    // whether; the call site decides only which.
-    if (cscallsite_enabled() && defs.n == 1) {
-      AVar *d = defs.v[0];
-      AVar *elem = cs->sym->element && cs->sym->element->var && cs->added_element_var
-                       ? unique_AVar(cs->sym->element->var, cs)
-                       : nullptr;
-      if (d && d->contour_is_entry_set && elem && elem_irrepresentable(elem)) {
-        if (split_es_by_call_site((EntrySet *)d->contour, elem, dbg, build_cs_flow_graph(cs))) {
-          analyze_again = 1;
-          continue;
-        }
-      }
-    }
-    // ifa/129: A DEMAND ON A defs==1 CreationSet IS A DEMAND TO GIVE ITS
-    // ALLOCATION SITE MORE THAN ONE CREATION POINT.
-    //
-    // "Single creation point" has been read as "nothing to separate" since
-    // route 4 was written. It is not: it means the separation has to happen
-    // one level UP, at whichever contour makes the site occur more than
-    // once.
-    //
-    // `pygasus` is the clean instance. Its four handler tables -- 14
-    // addressing modes, ~70 opcodes, `mmc*Load`, `mmc*Write` -- all lower
-    // to the same `list` allocation site, so start-merged gives ONE contour
-    // holding all 88 classes with `defs=1`, and `adrmode[opcode]._exec()`
-    // cannot dispatch over it. The default arm gets four contours purely
-    // from `creation_point` minting per (site x contour); this rung is how
-    // the demand-driven arm reaches the same answer.
-    //
-    // Demand: a VIOLATION named this CreationSet (`viol_named`), not merely
-    // a type confluence. A union that exists is a fact.
-    // Parts: the in-edges of the climbed contour, grouped by the TYPES they
-    // pass -- the four table constructions carry four different element
-    // types, so the key is type-shaped, not a caller count. Coalesced to
-    // two, as ifa/133's ES-block split and ifa/146 E both do: separate
-    // minimally, re-derive, ask again.
-    if (esdefs1_enabled() && defs.n == 1 && getenv("IFA_DBG_ESDEFS1"))
-      fprintf(stderr, "[esdefs1?] p=%d cs=%d sym=%s viol_named=%d es_contour=%d elem_n=%d\n", analysis_pass, cs->id,
-              cs->sym->name ? cs->sym->name : "?", viol_named.set_in(cs) ? 1 : 0,
-              (defs.v[0] && defs.v[0]->contour_is_entry_set) ? 1 : 0,
-              (cs->sym->element && cs->sym->element->var && cs->added_element_var &&
-               unique_AVar(cs->sym->element->var, cs) && unique_AVar(cs->sym->element->var, cs)->out &&
-               unique_AVar(cs->sym->element->var, cs)->out->type)
-                  ? unique_AVar(cs->sym->element->var, cs)->out->type->sorted.n : -1);
-    if (esdefs1_enabled() && defs.n == 1 && (viol_named.set_in(cs) || field_named.set_in(cs) || dispatch_named.set_in(cs)) && defs.v[0] &&
-        defs.v[0]->contour_is_entry_set && defs.v[0]->contour != GLOBAL_CONTOUR) {
-      AVar *elem = cs->sym->element && cs->sym->element->var && cs->added_element_var
-                       ? unique_AVar(cs->sym->element->var, cs)
-                       : nullptr;
-      if (elem && elem->out && elem->out->type && elem->out->type->sorted.n > 1) {
-        int hops = 0;
-        EntrySet *target = es_climb_to_choice((EntrySet *)defs.v[0]->contour, &hops);
-        if (split_es_by_arg_types(cs, target, elem, dbg)) {
-          analyze_again = 1;
-          continue;
-        }
-      }
-    }
+    // ifa/129 third clause -- split the owning EntrySet by CALL SITE for an
+    // irrepresentable element on one creation point -- was PYC_CSCALLSITE.
+    // Modes 1 and 3 fanned, mode 2 measured a corpus-wide wash; deleted
+    // (ifa/146).
+    // ifa/129: PYC_ESDEFS1 (a violation on a defs==1 CreationSet climbs to
+    // the contour that makes its site occur once and splits it by argument
+    // types) was inert on all 77 corpus programs (sweep
+    // check__PYC_ESDEFS1_1__e254f017+dcb2b1b0); deleted by ifa/146.
     if (defs.n < 2) {
       if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
           split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
@@ -10240,7 +9490,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         continue;
       }
       // ifa/156: a channel written both an int and a float, on a contour
-      // with ONE creation point. As with the third clause above, nothing on
+      // with ONE creation point. Nothing on
       // the CreationSet side can be partitioned, so the site itself has to
       // occur twice: climb to the nearest contour with more than one
       // caller and split it by which numeric kind each caller's result
@@ -10497,49 +9747,11 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s KEY sets=%d defs=%d groups=%d informative=%d\n",
                 analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", g ? g->keys.n : 0, defs.n, ngroups,
                 informative);
-      // ifa/133: the MEMBER key, tried when the CONTENT key names no
-      // partition -- either it covers none of the defs, or every def landed
-      // in one group. That is exactly the state `bh` is stuck in.
-      bool by_member = false;
-      // Tried whenever the member key could name a FINER partition than the
-      // content key, not only when the content key fails outright. On `bh`
-      // the content key does not fail -- it returns 2 groups and both still
-      // carry `{str, Body}` -- so a failure-only fallback never fires. The
-      // demand is unsatisfied either way; the finer partition is the one
-      // that can answer it.
-      if (csmember_enabled()) {
-        std::vector<std::string> msig((size_t)defs.n);
-        int m_informative = 0;
-        for (int i = 0; i < defs.n; i++) {
-          cs_member_signature(defs.v[i], msig[(size_t)i]);
-          if (!msig[(size_t)i].empty()) m_informative = 1;
-        }
-        // ifa/133: if the member key names nothing (a container that never
-        // reaches an instance variable), fall back to the construction-time
-        // slot key, which does not depend on reaching one.
-        if (!m_informative && csmember_enabled() >= 2) {
-          for (int i = 0; i < defs.n; i++) {
-            cs_slot_signature(defs.v[i], msig[(size_t)i]);
-            if (!msig[(size_t)i].empty()) m_informative = 1;
-          }
-        }
-        if (m_informative) {
-          int content_groups = ngroups;
-          sig.swap(msig);
-          regroup();
-          if (ngroups >= 2 && ngroups > content_groups) {
-            by_member = true;
-            informative = 1;
-            if (dbg)
-              fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d MEMBER-KEY -> %d groups\n", analysis_pass,
-                      cs->id, cs->sym->name ? cs->sym->name : "?", defs.n, ngroups);
-          } else {
-            sig.swap(msig);  // put the content signature back for the log below
-            regroup();
-          }
-        }
-      }
-      (void)by_member;
+      // ifa/133: PYC_CSMEMBER (a MEMBER key -- which instance variables a
+      // creation point reaches -- and, mode 2, a construction-time slot key)
+      // fixed no program and cost +828 EntrySets / +2899 CreationSets
+      // (sweeps check__PYC_CSMEMBER_{1,2}__e254f017+dcb2b1b0, identical);
+      // deleted by ifa/146.
       // ifa/156: the NUMERIC key, when the content key names one group and
       // a channel is written both an int and a float. Built over the mixed
       // channels only, with the call-, receiver- and object-matched walk, so
@@ -10692,30 +9904,14 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       for (int i = 0; i < defs.n; i++) {
         if (gcs[(size_t)gid[(size_t)i]] == cs) continue;  // stays with the parent
         if (!gcs[(size_t)gid[(size_t)i]]) {
-          // ifa/074: shedskin's "reuse contour" (ifa_split_no_confusion,
-          // infer.py:1585). The group's element type is the union of the
-          // assign sets it lies on; if a live CreationSet of this sym
-          // already has exactly that element, the group JOINS it. Minting
-          // unconditionally gave every re-derivation of the same partition
-          // a fresh CS -- a new type, so a new ES split, so another
-          // creation point to partition: one level per pass on
-          // tests/deepcopy_recursive_nested_growth.py.
-          CreationSet *join = nullptr;
-          if (csdefreuse_enabled() && g) {
-            AType *want = nullptr;
-            const std::string &gs = sig[(size_t)i];
-            for (int k = 0; k < g->keys.n && k < (int)gs.size(); k++)
-              if (gs[(size_t)k] == '1' && g->keys.v[k]) want = want ? type_union(want, g->keys.v[k]) : g->keys.v[k];
-            if (want) join = cs_reuse_contour(cs, want, dbg);
-          }
-          if (join) {
-            gcs[(size_t)gid[(size_t)i]] = join;
-          } else {
-            CreationSet *ncs = new CreationSet(cs);
-            ncs->split = cs;
-            if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
-            gcs[(size_t)gid[(size_t)i]] = ncs;
-          }
+          // A new contour, shared by the group. Joining an existing CS whose
+          // element equals the group's (shedskin's "reuse contour") was
+          // PYC_CSDEFREUSE, deleted: it regressed sudoku5 and sunfish
+          // (ifa/074, ifa/146).
+          CreationSet *ncs = new CreationSet(cs);
+          ncs->split = cs;
+          if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
+          gcs[(size_t)gid[(size_t)i]] = ncs;
         }
         CreationSet *ncs = gcs[(size_t)gid[(size_t)i]];
         defs.v[i]->cs_map->put(cs->sym, ncs);
@@ -10759,14 +9955,11 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   // CreationSets unchanged at 2736, pyc suite 313 passed / 0 failed on both
   // backends. It fired on one program (`plcfrs`, ess 1102 -> 1094) and cost
   // contours where it did.
-  // ifa/157: the SECOND gate on the CS-by-setter split. `split_css` is the
-  // author's stated criterion -- "splitting must be by demand, for cs it is by
-  // setters" -- and it is preempted here whenever any earlier stage acted this
-  // pass, on top of the outer `!analyze_again` gate in run_split_stages. Both
-  // must be lifted for it to run at all: measured on `sudoku4`,
-  // PYC_SETTERGATE=1 lifts the outer one and `split_css REACHED` still prints
-  // ZERO times while this preemption prints 17. PYC_SETTERGATE=2 lifts both.
-  if (analyze_again && settergate_level() < 2) {
+  // ifa/157: the SECOND gate on the CS-by-setter split: preempted whenever
+  // an earlier stage acted this pass, on top of run_split_stages' outer
+  // `!analyze_again` gate. Measured on `sudoku4`, lifting only the outer one
+  // left `split_css REACHED` at zero while this preemption printed 17.
+  if (analyze_again) {
     if (dbg) fprintf(stderr, "[sfs] p=%d analyze_again preempts split_css\n", analysis_pass);
     return 1;
   }
@@ -10913,18 +10106,6 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
     }
     if (cs->added_element_var) {
       AVar *av = get_element_avar(cs);
-      // ifa/133: an element that cannot be REPRESENTED is a demand to split
-      // the CreationSet, and setter equivalence is the partition that can
-      // express it -- a `str` writer and a `Body` writer are different
-      // setters. Offer it unconditionally, not only when its setters already
-      // disagree with a consumer's: that test presumes the separation this
-      // is trying to create. Measured on `bh`, cs=1180 (8 defs, element
-      // {str, Body, tuple, Cell}) never reached split_css at all.
-      if (elemsetter_enabled() && av && !av->contour_is_entry_set &&
-          av->contour != GLOBAL_CONTOUR && cs_elem_irrepresentable(cs)) {
-        setters_confluences.set_add(av);
-        ++census.es_added;
-      }
       if (sos_type_conflict(av))
       for (AVar *x : av->forward) if (x) {
         if (!av->contour_is_entry_set && av->contour != GLOBAL_CONTOUR) {
@@ -10947,62 +10128,6 @@ static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   // unstable order here was a live, frequently-exercised source of
   // pass-to-pass nondeterminism, not just a theoretical gap.
   qsort_by_id(setters_confluences);
-}
-
-// ifa/148: SPLIT THE WHOLE ES PATH TO THE CONVERGENCE, NOT ONE LEVEL PER
-// PASS.
-//
-// A filtered contour narrows its formal; for that narrowing to reach the
-// next callee, THAT callee needs its own filtered product -- which only
-// the splitter makes, and it runs once per pass. So a separation
-// propagates exactly one contour per pass. Measured on
-// `tests/tuple_compare.py`, the same narrowing walks `len` and
-// `__getitem__` at p=11 and `__len__` at p=12, with the types moving on a
-// pass that split nothing.
-//
-// That is why stage 1 claims ~35 of 41 passes on `sudoku5` and starves
-// everything below it (ifa/148 Part 2): it is doing real work, one hop at
-// a time, for as many passes as the path is long.
-//
-// So take the whole path at once. From a confluence, walk BACKWARD to the
-// formals that carry a union feeding it, and offer them as imprecisions in
-// the SAME pass. This is a scheduling change, not a policy one: every
-// contour added here is one the existing rung would have split on a later
-// pass anyway, by the same type-shaped test, and the partition at each is
-// unchanged (decide_entry_set_split still decides it). What changes is
-// only WHEN.
-static void add_es_path_to_convergence(AVar *av, Vec<AVar *> &out) {
-  if (!espath_enabled() || !av || !av->out || !av->out->type) return;
-  AType *want = av->out->type;
-  Vec<AVar *> seen, work;
-  seen.set_add(av);
-  work.add(av);
-  for (int h = 0; h < work.n && h < 20000; h++)
-    for (AVar *b : work.v[h]->backward) {
-      if (!b || !seen.set_add(b)) continue;
-      work.add(b);
-      if (!b->out || !b->out->type || b->out->type->sorted.n < 2) continue;
-      if (!b->contour_is_entry_set || b->contour == GLOBAL_CONTOUR) continue;
-      if (!b->var || !b->var->is_formal || b->is_lvalue) continue;
-      // The formal must carry THE SAME MERGE, not merely touch it.
-      //
-      // "Shares a CreationSet with the confluence" is too weak: on a
-      // program where one big union is everywhere, every upstream formal
-      // overlaps it and the walk becomes a fan by reachability. Measured
-      // on `sudoku5`: ess 631 -> 719, css 1478 -> 1903, and it stops
-      // compiling.
-      //
-      // The right test is CONTAINMENT. A formal is on the path iff its
-      // union is a SUBSET of the confluence's -- i.e. it holds part of the
-      // same merge and nothing else. A formal carrying types the
-      // confluence does not have is a different merge and is not ours to
-      // split; a formal already down to one CreationSet is separated
-      // already and ends the path.
-      bool subset = true;
-      for (CreationSet *c : b->out->type->sorted)
-        if (c && !want->set_in(c)) { subset = false; break; }
-      if (subset) out.set_add(b);
-    }
 }
 
 // ifa/157 PROBE (IFA_DBG_RETCONF): a confluence does NOT come from nowhere.
@@ -11314,21 +10439,6 @@ static AVar *backtrack_to_own_formal(AVar *av) {
 
 [[nodiscard]] static int split_ess_for_type(Vec<AVar *> &imprecisions, int fdynamic) {
   int analyze_again = 0;
-  // ifa/148: expand each confluence to the whole contour path feeding it.
-  Vec<AVar *> expanded;
-  if (espath_enabled() && !fdynamic) {
-    for (AVar *av : imprecisions) if (av) expanded.set_add(av);
-    for (AVar *av : imprecisions) if (av) add_es_path_to_convergence(av, expanded);
-    if (expanded.set_count() > imprecisions.set_count()) {
-      Vec<AVar *> ord;
-      for (AVar *a : expanded) if (a) ord.add(a);
-      qsort_by_id(ord);
-      if (getenv("IFA_DBG_ESPATH"))
-        fprintf(stderr, "[espath] p=%d confluences=%d -> %d with the path\n", analysis_pass, imprecisions.n, ord.n);
-      imprecisions.clear();
-      imprecisions.copy(ord);
-    }
-  }
   // Issue 033 M2b: for the plain (non-dynamic) stage-1 path, DECIDE
   // every confluence's split against the same unmutated, converged
   // state, then APPLY. The old shape decided each confluence against
@@ -11418,7 +10528,7 @@ static AVar *backtrack_to_own_formal(AVar *av) {
           // CreationSet content -- which agrees with this issue's first
           // measurement (99 of 102 dispatch demands landed on a CreationSet)
           // and with `sudoku5`'s 56 polluted contours, 55 of them `defs=1`.
-          if ((getenv("IFA_DBG_ESDEMAND") || splithomo_enabled()) && av->out) {
+          if (getenv("IFA_DBG_ESDEMAND") && av->out) {
             if (atype_irrepresentable(av->out->type)) {
               ++census.ed_seen;
               if (backtrack_to_own_formal(av)) {
@@ -11539,7 +10649,6 @@ static bool result_is_different(AVar *result, AEdge *e) {
 }
 
 
-int viol_cs_deferred = 0;
 
 static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Vec<AVar *> &imprecisions) {
   for (ATypeViolation *v : violations) if (v) {
@@ -11616,98 +10725,17 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
             work.add(b);
       }
     }
-    // ifa/133: a violation on a CS-CONTOURED AVar has no route here. Both
-    // paths in this function are EntrySet-oriented -- the `container` test
-    // wants an ES-contoured value with a container, and `is_call_result`
-    // requires `contour_is_entry_set` outright -- so an irrepresentable
-    // element or member simply falls through and stage 5 reports "N
-    // violations -> 0 imprecisions". Stage 1 already handles the same case
-    // by handing it to route 4 (`tc_cs_dropped`, split_ess_for_type's else
-    // branch); do the same, so the demand reaches the rung that partitions
-    // CreationSets instead of being dropped.
-    if (violcs_enabled() && !v->av->contour_is_entry_set && v->av->contour != GLOBAL_CONTOUR)
-      if (CreationSet *vcs = (CreationSet *)v->av->contour)
-        if (fa->css_set.set_in(vcs)) { tc_cs_dropped.set_add(vcs); ++viol_cs_deferred; }
-    // Mode 2: the violation names the CS where the union is OBSERVED, which
-    // is generally downstream of the CS where it was MADE. On the `bh`
-    // reproducer the violation sits on `reversed`'s result (one creation
-    // point, nothing to partition) while the merge is two hops back, in the
-    // arity-1 literal contour that holds BOTH `["seed"]` and `[None]` and
-    // has two creation points. Walk the demand backward and offer every
-    // CreationSet on the way, so the rung that can partition actually gets
-    // the one that needs it.
-    if (violcs_enabled() >= 2) {
-      Vec<AVar *> seen, work;
-      Vec<CreationSet *> reached;
-      seen.set_add(v->av);
-      work.add(v->av);
-      int leaves = 0;
-      for (int i = 0; i < work.n && i < 20000; i++) {
-        if (!work.v[i]->backward.n) ++leaves;
-        for (AVar *b : work.v[i]->backward)
-          if (b && seen.set_add(b)) {
-            work.add(b);
-            if (!b->contour_is_entry_set && b->contour != GLOBAL_CONTOUR)
-              if (CreationSet *bcs = (CreationSet *)b->contour) {
-                reached.set_add(bcs);
-                if (fa->css_set.set_in(bcs) && tc_cs_dropped.set_add(bcs)) ++viol_cs_deferred;
-              }
-          }
-      }
-      if (getenv("IFA_DBG_VIOLWALK")) {
-        fprintf(stderr, "[violwalk] av=%d var=%s closure=%d leaves=%d CSs_reached=%d:", v->av->id,
-                (v->av->var && v->av->var->sym && v->av->var->sym->name) ? v->av->var->sym->name : "(anon)",
-                seen.set_count(), leaves, reached.set_count());
-        for (CreationSet *c : reached)
-          if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
-        fprintf(stderr, "\n");
-      }
-    }
+    // ifa/133: PYC_VIOLCS (hand a CS-contoured violation to route 4; mode 2
+    // also every CreationSet on its backward closure, mode 3 the same from
+    // route 4) fixed no program: mode 1 inert, mode 3 +1038 CreationSets
+    // (sweeps check__PYC_VIOLCS_{1,2,3}__e254f017+dcb2b1b0); deleted by
+    // ifa/146.
 
-    // ifa/146 E: THE RECEIVER OF THE CONTOUR THE VIOLATION IS IN.
-    //
-    // The CARTESIAN_PRODUCT splitter was removed for asking no demand at
-    // all -- it fanned a contour into one per CreationSet whenever a
-    // positional formal's type held 2..N of them, and "a union exists" is a
-    // fact, not a demand. ifa/146 E states what the replacement must be:
-    // "demand (an unresolved dispatch or an irrepresentable union) plus
-    // dispatch-aware filtering of the RECEIVER, which in single-dispatch OOP
-    // is the position that determines dispatch."
-    //
-    // This is that. The demand is a VIOLATION -- we are inside
-    // collect_violation_imprecisions, reached only from stage 5 with a real
-    // violation in hand. The action is one position, the receiver, so it
-    // cannot be a cartesian product over the formals. And the split itself
-    // is the ordinary type-shaped one: the AVar goes into `imprecisions`
-    // and `split_ess_for_type` partitions it by TYPE COMPATIBILITY, not one
-    // contour per CreationSet.
-    //
-    // The case it is for (ifa/128, ifa/133): `tuple.__eq__` / `__lt__` are
-    // generated UNROLLED, so each slot comparison has its own temporary. One
-    // contour serving many tuple shapes merges every shape's slot types
-    // into that temporary -- measured on `sudoku5`, 22 tuple CreationSets at
-    // one comparison contour and `x` holding {int64, str}, which is a
-    // BOXING violation at every use. Nothing downstream can separate it:
-    // `x` is an ES-contoured temporary, so there is no CreationSet to
-    // partition, and its writers are other `x` AVars in the SAME contour,
-    // so splitting on them duplicates the blob intact. The receiver is the
-    // only handle, and it is a type-shaped one.
-    if (esrecv_enabled() && v->av->contour_is_entry_set && v->av->contour != GLOBAL_CONTOUR) {
-      EntrySet *ves = (EntrySet *)v->av->contour;
-      // Position 0 is the function symbol; 1 is the receiver.
-      if (ves->fun && ves->fun->positional_arg_positions.n > 1) {
-        AVar *rav = ves->args.get(ves->fun->positional_arg_positions.v[1]);
-        if (rav && rav->out && rav->out->type && rav->out->type->sorted.n > 1) {
-          imprecisions.set_add(rav);
-          if (getenv("IFA_DBG_ESRECV"))
-            fprintf(stderr, "[esrecv] p=%d es=%d fun=%s recv=%s spans=%d (violation on %s)\n", analysis_pass,
-                    ves->id, (ves->fun->sym && ves->fun->sym->name) ? ves->fun->sym->name : "?",
-                    (rav->var && rav->var->sym && rav->var->sym->name) ? rav->var->sym->name : "(anon)",
-                    rav->out->type->sorted.n,
-                    (v->av->var && v->av->var->sym && v->av->var->sym->name) ? v->av->var->sym->name : "(anon)");
-        }
-      }
-    }
+    // ifa/146 E: PYC_ESRECV (a violation inside a contour makes its RECEIVER
+    // an imprecision, and a BOXING -- mode 2 also an argument -- violation
+    // splits the contour by which refused basics each caller brings) fixed
+    // no program and broke fysphun (sweeps
+    // check__PYC_ESRECV_{1,2}__e254f017+dcb2b1b0); deleted.
 
     if (is_call_result(v->av)) {
       Vec<AVar *> dispatched;
@@ -11736,146 +10764,6 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
   // without a stable order, which AVar "drives" a given ES's split
   // this pass depends on open-addressed hash-bucket layout.
   qsort_by_id(imprecisions);
-}
-
-// ifa/146 E: the receiver split, run on EVERY pass rather than behind
-// stage 5.
-//
-// Stage 5 (VIOLATION) is where a violation-driven split naturally belongs,
-// and on the programs that need this it NEVER RUNS: it is gated on
-// `!analyze_again` and a finer stage claims every pass. Measured on
-// `sudoku5`, every pass is `analyze_again=1 -> starved` with 573-750
-// violations sitting unacted on -- the same starvation ifa/133 recorded
-// for `bh`. Lifting that gate is not the answer; it was measured at a cost
-// of 16 suite tests.
-//
-// ifa/133 hit this exact wall for route 4 and solved it the same way: the
-// deferral does not need the STAGE. This runs unconditionally, like
-// CS_DEF_PARTITION, and is gated only on the demand.
-//
-// The demand is BOXING specifically -- "an irrepresentable union", which
-// is what ifa/146 E names. A union that merely EXISTS is a fact and is
-// not enough; that is what got the CARTESIAN_PRODUCT splitter removed.
-// And the action is one position, the receiver, so it cannot be a
-// cartesian product over the formals.
-[[nodiscard]] static int split_ess_for_boxing_receivers() {
-  if (!esrecv_enabled()) return 0;
-  int analyze_again = 0;
-  Vec<AVar *> recvs;
-  Vec<EntrySet *> done;
-  const bool dbg = getenv("IFA_DBG_ESRECV") != nullptr;
-  for (ATypeViolation *v : fa->type_violations) {
-    // ifa/146 E's spec names TWO demands: "an unresolved dispatch OR an
-    // irrepresentable union". Only the second (BOXING) was implemented.
-    // The first is an argument violation -- `illegal call argument type
-    // ... illegal: list` -- and it is what `chull` and `tictactoe` hit on
-    // the flag arm, where `set.add`'s `item` unions the element types of
-    // every `set` contour sharing that method.
-    if (!v || !v->type) continue;
-    if (v->kind != ATypeViolation_kind::BOXING &&
-        !(esrecv_enabled() >= 2 && (v->kind == ATypeViolation_kind::PRIMITIVE_ARGUMENT ||
-                                    v->kind == ATypeViolation_kind::SEND_ARGUMENT)))
-      continue;
-    AVar *a = v->av;
-    if (!a || !a->contour_is_entry_set || a->contour == GLOBAL_CONTOUR) continue;
-    EntrySet *es = (EntrySet *)a->contour;
-    if (es->split || !done.set_add(es)) continue;
-    // Position 0 is the function symbol; 1 is the receiver.
-    if (!es->fun || es->fun->positional_arg_positions.n < 2) continue;
-    MPosition *rp = es->fun->positional_arg_positions.v[1];
-    AVar *rav = es->args.get(rp);
-    if (!rav || !rav->out || !rav->out->type || rav->out->type->sorted.n < 2) continue;
-
-    // THE DEMAND'S OWN PARTS: the basic types this union cannot represent
-    // together. Partitioning the receiver by which of THOSE each caller
-    // brings is bounded by the union, not by the receiver -- the receiver
-    // spans 19-27 CreationSets on `sudoku5` and one contour per CS is the
-    // cartesian product this issue removed. (Measured: it does not finish
-    // inside a 900 s timeout, against well under a minute at the default.)
-    // The demand's own parts. For BOXING that is the basic types the union
-    // cannot represent together (two or more, by construction). For an
-    // argument violation it is the SYMS the callee refused -- one is
-    // enough, since "brings it" vs "does not" is already a two-way split.
-    Vec<Sym *> bad;
-    for (CreationSet *c : v->type->sorted)
-      if (c && c->sym)
-        if (Sym *b = to_basic_type(c->sym->type)) bad.set_add(b);
-    const bool boxing = v->kind == ATypeViolation_kind::BOXING;
-    if (boxing) {
-      if (bad.set_count() < 2) continue;
-    } else {
-      bad.clear();
-      for (CreationSet *c : v->type->sorted)
-        if (c && c->sym) bad.set_add(c->sym->type ? unalias_type(c->sym->type) : c->sym);
-      if (!bad.set_count()) continue;
-    }
-
-    Vec<AEdge *> all_edges;
-    for (AEdge *e : es->edges) if (e && e->args.n) all_edges.add(e);
-    qsort_by_id(all_edges);
-    if (all_edges.n < 2) continue;
-
-    Vec<Vec<AEdge *> *> groups;
-    std::vector<std::string> sigs;
-    for (AEdge *e : all_edges) {
-      AVar *act = e->filtered_args.get(rp);
-      if (!act) act = e->args.get(rp);
-      std::string sig;
-      if (act && act->out && act->out->type)
-        for (Sym *b : bad) {
-          bool has = false;
-          for (CreationSet *rc : act->out->type->sorted) {
-            if (!rc) continue;
-            Vec<AVar *> content;
-            cs_content_avars(rc, content);
-            for (AVar *cv : content)
-              if (cv && cv->out && cv->out->type)
-                for (CreationSet *ic : cv->out->type->sorted) {
-                  if (!ic || !ic->sym) continue;
-                  Sym *got = boxing ? to_basic_type(ic->sym->type)
-                                    : (ic->sym->type ? unalias_type(ic->sym->type) : ic->sym);
-                  if (got == b) { has = true; break; }
-                }
-            if (has) break;
-          }
-          sig += has ? '1' : '0';
-        }
-      int gi = -1;
-      for (size_t k = 0; k < sigs.size(); k++) if (sigs[k] == sig) { gi = (int)k; break; }
-      if (gi < 0) { sigs.push_back(sig); groups.add(new Vec<AEdge *>); gi = (int)sigs.size() - 1; }
-      groups.v[gi]->add(e);
-    }
-    if (groups.n < 2) {
-      if (dbg)
-        fprintf(stderr, "[esrecv] p=%d es=%d fun=%s DECLINED: all %d edge(s) bring the same basics\n", analysis_pass,
-                es->id, (es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", all_edges.n);
-      continue;
-    }
-    // Two groups, for the reason ifa/133's ES-block split takes two: the
-    // minimum that separates, then re-derive and ask again. Partition size
-    // can never track the receiver's CreationSet count.
-    if (groups.n > 2) {
-      for (int i = 2; i < groups.n; i++)
-        for (AEdge *e : *groups.v[i]) groups.v[1]->add(e);
-      groups.n = 2;
-    }
-    ESSplitDecision *dec = new ESSplitDecision;
-    dec->av = rav;
-    dec->es = es;
-    dec->avpos = rp;
-    dec->fsetters = SPLIT_TYPE;
-    dec->fmark = SPLIT_VALUE;
-    dec->all_edges.copy(all_edges);
-    dec->groups.add(groups.v[1]);
-    if (dbg)
-      fprintf(stderr, "[esrecv] p=%d es=%d fun=%s recv=%s spans=%d basics=%d edges=%d -> 2 groups\n", analysis_pass,
-              es->id, (es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
-              (rav->var && rav->var->sym && rav->var->sym->name) ? rav->var->sym->name : "(anon)",
-              rav->out->type->sorted.n, bad.set_count(), all_edges.n);
-    if (apply_entry_set_split(dec)) analyze_again = 1;
-  }
-  (void)recvs;
-  return analyze_again;
 }
 
 [[nodiscard]] static int split_for_violations(Vec<ATypeViolation *> &violations) {
@@ -12085,253 +10973,6 @@ static bool cs_is_per_cs_method_class(CreationSet *cs) {
   return analyze_again;
 }
 
-// ifa/issues/075 Piece 2: decide-then-apply for CSM. CSM partitions by
-// CS IDENTITY, not by type compatibility, so this cannot reuse
-// ESSplitDecision/decide_entry_set_split verbatim (075's own note) --
-// it is the CS-identity analog: DECIDE snapshots the receiver union
-// and its edges before any mutation; APPLY (mirroring split_edges'
-// cs_es_map + (CS x display) fan-out, Piece 1 above) acts ONLY on that
-// frozen snapshot, never on live state another decision in the same
-// batch may
-//
-// MEASURED RESULT, corrected from the plan's framing: decide-then-
-// apply alone does NOT remove failure-class 2. Applying more than one
-// decision per pass is actively unsafe without Piece 3 (durable
-// alloc-site keying) -- apply_csm_split's pick_display_variant mints a
-// FRESH sibling EntrySet whenever it doesn't find a compatible one
-// among the ones it minted so far THIS call; nothing gives those
-// siblings a stable cross-pass identity the way
-// find_or_make_filtered_entry_set's CS-level products already have
-// (reused via `!es->filters.some_disjunction(filters)`). So a
-// recurring incompatibility re-mints a NEW sibling every pass instead
-// of reusing the last one, and batching many decisions per pass
-// compounds that into unbounded EntrySet growth -- confirmed
-// empirically: fa->ess.n went 123 -> 2747 in under 8 seconds on
-// dijkstra2 before the per-pass apply cap below was restored, and a
-// naive "scan every candidate, not just the first" version separately
-// dropped the suite from 222/18 (Piece 1's number) to 9/241 by forcing
-// get_element_avar's side effect broadly (fixed: the demand signal
-// below is now read-only, gated on cs->added_element_var, exactly like
-// 075's own dump-mode discipline required). Piece 3 is therefore a
-// hard prerequisite for Piece 2 to add anything beyond Piece 1's
-// already-capped behavior, not an optional refinement -- see the apply
-// loop below.
-// have already moved.
-struct CSMSplitDecision : public gc {
-  AVar *av = nullptr;
-  EntrySet *es = nullptr;
-  MPosition *p = nullptr;
-  AType *ety = nullptr;    // av->out->type at decide time (frozen)
-  Vec<AEdge *> all_edges;  // es->edges at decide time (frozen)
-};
-
-static CSMSplitDecision *decide_csm_split(AVar *av) {
-  EntrySet *es = (EntrySet *)av->contour;
-  if (!av->out || !av->out->type) return nullptr;
-  MPosition *p = nullptr;
-  form_MPositionAVar(x, es->args) {
-    if (x->value == av) {
-      p = x->key;
-      break;
-    }
-  }
-  if (!p) return nullptr;
-  CSMSplitDecision *dec = new CSMSplitDecision;
-  dec->av = av;
-  dec->es = es;
-  dec->p = p;
-  dec->ety = av->out->type;
-  for (AEdge *ee : es->edges) if (ee) dec->all_edges.add(ee);
-  qsort_by_id(dec->all_edges);
-  if (!dec->all_edges.n) return nullptr;
-  return dec;
-}
-
-// Mirrors split_edges' body (cs_es_map + Piece 1's (CS x display) fan-
-// out in its redispatch) exactly, EXCEPT it reads the receiver's type
-// and edge set from the frozen `dec` snapshot instead of live AVar/ES
-// state -- the only change decide-then-apply requires, since dec->es
-// is guaranteed untouched-this-batch by the caller's per-ES dedup
-// (split_container_methods_per_element_cs below), so `dec->all_edges`
-// still all point at dec->es when this runs.
-[[nodiscard]] static int apply_csm_split(CSMSplitDecision *dec) {
-  int again = 0;
-  EntrySet *es = dec->es;
-  MPosition *p = dec->p;
-  AType *ety = dec->ety;
-  Map<CreationSet *, EntrySet *> cs_es_map;
-  for (CreationSet *cs : ety->sorted) {
-    Map<MPosition *, AType *> filters;
-    filters.copy(es->filters);
-    filters.put(p, make_AType(cs));
-    EntrySet *tes = find_or_make_filtered_entry_set(es, filters);
-    cs_es_map.put(cs, tes);
-  }
-  auto resolve_target = [&](AEdge *ee, CreationSet *cs) -> EntrySet * { return cs_es_map.get(cs); };
-
-  auto redispatch = [](AEdge *ee, EntrySet *tes) {
-    if (!tes || ee->to == tes) return;
-    if (ee->to) ee->to->edges.del(ee);
-    if (getenv("IFA_DBG_CHURN"))
-      fprintf(stderr, "[churn-csm] p=%d stage=%d edge_to=%d tes=%d\n", analysis_pass, cur_split_stage,
-              ee->to ? ee->to->id : -1, tes->id);
-    ee->to = 0;
-    if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_detach[cur_split_stage];
-    ee->filtered_args.clear();
-    set_entry_set(ee, tes);
-  };
-  for (AEdge *ee : dec->all_edges) if (ee) {
-    EntrySet *old = ee->to;
-    bool all_compat = true;
-    Vec<EntrySet *> targets;
-    for (int i = 0; i < ety->sorted.n; i++) {
-      EntrySet *tes = resolve_target(ee, ety->sorted[i]);
-      if (!tes) {
-        all_compat = false;
-        break;
-      }
-      targets.add(tes);
-    }
-    if (!all_compat) continue;
-    if (ety->sorted.n == 1)
-      redispatch(ee, targets.v[0]);
-    else {
-      for (int i = 0; i < ety->sorted.n; i++) {
-        if (!i)
-          redispatch(ee, targets[i]);
-        else
-          ee = copy_AEdge(ee, targets[i]);
-      }
-    }
-    if (ee->to != old) again = 1;
-  }
-  return again;
-}
-
-
-
-// ifa/issues/075: element-CS container-method separation -- pyc's
-// analog of shedskin's func_copy-per-dcpa (063's 2026-07-31 update,
-// "Why shedskin can and pyc can't"). Demand signal: a container-method
-// receiver whose live type is a union of >=2 CreationSets that are all
-// the SAME container type (cs->sym->element non-null; the unaliased
-// type equal across the group) but whose ELEMENT types diverge --
-// exactly the shape that merges e.g. dijkstra2's `dists:
-// list[dict[Vertex,float]]` and `paths: list[dict[Vertex,list[Vertex]]]`
-// into one `float u list[Vertex]` element AVar, the genuine "no type"
-// this issue is about. Placement (run_split_stages, stage 7): now
-// mirrors PER_CS_RECEIVER (ifa/issues/045) -- only on quiescence of
-// every stage above, not first/unconditional every pass. An earlier
-// version ran first, before type confluence; investigation
-// (2026-08-05, issue doc) found that starved stages 1-6 on programs
-// whose divergence doesn't resolve in one split, which is worse than
-// the imprecision this stage exists to fix.
-//
-// Piece 2 (decide-then-apply, see above): every qualifying receiver in
-// the pass is DECIDED against the same unmutated snapshot before
-// anything is APPLIED, with a per-ES dedup -- first decision touching
-// a given ES wins, later ones this pass defer to next pass (mirrors
-// split_ess_for_type's stage-1 discipline exactly). Piece 1 alone (one
-// split per pass, decide-and-apply interleaved) reproduced the
-// 2026-07-31 prototype's "not landable" regression almost exactly
-// (suite -17/+18 fails, corpus +1/-32) -- this batched form is what
-// the plan calls the actual fix for that failure class. Gated on
-// csm_enabled() == 2 (PYC_CSM=2); flag off is a no-op, byte-identical
-// to baseline.
-[[nodiscard]] static int split_container_methods_per_element_cs() {
-  if (csm_enabled() != 2) return 0;
-  int n_ess = fa->ess.n;
-  Vec<CSMSplitDecision *> decisions;
-  for (int i = 0; i < n_ess; i++) {
-    EntrySet *es = fa->ess[i];
-    if (!es) continue;
-    if (!es->fun || !es->fun->sym) continue;
-    bool has_edges = false;
-    for (AEdge *ee : es->edges) if (ee) { has_edges = true; break; }
-    if (!has_edges) continue;
-    for (MPosition *p : es->fun->positional_arg_positions) {
-      AVar *av = es->args.get(p);
-      if (!av || !av->out || !av->out->type || av->out->type->sorted.n < 2) continue;
-      // Same container type across the whole receiver union.
-      Sym *container_type = 0;
-      bool all_same_container = true;
-      for (CreationSet *cs : av->out->type->sorted) {
-        if (!cs->sym || !cs->sym->element) { all_same_container = false; break; }
-        Sym *t = cs->sym->type ? unalias_type(cs->sym->type) : cs->sym;
-        if (!container_type) container_type = t;
-        else if (container_type != t) { all_same_container = false; break; }
-      }
-      if (!all_same_container) continue;
-      // Divergent element types across that same union -- the demand
-      // signal. Piece 2 (decide-then-apply) scans EVERY qualifying
-      // receiver in fa->ess each pass, not just the first (Piece 1's
-      // shape) -- so, unlike a single decide-and-apply call where
-      // "we're about to act on this receiver" justified forcing the
-      // element AVar into existence, this scan must stay read-only
-      // exactly like 075's dump-mode discipline requires: read a CS's
-      // element only when cs->added_element_var is already set.
-      // Calling get_element_avar unconditionally here perturbs
-      // collect_type_confluence broadly across the WHOLE program on
-      // EVERY pass (confirmed: dropped the C-backend suite from
-      // 222/18 fails, Piece 1's number, to 9/241 -- essentially every
-      // test's FA trajectory changed). A CS whose element AVar isn't
-      // added yet just isn't decidable YET; it becomes so once
-      // something else in the flow (e.g. the method's own `self[i]`)
-      // creates it, same as any other pass.
-      AType *first_elem = 0;
-      bool divergent = false;
-      bool all_added = true;
-      for (CreationSet *cs : av->out->type->sorted) {
-        if (!cs->added_element_var) { all_added = false; break; }
-        AVar *elem = get_element_avar(cs);
-        AType *et = elem && elem->out ? elem->out->type : 0;
-        if (!first_elem) first_elem = et;
-        else if (first_elem != et) divergent = true;
-      }
-      if (!all_added || !divergent) continue;
-      CSMSplitDecision *dec = decide_csm_split(av);
-      if (dec) decisions.add(dec);
-    }
-  }
-  Vec<EntrySet *> applied;
-  int analyze_again = 0;
-  for (CSMSplitDecision *dec : decisions) {
-    if (applied.set_in(dec->es)) {
-      log(LOG_SPLITTING, "[csm] av %d es %d DEFERRED: es already split this pass (next pass re-decides)\n",
-          dec->av->id, dec->es->id);
-      continue;
-    }
-    applied.set_add(dec->es);
-    int r = apply_csm_split(dec);
-    log(LOG_SPLITTING, "[csm] av %d es %d fun %s %d apply -> %d\n", dec->av->id, dec->es->id,
-        dec->es->fun->sym->name ? dec->es->fun->sym->name : "", dec->es->fun->sym->id, r);
-    // ifa/issues/075: find_or_make_display_variant (used by
-    // apply_csm_split above) durably reuses an existing sibling across
-    // passes via an INDEXED lookup (EntrySet::display_variants, fa.h).
-    // Combined with the quiescence-gated placement (run_split_stages,
-    // stage 7 -- see that call site's comment) and make_entry_set's
-    // filter-inheriting leftover-ES mint (fa.cc, near check_split),
-    // termination no longer depends on this cap -- both capped
-    // (one-apply-per-pass, below) and uncapped (batch every decided ES)
-    // now terminate on the full corpus. They were NOT equally good,
-    // though: measured head-to-head, capped is the more faithful
-    // choice. Uncapped nets one MORE compiled program (53 vs. 52: it
-    // recovers `kanoodle`, capped doesn't), but at the cost of THREE
-    // programs that capped matches baseline on EXACTLY dropping to a
-    // noisier COMPILED_C_WARN under uncapped -- and one of the three is
-    // sha.py itself, the program this whole apply-batching investigation
-    // was chasing (see the issue doc's full trail). Capped reproduces
-    // baseline's clean sha.py output byte-for-byte; uncapped does not.
-    // Kept the cap for that reason -- exact fidelity on the target case
-    // over one extra loosely-"compiled" program elsewhere.
-    if (r) {
-      analyze_again = 1;
-      break;
-    }
-  }
-  return analyze_again;
-}
-
 // The five split stages (extend_analysis minus its stall/pass-cap
 // bookkeeping), extracted so the sticky stall guard in
 // extend_analysis can skip them wholesale once the guard has fired.
@@ -12345,7 +10986,6 @@ static void dbg_es_per_fun() {
     if (e->value > 1) ++multi;
     if (e->value > mx) { mx = e->value; worst = e->key; }
   }
-  if (census.cd_kept + census.cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d prospective_differs=%d no_trigger=%d\n", census.cd_kept, census.cd_dropped, census.cd_prospective_differs, census.cd_no_trigger);
   if (census.ck_single + census.ck_irrep + census.ck_samesym + census.ck_repr)
     fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", census.ck_single, census.ck_irrep, census.ck_samesym, census.ck_repr);
   if (census.grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", census.grp_total, census.grp_scattered);
@@ -12781,7 +11421,6 @@ static uint es_state_hash(EntrySet *es) {
 // Merging re-points each of the younger's creation points (`defs`, through
 // `cs_map`, the way split_css moves them) at the older; the next pass
 // re-derives the survivor's content from all of them.
-extern std::map<std::string, CreationSet *> cselem_shape_canon;  // defined with the csshape route
 static int csmerge_enabled() {
   static int e = -1;
   if (e < 0) { cchar *v = getenv("PYC_CSMERGE"); e = v ? atoi(v) : 0; }
@@ -12844,28 +11483,7 @@ static bool cs_same_writers(AVar *a, AVar *b) {
   for (AVar *x : wa) if (x && !wb.set_in(x)) return false;
   return true;
 }
-// PYC_SETTERMIN's key (setter_repr_key) over all of a CreationSet's
-// writers: 0 pointer-shaped, 1 mixed, else the one basic type written.
-static uintptr_t cs_writers_repr_key(CreationSet *cs) {
-  Vec<AVar *> w;
-  for (AVar *a : cs->vars) cs_writers(a, w);
-  if (cs->added_element_var) cs_writers(get_element_avar(cs), w);
-  Vec<Sym *> basics;
-  int nonbasic = 0;
-  for (AVar *s : w)
-    if (s && s->out && s->out->type)
-      for (CreationSet *c : s->out->type->sorted) {
-        if (!c || !c->sym || c->sym == sym_nil_type) continue;
-        if (Sym *b = to_basic_type(c->sym->type)) basics.set_add(b);
-        else ++nonbasic;
-      }
-  if (!basics.set_count()) return 0;
-  if (basics.set_count() == 1 && !nonbasic)
-    for (Sym *b : basics) if (b) return (uintptr_t)b;
-  return 1;
-}
 static bool cs_setter_compatible(CreationSet *x, CreationSet *y) {
-  if (settermin_enabled()) return cs_writers_repr_key(x) == cs_writers_repr_key(y);
   for (AVar *a : x->vars)
     if (!cs_same_writers(a, cs_member(y, a))) return false;
   if (x->added_element_var && !cs_same_writers(get_element_avar(x), get_element_avar(y))) return false;
@@ -12931,10 +11549,6 @@ static bool cs_demanded(CreationSet *cs) {
         for (int b = 0; b < fa->split_ledger.n; b++)
           for (auto *c = fa->split_ledger.v[b].value.head; c; c = c->cdr)
             if (c->car && c->car->cs_product == Y) c->car->cs_product = X;
-        // The csshape route reuses its canon's CreationSet for a new site;
-        // left naming Y, it would feed the retired contour again.
-        for (auto &kv : cselem_shape_canon)
-          if (kv.second == Y) kv.second = X;
         ++merged;
         log(LOG_SPLITTING, "MERGE CS %d into %d (%s) defs %d\n", Y->id, X->id, X->sym->name ? X->sym->name : "",
             moving.n);
@@ -13092,20 +11706,12 @@ static bool cs_demanded(CreationSet *cs) {
   }
   log(LOG_SPLITTING, "split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type
-  // ifa/issues/055: PYC_SETTERGATE=1 lifts the quiescence gate on the
-  // SETTER stage, the way PYC_RECVFAN=2 used to on PER_CS_RECEIVER
-  // (removed 2026-09-07 as arbitrary splitting). Measured on the plcfrs 9-line repro: the field
-  // whose union needs splitting IS collected as a type confluence (30
-  // times), but split_ess_for_type finds work on every one of those
-  // passes, so `!analyze_again` is false and compute_setters is never
-  // called on it -- zero setters exist in the whole program, so the
-  // demand-driven back-flow never starts.
-  static int settergate = -1;
-  if (settergate < 0) settergate = getenv("PYC_SETTERGATE") ? atoi(getenv("PYC_SETTERGATE")) : 0;
+  // Gated on quiescence. Lifting the gate (PYC_SETTERGATE) is permission
+  // without a reason, and =2 cost +31% CreationSets; deleted (ifa/146).
   // ifa/issues/055 probe: PYC_NOSETTER=1 skips the SETTER stage entirely.
   static int nosetter = -1;
   if (nosetter < 0) nosetter = getenv("PYC_NOSETTER") ? atoi(getenv("PYC_NOSETTER")) : 0;
-  if (nosetter) { /* skip */ } else if (!analyze_again || settergate) {
+  if (nosetter) { /* skip */ } else if (!analyze_again) {
     Accum<AVar *> avs;
     // ifa/issues/111 M3 option 2: under selective invalidation, class
     // EVERY CS-contoured AVar, not just this pass's confluences.
@@ -13194,17 +11800,11 @@ static bool cs_demanded(CreationSet *cs) {
   // compile wall 2,590 -> 2,279 s (-12%). plcfrs, the program it was kept
   // for, goes 94 -> 67 passes. The FAPassStage values stay, unused, so stage
   // numbering does not move.
-  // ifa/issues/109: PYC_SIZEOF_VIOL >= 2 also lifts this stage's
-  // quiescence gate. Recording the sizeof_element violation is useless
-  // while VIOLATION is STARVED by the first-stage-wins cascade -- measured
-  // on sunfish, whose STAGES line is `TYPE_CONFL SETTER SETTER_OF_SETTER`
-  // and never reaches stage 5, so the violation is recorded and nothing
-  // ever splits on it.
   if (getenv("IFA_DBG_STAGE5"))
     fprintf(stderr, "[stage5] p=%d analyze_again=%d -> %s (violations=%d)\n", analysis_pass, analyze_again,
-            (!analyze_again || sizeof_viol_enabled() >= 2) ? "RUNS" : "starved",
+            !analyze_again ? "RUNS" : "starved",
             fa->type_violations.set_count());
-  if (!analyze_again || sizeof_viol_enabled() >= 2) {
+  if (!analyze_again) {
     // 5) split AEdges(s) and EntrySet(s) for violations based on type using
     // dynamic dispatch
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
@@ -13253,47 +11853,15 @@ static bool cs_demanded(CreationSet *cs) {
     }
   }
   log(LOG_SPLITTING, "split_for_per_cs_method_receivers %d\n", analyze_again);
-  // 7) ifa/issues/075 (PYC_CSM=2): element-CS container-method
-  // separation. Placement changed 2026-08-05 after investigation
-  // (see the issue doc): originally ran FIRST, unconditionally, every
-  // pass -- which on a program whose divergence doesn't resolve in
-  // one CS-partition split (dijkstra2's genuinely nested containers)
-  // meant it found work almost every pass and, via the SAME
-  // if-(!analyze_again) discipline every stage here already follows,
-  // starved stages 1-6 almost completely (traced: stage 1 reached 4
-  // times in an 8s window vs. dozens of this stage's own decisions).
-  // The stages it starved are exactly the ones with actual recursion-
-  // separability / self-product-eviction safeguards (see
-  // decide_entry_set_split's comments); this stage has no analog of
-  // either. Now mirrors PER_CS_RECEIVER immediately above: only on
-  // full quiescence of every stage above, so it can no longer preempt
-  // work the rest of the pipeline could otherwise resolve on its own,
-  // and any contours it DOES create get a full pass through 1-6
-  // (recursion-aware, self-product-aware) before this stage can act
-  // on them again. Flag off (default): returns 0 immediately, so this
-  // block never fires -- byte-identical to baseline regardless of
-  // placement.
-  if (!analyze_again) {
-    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
-      census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
-    cur_split_stage = (int)FAPassStage::CSM_ELEMENT_CS;
-    analyze_again = split_container_methods_per_element_cs();
-    fa->stage_time[(int)FAPassStage::CSM_ELEMENT_CS] += stage_timer.lap();
-    if (analyze_again) {
-      record_fa_event(FAPassStage::CSM_ELEMENT_CS, analyze_again, ess0, css0, viol0);
-        if (getenv("PYC_DBG_STAGEDELTA"))
-          fprintf(stderr, "STAGEDELTA p=%d CSM_ELEMENT_CS returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
-                analyze_again, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0, fa->type_violations.set_count());
-      ++fa->stage_progress_count[(int)FAPassStage::CSM_ELEMENT_CS];
-    }
-  }
-  log(LOG_SPLITTING, "split_container_methods_per_element_cs %d\n", analyze_again);
+  // 7) was CSM_ELEMENT_CS (ifa/075, PYC_CSM=2): an element-CS
+  // container-method fan that never ran on the default path, and forced on
+  // took errors 0 -> 9 (ifa/157). Deleted (ifa/146); its enum slot stays.
   // 8) ifa/issues/133: the LAST rung -- partition a CreationSet by its
   // creation points when a type confluence landed on its contour and
   // every finer stage above has declined. shedskin's ladder route 4, in
   // the position shedskin puts it: coarsest separation, tried last, so it
   // can never preempt a split that keeps more precision. Gated on full
-  // quiescence for the same reason PER_CS_RECEIVER and CSM_ELEMENT_CS are.
+  // quiescence for the same reason PER_CS_RECEIVER is.
   // Called on EVERY pass, not only on quiescence, so the ripeness count
   // above sees every pass; `quiescent` decides whether an unripe candidate
   // may be acted on. A quiescent pass behaves exactly as before.
@@ -13307,9 +11875,6 @@ static bool cs_demanded(CreationSet *cs) {
     // found work". This one runs on EVERY pass, so that test attributes
     // stage 1's progress to this stage -- which it did, and the
     // fa-converge goldens caught it as a phantom `pass 1 ? splits=1`.
-    // ifa/146 E: unconditional, for the same reason route 4 is -- the
-    // stage that would carry it is starved on the programs that need it.
-    if (split_ess_for_boxing_receivers()) analyze_again = 1;
     // ifa/148: THE LOOP MUST RUN WHILE THE STATE IS STILL MOVING.
     //
     // `analyze_again` is used for two different things: "a stage split
@@ -14727,380 +13292,9 @@ static void audit_edge_arg_values() {
 Vec<Fun *> kd_flip_funs;
 
 
-static int cselem_intern_shape(const std::string &text) {
-  auto it = cselem_shape_ids.find(text);
-  if (it != cselem_shape_ids.end()) return it->second;
-  int id = (int)cselem_shape_by_id.size();
-  cselem_shape_ids[text] = id;
-  cselem_shape_by_id.push_back(text);
-  return id;
-}
-
-// One LEVEL of a shape, with child levels named by id. Not the unfolded
-// tree -- that is the thing that cannot be built.
-static cchar *cselem_shape_text(int id) {
-  return (id >= 0 && id < (int)cselem_shape_by_id.size()) ? cselem_shape_by_id[id].c_str() : "?";
-}
-
-struct ShapeId {
-  int id = -1;
-  bool unfilled = false;  // an element has not arrived yet -> decline the key
-};
-
-// Safety net, and only that: a union this wide is not shaped at any depth.
-// With the id encoding a wide union costs O(width) rather than O(width^depth),
-// so this is not the routine policy decision -- that is kShapeMaxMembers, and
-// it still applies only at depth 0, where the question "is canonicalizing this
-// meaningful?" is actually being asked. Set far above what a real union
-// reaches (kanoodle's worst is 93) so that it bounds the pathological case
-// without silently declining the programs the mode exists for.
-static const int kShapeMaxNestedMembers = 256;
-
-static std::map<std::pair<AType *, int>, ShapeId> cselem_shape_memo;
-static int cselem_shape_memo_pass = -1;
-
-static ShapeId atype_shape_id(AType *t, int depth) {
-  ShapeId r;
-  // Per-pass reset lives here rather than in the caller so that every entry
-  // point gets it -- the IFA_DBG_CSELEM=2 probe below also shapes types, and
-  // reading a memo built against last pass's elem_key is exactly the stale
-  // merge this whole file keeps warning about.
-  if (!depth && cselem_shape_memo_pass != analysis_pass) {
-    cselem_shape_memo.clear();
-    cselem_shape_memo_pass = analysis_pass;
-  }
-  if (!t || !t->sorted.n) {
-    // NOT '_': Python dunder names are full of underscores, and an
-    // unfilled-element test on '_' rejected every one of them.
-    r.id = cselem_intern_shape("%");
-    r.unfilled = true;
-    return r;
-  }
-  if (t->sorted.n > kShapeMaxNestedMembers) {
-    r.id = cselem_intern_shape("%wide");
-    r.unfilled = true;  // declines through the same path an unfilled element does
-    return r;
-  }
-  auto memo_key = std::make_pair(t, depth);
-  auto memo_it = cselem_shape_memo.find(memo_key);
-  if (memo_it != cselem_shape_memo.end()) return memo_it->second;
-  std::string text;
-  int n = 0;
-  for (CreationSet *cs : t->sorted) {
-    if (!cs || !cs->sym) continue;
-    if (n++) text += "|";
-    // name#id, never the bare name (ifa/130 A2). `Sym::name` is interned, so
-    // it is a fast key, but it is NOT unique: two classes in different
-    // modules, a clone and its original, an override and what it overrides,
-    // all carry one string. `cselem_shape_canon` is MONOTONE and global by
-    // design, so a name collision here is not a wrong answer that a later
-    // pass can revise -- it is a contour merge that can never be revisited.
-    // The id makes the key structural; the name keeps IFA_DBG_CSELEM output
-    // readable. Same rule, and the same spelling, as element_census().
-    text += cs->sym->name ? cs->sym->name : "?";
-    text += "#";
-    text += std::to_string(cs->sym->id);
-    if (!cs->sym->element) continue;
-    if (depth >= kShapeDepth) {
-      text += "<...>";
-      continue;
-    }
-    ShapeId c = atype_shape_id(cs->elem_key, depth + 1);
-    text += "<";
-    text += std::to_string(c.id);
-    text += ">";
-    r.unfilled |= c.unfilled;
-  }
-  r.id = cselem_intern_shape(text);
-  cselem_shape_memo[memo_key] = r;
-  return r;
-}
-
-// The `self` POSITION of an EntrySet -- positional slot 2. Slot 1 is the
-// callee itself.
-//
-// Selected by POSITION NUMBER, not by index into the sorted vector:
-// compar_mposition_path does not order these numerically, and measuring
-// (IFA_DBG_CSELEM=2) showed sorted index 0 carrying pos=2 and index 1
-// carrying pos=1 -- so keying on the index silently read the callee's
-// type as the receiver's on every method in the program.
-static MPosition *es_self_position(EntrySet *es) {
-  if (!es) return nullptr;
-  form_MPositionAVar(x, es->args) {
-    MPosition *p = x->key;
-    if (p && p->pos.n == 1 && p->is_positional() && Position2int(p->last()) == 2) return p;
-  }
-  return nullptr;
-}
-
-// (allocation site, receiver shape) -> the CreationSet that claimed it.
-// Deliberately NOT cleared per pass: shapes converge, so entries only
-// stabilize, and merging must be monotone or the canonicalization itself
-// becomes a source of churn.
-std::map<std::string, CreationSet *> cselem_shape_canon;
-
-// creation_point is hot, and the shape walk covers the whole type structure
-// every call. On a program with large unions (adatron) that alone hung the
-// analysis INSIDE a single pass -- no pass summary in 150s -- with no contour
-// growth at all. Two bounds: the (AType, depth) memo above, and refusing
-// outright to shape a wide union, where canonicalization is least meaningful
-// anyway. This second one is the POLICY cap and it belongs at depth 0, where
-// the mode is deciding whether canonicalizing this site is worth doing;
-// kShapeMaxNestedMembers is the separate structural net for what lies below.
-static const int kShapeMaxMembers = 4;
-
-static bool atype_shape_cached(AType *t, ShapeId &out) {
-  if (!t) return false;
-  if (t->sorted.n > kShapeMaxMembers) return false;
-  out = atype_shape_id(t, 0);
-  return true;
-}
-
-static bool cselem_shape_key(AVar *v, Sym *s, std::string &out) {
-  cselem_last_decline = kCselemOther;
-  if (!v || !v->var || !v->contour_is_entry_set) return false;
-  EntrySet *es = (EntrySet *)v->contour;
-  // DURABLE receiver type (EntrySet::type_key, frozen after the previous
-  // pass's flow fixpoint), never the live `recv->out`. Reading the live
-  // one merged two levels that were both still empty and therefore both
-  // shaped `list<_>` -- and because the canon map is monotone, that merge
-  // was permanent. It cost the whole bounded copy-chain family.
-  static int dbg = getenv("IFA_DBG_CSELEM") ? atoi(getenv("IFA_DBG_CSELEM")) : 0;
-  if (dbg > 1) {
-    Vec<MPosition *> ps;
-    form_MPositionAVar(x, es->args) if (x->key->is_positional()) ps.add(x->key);
-    if (ps.n > 1) qsort(ps.v, ps.n, sizeof(ps[0]), compar_mposition_path);
-    for (int i = 0; i < ps.n; i++) {
-      AVar *a = es->args.get(ps.v[i]);
-      ShapeId sh = atype_shape_id(a && a->out ? a->out->type : nullptr, 0);
-      fprintf(stderr, "[csshape-pos] p=%d es=%d fun=%s i=%d pos=%d shape=%d:%s\n", analysis_pass, es->id,
-              es->fun && es->fun->sym && es->fun->sym->name ? es->fun->sym->name : "?", i,
-              (int)Position2int(ps.v[i]->last()), sh.id, cselem_shape_text(sh.id));
-    }
-  }
-  MPosition *self = es_self_position(es);
-  if (!self) return false;
-  // Prefer the DURABLE receiver type (EntrySet::type_key, frozen after the
-  // previous pass's flow fixpoint). But the decision has to be made the
-  // moment the contour is FIRST asked for its container -- after that the
-  // `cs_map` memo answers and this code never runs again -- and a contour
-  // is asked on the very pass it is created, when nothing durable exists
-  // for it yet (`type_key_pass == -1` for every EntrySet that reached here
-  // on the recursive repro). So fall back to the live receiver type, with
-  // the `_` guard below carrying the weight the durable key otherwise
-  // would. That is ifa/066's shape -- the decision is keyed per pass
-  // rather than per creation site -- and this is how to live with it, not
-  // a fix for it.
-  AType *rt = es->type_key_pass >= 0 ? es->type_key.get(self) : nullptr;
-  if (!rt) {
-    AVar *recv = es->args.get(self);
-    rt = recv && recv->out ? recv->out->type : nullptr;
-  }
-  if (!rt) return false;
-  ShapeId shape;
-  if (!atype_shape_cached(rt, shape)) return false;
-  // An unfilled element ANYWHERE below is an element type that has not
-  // arrived yet, and two shapes that differ only in what has not arrived are
-  // not known to be equal. Decline rather than guess; the next pass will have
-  // it. The flag rides up from wherever `%` was emitted -- the old spelling
-  // searched the unfolded text for it, which is the text that cannot be built.
-  if (shape.unfilled) {
-    cselem_last_decline = kCselemUnfilled;
-    if (dbg)
-      fprintf(stderr, "[csshape-no] p=%d es=%d shape=%d:%s (unfilled)\n", analysis_pass, es->id, shape.id,
-              cselem_shape_text(shape.id));
-    return false;
-  }
-  // The allocated class goes in by id too (ifa/130 A2). `cselem_shape_reuse`
-  // already refuses a hit whose `cs->sym != s`, so a name collision here
-  // could not MERGE two classes -- but the loser then never claimed an
-  // entry of its own either, because `cselem_shape_claim` only fills an
-  // absent key, so it could never be reused at all. Keying on the id gives
-  // each class its own entry and makes that guard redundant rather than
-  // load-bearing.
-  char pre[128];
-  if (cssiteless_enabled())
-    snprintf(pre, sizeof pre, "%s#%d|%d", s->name ? s->name : "?", s->id, shape.id);
-  else
-    snprintf(pre, sizeof pre, "v%d|%s#%d|%d", v->var->id, s->name ? s->name : "?", s->id, shape.id);
-  out = pre;
-  cselem_last_decline = kCselemOk;
-  return true;
-}
-
-// The trailing field of a shape key is the top-level shape id; render it so a
-// `[csshape]` trace says WHAT was judged equal, not just that something was.
-static cchar *cselem_key_shape_text(const std::string &key) {
-  size_t bar = key.rfind('|');
-  if (bar == std::string::npos) return "?";
-  return cselem_shape_text(atoi(key.c_str() + bar + 1));
-}
-
-static CreationSet *cselem_shape_reuse(AVar *v, Sym *s) {
-  std::string key;
-  if (!cselem_shape_key(v, s, key)) return nullptr;
-  auto it = cselem_shape_canon.find(key);
-  if (it == cselem_shape_canon.end() || !it->second || it->second->sym != s) return nullptr;
-  if (getenv("IFA_DBG_CSELEM"))
-  {
-    EntrySet *es = v->contour_is_entry_set ? (EntrySet *)v->contour : nullptr;
-    Sym *cmc0 = s->clone_methods_per_cs ? s : (s->type ? unalias_type(s->type) : 0);
-    fprintf(stderr, "[csshape] p=%d %s -> reuse cs=%d  var=%s shape=%s split=%d cmc=%d fun=%s\n", analysis_pass,
-            key.c_str(), it->second->id, (v->var && v->var->sym && v->var->sym->name) ? v->var->sym->name : "?",
-            cselem_key_shape_text(key), (es && es->split) ? es->split->id : -1,
-            (cmc0 && cmc0->clone_methods_per_cs) ? 1 : 0,
-            (es && es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?");
-  }
-  return it->second;
-}
-
-static void cselem_shape_claim(const std::string &key, CreationSet *cs) {
-  if (cselem_shape_canon.find(key) == cselem_shape_canon.end()) {
-    cselem_shape_canon[key] = cs;
-    if (getenv("IFA_DBG_CSELEM"))
-      fprintf(stderr, "[csshape] p=%d %s <- mint cs=%d  shape=%s\n", analysis_pass, key.c_str(), cs->id,
-              cselem_key_shape_text(key));
-  }
-}
-
-
-
-
-static int cselem_rejoin_unknown_mints() {
-  if (cselem_enabled() != 3 || !cselem_rejoin_enabled()) return 0;
-  const bool dbg = getenv("IFA_DBG_CSELEM") != nullptr;
-  int joined = 0;
-  for (auto &u : cselem_unknown_mints) {
-    if (!u.v || !u.s || !u.cs || !u.v->cs_map) continue;
-    // Re-point only a site that still points AT the CS we minted for it.
-    // split_css may have moved it since, and re-pointing then would undo
-    // that split -- a demand-driven separation, which is the one thing this
-    // must never quietly reverse.
-    if (u.v->cs_map->get(u.s) != u.cs) continue;
-    std::string key;
-    if (!cselem_shape_key(u.v, u.s, key)) continue;  // shape STILL not known
-    auto it = cselem_shape_canon.find(key);
-    if (it == cselem_shape_canon.end()) continue;
-    CreationSet *other = it->second;
-    if (!other || other == u.cs || other->sym != u.s) continue;
-    // The canon entry must still be live this pass, or the join aims at a
-    // CreationSet nothing feeds. Same test split_css uses.
-    if (!fa->css_set.set_in(other)) continue;
-    // Same abstract-type guard the csshape reuse route applies.
-    if (u.s->abstract_type && other == u.s->abstract_type->v[0]) continue;
-    u.v->cs_map->put(u.s, other);
-    ++joined;
-    if (dbg)
-      fprintf(stderr, "[csrejoin] p=%d %s  cs=%d -> cs=%d  shape=%s var=%s\n", analysis_pass, key.c_str(), u.cs->id,
-              other->id, cselem_key_shape_text(key),
-              (u.v->var && u.v->var->sym && u.v->var->sym->name) ? u.v->var->sym->name : "?");
-  }
-  census.cselem_rejoins += joined;
-  if (joined && getenv("IFA_DBG_DEMAND"))
-    fprintf(stderr, "REJOIN p=%d joined=%d total=%d\n", analysis_pass, joined, census.cselem_rejoins);
-  return joined ? 1 : 0;
-}
-
-
-
-
-static int cselem_resplit_diverged() {
-  if (cselem_enabled() != 3 || !csresplit_enabled()) return 0;
-  const bool dbg = getenv("IFA_DBG_CSELEM") != nullptr;
-  int moved = 0;
-  Vec<CreationSet *> css;
-  for (CreationSet *cs : fa->css)
-    if (cs && cs->sym && cs->sym->element && cs->defs.set_count() > 1) css.add(cs);
-  qsort_by_id(css);  // decide in a stable order, like split_css
-  for (CreationSet *cs : css) {
-    std::map<std::string, Vec<AVar *>> groups;
-    for (AVar *d : cs->defs)
-      if (d) {
-        std::string key;
-        if (!cselem_shape_key(d, cs->sym, key)) continue;  // unknown: does not vote
-        groups[key].add(d);
-      }
-    if (groups.size() < 2) continue;  // no observed distinction
-    // The HOME group keeps `cs`: prefer the key the canon already points at
-    // this CreationSet, so the canon stays true without being rewritten;
-    // failing that, the largest group, so the fewest defs move.
-    std::string home;
-    for (auto &g : groups) {
-      auto it = cselem_shape_canon.find(g.first);
-      if (it != cselem_shape_canon.end() && it->second == cs) {
-        home = g.first;
-        break;
-      }
-    }
-    if (home.empty()) {
-      int best = -1;
-      for (auto &g : groups)
-        if (g.second.n > best) {
-          best = g.second.n;
-          home = g.first;
-        }
-    }
-    for (auto &g : groups) {
-      if (g.first == home) continue;
-      // Prefer JOINING the canon's existing owner for this shape over
-      // minting: a separation that mints when an equivalent contour already
-      // exists just trades one over-discrimination for another.
-      CreationSet *dest = nullptr;
-      auto it = cselem_shape_canon.find(g.first);
-      if (it != cselem_shape_canon.end() && it->second && it->second != cs && it->second->sym == cs->sym &&
-          fa->css_set.set_in(it->second))
-        dest = it->second;
-      if (!dest) {
-        dest = new CreationSet(cs);
-        dest->split = cs;
-        cselem_shape_claim(g.first, dest);
-        ++census.cselem_resplit_mints;
-      }
-      Vec<AVar *> rest;
-      cs->defs.set_difference(g.second, rest);
-      cs->defs.move(rest);
-      for (AVar *d : g.second)
-        if (d && d->cs_map) d->cs_map->put(cs->sym, dest);
-      moved += g.second.n;
-      if (dbg)
-        fprintf(stderr, "[csresplit] p=%d cs=%d -> cs=%d  n=%d shape=%s%s\n", analysis_pass, cs->id, dest->id,
-                g.second.n, cselem_key_shape_text(g.first), dest->split == cs ? " (new)" : " (joined)");
-    }
-  }
-  census.cselem_resplits += moved;
-  if (moved && getenv("IFA_DBG_DEMAND"))
-    fprintf(stderr, "RESPLIT p=%d moved=%d total=%d mints=%d\n", analysis_pass, moved, census.cselem_resplits,
-            census.cselem_resplit_mints);
-  return moved ? 1 : 0;
-}
-
-static void capture_elem_keys() {
-  if (!cselem_enabled()) return;
-  int n_keyed = 0, n_sites = 0;
-  fa->var_elem_key.clear();
-  fa->var_elem_ambig.clear();
-  for (CreationSet *cs : fa->css) if (cs && cs->sym && cs->sym->element) {
-    if (!cs->added_element_var) continue;
-    AVar *e = unique_AVar(cs->sym->element->var, cs);
-    if (!e) continue;
-    cs->elem_key = e->out->type;
-    cs->elem_key_pass = analysis_pass;
-    ++n_keyed;
-    if (!cs->creation_var) continue;
-    ++n_sites;
-    AType *prev = fa->var_elem_key.get(cs->creation_var);
-    if (!prev)
-      fa->var_elem_key.put(cs->creation_var, cs->elem_key);
-    else if (prev != cs->elem_key)
-      fa->var_elem_ambig.put(cs->creation_var, 1);  // site is genuinely polymorphic
-  }
-  if (getenv("IFA_DBG_CSELEM"))
-    fprintf(stderr, "[cselem-cap] p=%d keyed=%d with_var=%d\n", analysis_pass, n_keyed, n_sites);
-}
-
 static void capture_type_keys() {
   bool drift = getenv("IFA_DBG_KEYDRIFT") != nullptr;
-  if (!typekey_enabled() && !drift && selfprod_enabled() < 3) return;
+  if (!drift && selfprod_enabled() < 3) return;
   for (EntrySet *es : fa->entry_set_done) if (es && es->fun) {
     int grew = 0, shrank = 0, fresh = es->type_key_pass < 0;
     unsigned int h = 0;
@@ -15418,10 +13612,8 @@ static void complete_pass() {
   report_cs_population();
   report_element_types();
   report_fun_contours();
-  report_canon_stats();
   report_keyspace();
   capture_type_keys();
-  capture_elem_keys();
   report_degenerate_avars();
   report_keydrift();
   report_incompat();
@@ -15658,27 +13850,6 @@ static bool apply_unbound_fills() {
 // `ess`/`css` are here because a change that improves the ratio by
 // splitting MORE somewhere else is not an improvement, and reading the
 // ratio alone would hide that.
-// ifa/129 step 2c: of the CreationSets minted while the receiver shape was
-// unknown, how many would now hit an existing canon entry -- i.e. exist
-// SOLELY because the decision could not wait. Recomputed post-convergence,
-// when every shape is filled.
-void cselem_unknown_mint_census(int &minted, int &resolved, int &joinable, int &still_unfilled) {
-  minted = (int)cselem_unknown_mints.size();
-  resolved = joinable = still_unfilled = 0;
-  for (auto &u : cselem_unknown_mints) {
-    std::string key;
-    // Separate "the shape never became known" from "it became known and
-    // nothing matched" -- a zero joinable means very different things.
-    if (!cselem_shape_key(u.v, u.s, key)) {
-      if (cselem_last_decline == kCselemUnfilled) ++still_unfilled;
-      continue;
-    }
-    ++resolved;
-    auto it = cselem_shape_canon.find(key);
-    if (it != cselem_shape_canon.end() && it->second && it->second != u.cs && it->second->sym == u.s) ++joinable;
-  }
-}
-
 // ifa/131 step 1: how often does the constant cap-strip lose a distinction
 // that distinct creation points disagreed on?
 //
@@ -15888,24 +14059,17 @@ static void analyze_to_convergence() {
         if (!ext) rea = if1->callback->reanalyze(fa->type_violations) ? 1 : 0;
       }
       if (!ext && !rea) fil = apply_unbound_fills() ? 1 : 0;
-      // ifa/129 step 4: re-decide the mints taken on an unknown shape --
-      // LAST, and only when nothing else asked for a pass. See
-      // cselem_rejoin_unknown_mints for why settling first is the point
-      // rather than a concession.
-      // Narrowing runs BEFORE widening: a merge that evidence has already
-      // contradicted must come apart before another one is proposed.
-      int rsp = 0, rej = 0, ret = 0;
+      int ret = 0;
       // issues/128: a promoted field that the converged types no longer
-      // write is withdrawn. Narrowing, so it runs with the resplit below:
-      // only at a fixed point.
+      // write is withdrawn. Narrowing, so it runs only at a fixed point.
+      // (The CSELEM resplit and rejoin that ran after it were deleted with
+      // PYC_CSELEM, ifa/146.)
       if (!ext && !rea && !fil) ret = if1->callback->retract_derived_state() ? 1 : 0;
-      if (!ext && !rea && !fil && !ret) rsp = cselem_resplit_diverged();
-      if (!ext && !rea && !fil && !ret && !rsp) rej = cselem_rejoin_unknown_mints();
       fa->last_pass_reanalyze = (rea != 0);
       if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d resplit=%d rejoin=%d viol=%d\n",
-                analysis_pass, ext, rea, fil, ret, rsp, rej, fa->type_violations.set_count());
-      loop_again = (ext || rea || fil || ret || rsp || rej || raise_grew);
+        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d viol=%d\n",
+                analysis_pass, ext, rea, fil, ret, fa->type_violations.set_count());
+      loop_again = (ext || rea || fil || ret || raise_grew);
     }
   } while (loop_again && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))
@@ -15992,8 +14156,6 @@ int FA::analyze(Fun *top) {
   if (getenv("IFA_DBG_ESDEMAND"))  // ifa/157 step 1/2
     fprintf(stderr, "ESDEMAND demanded=%ld ->formal=%ld no_formal=%ld (of which the contour HAD formals: %ld) not_demanded=%ld\n",
             census.ed_seen, census.ed_formal, census.ed_no_formal, census.ed_had_formals, census.ed_not_demanded);
-  if (getenv("IFA_DBG_REPRKEY"))
-    fprintf(stderr, "REPRKEY new=%ld same=%ld CHANGED=%ld\n", census.rk_new, census.rk_same, census.rk_changed);
   // ifa/157: of the AVars whose CONVERGED type is an irrepresentable union,
   // how many did the edge-triggered confluence test flag? `unflagged` is the
   // blindness the level question would close -- and closing it was measured

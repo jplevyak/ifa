@@ -94,11 +94,9 @@ void add_prim_send_constraints(PNode *p, EntrySet *es, AVar *result, int o);
 // ---- fa.cc internals the diagnostics read ------------------------------
 void keyspace_cpa(AEdge *e, Vec<MPosition *> &pos, int i, std::string &tup, std::set<std::string> &out, int &budget);
 void constant_strip_census(int &nstrip, int &nmulti, int &nsame);
-void cselem_unknown_mint_census(int &minted, int &resolved, int &joinable, int &still_unfilled);
 void element_census(ElemCensus &c);
 bool mixed_basics(AVar *av);
 bool scalar_with_pointer(AType *t);  // ifa/188: a numeric scalar and an object in one union
-extern std::map<std::string, CreationSet *> cselem_shape_canon;
 
 extern Vec<Var *> fa_internal_vars;  // fa.cc: FA-created tvals, see fill_tvals
 template <class F>
@@ -128,9 +126,6 @@ bool is_uninformative_violation(ATypeViolation *v);
 bool atype_irrepresentable(AType *t);
 bool classes_are_related(Vec<Sym *> &classes);
 extern Vec<EntrySet *> ed_applied;
-extern const int kShapeDepth;
-extern std::map<std::string, int> cselem_shape_ids;
-extern std::vector<std::string> cselem_shape_by_id;
 extern const char *kStageName[FA::kNumFAPassStages];
 
 // ---- the diagnostics themselves ----------------------------------------
@@ -160,7 +155,6 @@ void report_retconf();
 void report_degenerate_avars();
 void report_incompat();
 void report_keydrift();
-void report_canon_stats();
 void report_keyspace();
 void report_cs_population();
 void report_fun_contours();
