@@ -103,6 +103,19 @@ cchar *num_string(Sym *s) {
 // Closure / dispatch helpers
 // -------------------------------------------------------------
 
+// See codegen_common.h.
+Sym *cg_tag_family(Sym *t) {
+  if (t && t->creators.n && t->creators[0] && t->creators[0]->sym) return t->creators[0]->sym;
+  return t;
+}
+
+cchar *cg_tag_name(Sym *t) {
+  Sym *f = cg_tag_family(t);
+  char buf[256];
+  snprintf(buf, sizeof(buf), "_CG_type_%s_%d", t && t->name ? t->name : "anon", f ? f->id : 0);
+  return dupstr(buf);
+}
+
 bool cg_has_classtag(Sym *s) {
   if (!(s && s->type_kind == Type_RECORD && !s->is_system_type && s->name && s->has.n && !s->is_vector &&
         !sym_tuple->specializers.set_in(s) && !(s->creators.n && s->creators[0]->sym == sym_list)))
@@ -528,13 +541,13 @@ void cg_build_new_to_val_map(FA *fa) {
 //                class, which no tag test separates.
 //
 // The objects reaching an arm are those whose tag is that class's
-// (`_CG_type_<name>`, shared by all clones of a class), so the installed
+// (cg_tag_name, shared by all clones of a class), so the installed
 // clones are read from every CreationSet whose concrete type carries it.
 struct ArmPlanRec {
   int plan;
   Fun *fun;  // ARM_DIRECT: the clone the site chose for the class
 };
-static Map<PNode *, Map<cchar *, ArmPlanRec *> *> dispatch_arm_plans;
+static Map<PNode *, Map<Sym *, ArmPlanRec *> *> dispatch_arm_plans;  // keyed by tag family
 static int arm_plan_counts[3];
 
 // The clones the constructors of `cs` install in its slot for `method_name`.
@@ -589,8 +602,8 @@ void cg_build_dispatch_arm_plans(FA *fa) {
       // each candidate's EntrySets (its receiver formal's CreationSets), so a
       // class with two clones split by creation point is resolved per object.
       Map<CreationSet *, Vec<Fun *> *> by_cs;
-      Map<cchar *, Vec<Sym *> *> types_of;
-      Vec<cchar *> names;
+      Map<Sym *, Vec<Sym *> *> types_of;  // tag family -> its concrete types
+      Vec<Sym *> names;
       for (Fun *c : *fns) {
         if (!c || !c->sym || !c->sym->name) continue;
         Vec<Sym *> rts;
@@ -599,8 +612,9 @@ void cg_build_dispatch_arm_plans(FA *fa) {
         for (int k = 0; k < rts.n; k++) {
           Sym *rt = rts[k];
           if (!rt || !rt->name || rt->is_system_type || !cg_has_classtag(rt)) continue;
-          Vec<Sym *> *ts = types_of.get(rt->name);
-          if (!ts) { ts = new Vec<Sym *>; types_of.put(rt->name, ts); names.add(rt->name); }
+          Sym *fam = cg_tag_family(rt);
+          Vec<Sym *> *ts = types_of.get(fam);
+          if (!ts) { ts = new Vec<Sym *>; types_of.put(fam, ts); names.add(fam); }
           ts->set_add(rt);
           MPosition mp;
           mp.push(ri[k] + 1);
@@ -635,9 +649,10 @@ void cg_build_dispatch_arm_plans(FA *fa) {
         }
       }
       if (!names.n) continue;
-      Map<cchar *, ArmPlanRec *> *plans = new Map<cchar *, ArmPlanRec *>;
-      for (cchar *nm : names) {
-        Vec<Sym *> *ts = types_of.get(nm);
+      Map<Sym *, ArmPlanRec *> *plans = new Map<Sym *, ArmPlanRec *>;
+      for (Sym *fam : names) {
+        cchar *nm = fam->name ? fam->name : "?";
+        Vec<Sym *> *ts = types_of.get(fam);
         ts->set_to_vec();
         bool cs_ambiguous = false, one_for_tag = true, slot_ok = true;
         Fun *tag_fun = nullptr;
@@ -678,7 +693,7 @@ void cg_build_dispatch_arm_plans(FA *fa) {
         ArmPlanRec *rec = new ArmPlanRec;
         rec->plan = plan;
         rec->fun = tag_fun;
-        plans->put(nm, rec);
+        plans->put(fam, rec);
         arm_plan_counts[plan]++;
         if (dbg && plan != ARM_SLOT)
           fprintf(stderr, "DISPATCHARM %s %s:%d %s.%s types=%d reached=%d%s\n", plan == ARM_DIRECT ? "direct" : "AMBIGUOUS",
@@ -695,9 +710,9 @@ void cg_build_dispatch_arm_plans(FA *fa) {
 }
 
 static ArmPlanRec *dispatch_arm_rec(PNode *pn, Sym *cls) {
-  Map<cchar *, ArmPlanRec *> *plans = pn ? dispatch_arm_plans.get(pn) : nullptr;
-  if (!plans || !cls || !cls->name) return nullptr;
-  return plans->get(cls->name);
+  Map<Sym *, ArmPlanRec *> *plans = pn ? dispatch_arm_plans.get(pn) : nullptr;
+  if (!plans || !cls) return nullptr;
+  return plans->get(cg_tag_family(cls));
 }
 
 int dispatch_arm_plan(PNode *pn, Sym *cls) {

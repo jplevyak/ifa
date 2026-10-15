@@ -1415,8 +1415,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       {
         Sym *t = n->lvals[0]->type;
         if (cg_has_classtag(t) && cg_get_string(n->lvals[0]))
-          fprintf(fp, "  ((%s)%s)->__pyc_tag = &_CG_type_%s;\n", cg_get_string(t), cg_get_string(n->lvals[0]),
-                  t->name);
+          fprintf(fp, "  ((%s)%s)->__pyc_tag = &%s;\n", cg_get_string(t), cg_get_string(n->lvals[0]),
+                  cg_tag_name(t));
       }
       break;
     }
@@ -2088,7 +2088,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         } else {
           fputs("(0", fp);
           for (Sym *impl : concrete)
-            fprintf(fp, " || (*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s", opnd, impl->name);
+            fprintf(fp, " || (*(_CG_TypeObject**)(void*)%s) == &%s", opnd, cg_tag_name(impl));
           fputs(");\n", fp);
         }
       } else {
@@ -2562,7 +2562,7 @@ class CBackendEmitter : public VirtualCGEmitter {
                 bool same = false, collide = false;
                 for (int ci = 0; ci < classes.n; ci++) {
                   if (classes[ci] == carrier_recv) { same = true; break; }
-                  if (!strcmp(classes[ci]->name, carrier_recv->name)) { collide = true; break; }
+                  if (cg_tag_family(classes[ci]) == cg_tag_family(carrier_recv)) { collide = true; break; }
                 }
                 if (collide) { ok = false; break; }
                 if (!same) {
@@ -2593,7 +2593,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               added_any = true;
               bool found = false;
               for (int ci = 0; ci < classes.n; ci++)
-                if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
+                if (cg_tag_family(classes[ci]) == cg_tag_family(rt)) { found = true; break; }
               if (!found) {
                 classes.add(rt);
                 slots.add(rt_slots[ri]);
@@ -2822,8 +2822,8 @@ class CBackendEmitter : public VirtualCGEmitter {
             return;
           }
           for (int ci = 0; ci < classes.n; ci++, nb++) {
-            fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s) {\n", nb ? "else " : "", recv_str,
-                    classes[ci]->name);
+            fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &%s) {\n", nb ? "else " : "", recv_str,
+                    cg_tag_name(classes[ci]));
             fputs("    ", fp);
             if (slots[ci] == -1) {
               // ifa/issues/030(a): carrier-dispatched candidate --
@@ -3935,12 +3935,14 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
     }
   }
   if (allsyms.n) fputs("\n/*\n Type Objects\n*/\n\n", fp);
+  // ifa/130 A3: one tag per class FAMILY (cg_tag_name), not per name.
   std::set<std::string> emitted_types;
   for (Sym *s : allsyms) {
     if (s->type_kind == Type_RECORD && !s->is_system_type) {
-      if (emitted_types.find(s->name) == emitted_types.end()) {
-        fprintf(fp, "_CG_TypeObject _CG_type_%s = { PYC_TAG_OBJECT, \"%s\" };\n", s->name, s->name);
-        emitted_types.insert(s->name);
+      std::string tn = cg_tag_name(s);
+      if (emitted_types.find(tn) == emitted_types.end()) {
+        fprintf(fp, "_CG_TypeObject %s = { PYC_TAG_OBJECT, \"%s\" };\n", tn.c_str(), s->name);
+        emitted_types.insert(tn);
       }
     }
   }

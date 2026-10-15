@@ -97,7 +97,7 @@ one is a lesson this directory paid for.
 | [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
 | [093](093-CGEN-int-float-union-move-not-coerced.md) | LLVM: an int MOVE into a float64 slot stores raw bits (missing `sitofp`). |
-| [130](130-FA-identity-keyed-on-sym-name.md) | `var_map` and the classtag are keyed on names. |
+| [130](130-FA-identity-keyed-on-sym-name.md) | `var_map` is keyed on names: ordinary overrides are refused (A1). The classtag (A3) was too, and fused same-named classes; fixed 2026-10-14. |
 | [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) | performance: high fan-out dispatch has no table. |
 | [054](054-CGEN-remove-unconditional-tuple-list-header.md) | performance: every tuple carries a 16-byte list header. |
 

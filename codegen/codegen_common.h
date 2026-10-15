@@ -58,6 +58,14 @@ Sym *closure_fun_type(Var *v);
 // identified structurally (only unnamed fields) since tuple clones
 // aren't always in sym_tuple->specializers.
 bool cg_has_classtag(Sym *s);
+// ifa/130 A3: a class tag's identity is the CLASS, not its name. Clones of
+// one class share a tag (the slot pointer tells them apart); unrelated
+// classes that share a name -- two modules' `Node` -- must not, or
+// isinstance and tag dispatch fuse them. The family is the class a
+// concrete type was cloned from (its CreationSets' `sym`), and the tag is
+// named `_CG_type_<name>_<family id>`.
+Sym *cg_tag_family(Sym *t);
+cchar *cg_tag_name(Sym *t);
 
 // Is field i of record s live (present in the emitted struct)?
 // Shared by struct emission, field access elision, and the

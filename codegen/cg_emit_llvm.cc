@@ -123,11 +123,11 @@ static inline int llvm_fld(Sym *s, int i) { return cg_has_classtag(s) ? i + 1 : 
 
 // ifa/issues/030: the per-class tag object. Only its ADDRESS
 // matters (identity comparison at dispatch sites), so an internal
-// i64 global per class name suffices; named to match the C
-// backend's `_CG_type_<name>` for debuggability.
-static llvm::GlobalVariable *get_classtag_global(cchar *name) {
-  char buf[160];
-  snprintf(buf, sizeof(buf), "_CG_type_%s", name);
+// i64 global per class FAMILY suffices (ifa/130 A3: cg_tag_name, one per
+// class and its clones, not one per name); named as the C backend names it.
+static llvm::GlobalVariable *get_classtag_global(Sym *cls) {
+  char buf[300];
+  snprintf(buf, sizeof(buf), "%s", cg_tag_name(cls));
   if (llvm::GlobalVariable *gv = TheModule->getNamedGlobal(buf)) return gv;
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
   return new llvm::GlobalVariable(*TheModule, i64, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
@@ -1838,7 +1838,7 @@ static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
       llvm::Value *tag = Builder->CreateLoad(ptr_ty, lhs, "classtag");
       res = llvm::ConstantInt::getFalse(*TheContext);
       for (Sym *impl : concrete) {
-        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(impl->name), "isocmp");
+        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(impl), "isocmp");
         res = Builder->CreateOr(res, cmp);
       }
     }
@@ -2162,7 +2162,7 @@ static bool emit_send_new(EmitCtx &ctx, PNode *pn) {
   // instance inherits it via emit_send_clone's memcpy.
   if (cg_has_classtag(t_sym)) {
     llvm::Value *tag_gep = Builder->CreateStructGEP(struct_ty, result, 0);
-    Builder->CreateStore(get_classtag_global(t_sym->name), tag_gep);
+    Builder->CreateStore(get_classtag_global(t_sym), tag_gep);
   }
   put_result(ctx, dst_var, result);
   return true;
@@ -3525,7 +3525,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           added_any = true;
           bool found = false;
           for (int ci = 0; ci < classes.n; ci++)
-            if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
+            if (cg_tag_family(classes[ci]) == cg_tag_family(rt)) { found = true; break; }
           if (!found) {
             classes.add(rt);
             slots.add(rt_slots[ri]);
@@ -3595,7 +3595,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           bool same = false, collide = false;
           for (int ci = 0; ci < classes.n; ci++) {
             if (classes[ci] == carrier_recv) { same = true; break; }
-            if (!strcmp(classes[ci]->name, carrier_recv->name)) { collide = true; break; }
+            if (cg_tag_family(classes[ci]) == cg_tag_family(carrier_recv)) { collide = true; break; }
           }
           if (collide) { ok = false; break; }
           if (!same) {
@@ -3838,7 +3838,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       for (int ci = 0; ci < classes.n; ci++) {
         llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
         llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
-        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]->name), "tagcmp");
+        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]), "tagcmp");
         Builder->CreateCondBr(cmp, hit_bb, next_bb);
         Builder->SetInsertPoint(hit_bb);
         if (slots[ci] == -1) {
