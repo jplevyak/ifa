@@ -66,6 +66,16 @@ bool cg_has_classtag(Sym *s);
 // named `_CG_type_<name>_<family id>`.
 Sym *cg_tag_family(Sym *t);
 cchar *cg_tag_name(Sym *t);
+// issues/173 #1: decide `isinstance(x, cls)` for a test the analysis did
+// not fold, from the members of x's type. Returns 1 or 0 when every member
+// gives the same answer, else -1 with `concrete` set to the tagged
+// implementors of `cls` (`cls_type`) to compare x's class tag against. The
+// test reads the word at `x`, so it is only an answer when every member
+// that IS an instance carries a tag; an untagged member's word is not a
+// tag. When such a member exists (`{list, str}` against `list`) no run-time
+// test can answer, and this refuses the program -- as an undispatchable
+// `len(x)` on the same value is refused -- rather than fold it to False.
+int cg_isinstance_tag_targets(PNode *pn, Sym *cls_type, Vec<Sym *> &concrete);
 
 // Is field i of record s live (present in the emitted struct)?
 // Shared by struct emission, field access elision, and the

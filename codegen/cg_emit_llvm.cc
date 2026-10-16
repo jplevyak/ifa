@@ -1828,11 +1828,12 @@ static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
     Sym *cls = rhs_var->sym;
     Sym *cls_type = (cls->type_kind == Type_RECORD && cls->has.n) ? cls : (cls->meta_type ? cls->meta_type : cls);
     Vec<Sym *> concrete;
-    for (Sym *impl : cls_type->implementors)
-      if (impl && cg_has_classtag(impl)) concrete.add(impl);
+    int decided = cg_isinstance_tag_targets(pn, cls_type, concrete);
     llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
     llvm::Value *res;
-    if (!concrete.n) {
+    if (decided >= 0) {
+      res = decided ? llvm::ConstantInt::getTrue(*TheContext) : llvm::ConstantInt::getFalse(*TheContext);
+    } else if (!concrete.n) {
       res = llvm::ConstantInt::getFalse(*TheContext);
     } else {
       llvm::Value *tag = Builder->CreateLoad(ptr_ty, lhs, "classtag");

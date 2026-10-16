@@ -2080,10 +2080,11 @@ class CBackendEmitter : public VirtualCGEmitter {
                          : cls->meta_type                              ? cls->meta_type
                                                                         : cls;
         Vec<Sym *> concrete;
-        for (Sym *impl : cls_type->implementors)
-          if (impl && cg_has_classtag(impl)) concrete.add(impl);
+        int decided = cg_isinstance_tag_targets(pn, cls_type, concrete);
         fprintf(fp, "  %s = ", cg_get_string(pn->lvals[0]));
-        if (!opnd || !concrete.n) {
+        if (decided >= 0) {
+          fprintf(fp, "%d;\n", decided);
+        } else if (!opnd || !concrete.n) {
           fputs("0;\n", fp);
         } else {
           fputs("(0", fp);

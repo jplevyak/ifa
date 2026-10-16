@@ -128,6 +128,48 @@ bool cg_has_classtag(Sym *s) {
 }
 
 // See codegen_common.h.
+int cg_isinstance_tag_targets(PNode *pn, Sym *cls_type, Vec<Sym *> &concrete) {
+  // A builtin class reaches here as its meta Sym (`list` the value); the
+  // type whose implementors are the instances is its meta_type.
+  if (cls_type->is_meta_type && cls_type->meta_type) cls_type = cls_type->meta_type;
+  for (Sym *impl : cls_type->implementors)
+    if (impl && cg_has_classtag(impl)) concrete.add(impl);
+  Sym *t = pn->rvals.n >= 3 ? pn->rvals[2]->type : nullptr;
+  Vec<Sym *> members;
+  if (t && t->type_kind == Type_SUM) {
+    for (Sym *m : t->has) if (m) members.add(m);
+  } else if (t)
+    members.add(t);
+  if (!members.n) return -1;
+  // A member is an instance when it, or the class it was cloned from, is
+  // an implementor -- clones are not in the implementor set themselves.
+  auto is_instance = [&](Sym *m) {
+    return cls_type->implementors.in(m) || cls_type->implementors.in(cg_tag_family(m));
+  };
+  int yes = 0, untagged_yes = 0;
+  Sym *culprit = nullptr;
+  for (Sym *m : members)
+    if (is_instance(m)) {
+      ++yes;
+      if (!cg_has_classtag(m)) { ++untagged_yes; culprit = m; }
+    }
+  if (yes == members.n) return 1;
+  if (!yes) return 0;
+  if (untagged_yes) {
+    std::string un;
+    for (Sym *m : members) {
+      if (!un.empty()) un += ", ";
+      un += m->name ? m->name : "?";
+    }
+    codegen_fail(pn,
+                 "isinstance(x, %s) cannot be decided at run time: x is {%s}, and '%s' carries no class tag to test. "
+                 "pyc refuses it rather than fold the test to False (issues/173)",
+                 cls_type->name ? cls_type->name : "?", un.c_str(), culprit->name ? culprit->name : "?");
+  }
+  return -1;
+}
+
+// See codegen_common.h.
 void cg_fail_unrepresentable_container_union(Sym *outer, Sym *fn_sym, cchar *path, int line) {
   char un[512];
   un[0] = 0;
