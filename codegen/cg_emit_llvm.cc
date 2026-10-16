@@ -2770,6 +2770,17 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     args.push_back(fmt);
     bool is_tuple = arg_var->type && arg_var->type->type_kind == Type_RECORD &&
                     !cg_has_classtag(arg_var->type) && arg_var->type->has.n > 0;
+    // issues/168: a format constant only HERE (propagated into str.__mod__)
+    // was never read by the frontend, so a number meeting its `%s` is
+    // unconverted, and _CG_format_string would read it as a pointer. Take
+    // the tagged path, which renders it, as for a format not known at all
+    // -- deciding BEFORE `coerce`, since a tagged argument keeps its own
+    // type. Mirrors format_string_codegen.
+    for (int i = 0; cfmt && i < convs.n; i++) {
+      if (!strchr("sra", convs[i])) continue;
+      Sym *at = is_tuple ? (i < arg_var->type->has.n ? arg_var->type->has[i]->type : nullptr) : arg_var->type;
+      if (is_num(at)) { cfmt = nullptr; convs.clear(); }
+    }
     if (is_tuple) {
       llvm::StructType *rec_ty = sym_to_llvm_struct(arg_var->type);
       llvm::Value *rec = value_for_var(ctx, arg_var);
