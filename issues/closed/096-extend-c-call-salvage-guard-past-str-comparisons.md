@@ -6,7 +6,7 @@ originally filed) is kept as-is for context.
 
 **Original status:** open, found 2026-08-11 as a live compile failure
 (`shedskin_examples/msp_ss/msp_ss.py`) while verifying
-[issues/041](../../../issues/041-stdlib-shim-stubs-silently-wrong.md)'s
+[issues/041](../../../issues/closed/041-stdlib-shim-stubs-silently-wrong.md)'s
 `getopt` fix — real `getopt` parsing made a previously-dead-code-
 eliminated branch in `msp_ss.py` live for the first time, and it hits
 this. Not a new bug: this is

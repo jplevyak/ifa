@@ -320,7 +320,7 @@ from `name` before the loop even starts).
 ## New trigger of the known remaining gap — filed as ifa/issues/096 (2026-08-11)
 
 `shedskin_examples/msp_ss/msp_ss.py` (after fixing
-[issues/041](../../../issues/041-stdlib-shim-stubs-silently-wrong.md)'s
+[issues/041](../../../issues/closed/041-stdlib-shim-stubs-silently-wrong.md)'s
 `getopt` stub, unrelated to this issue directly — real `getopt`
 parsing made previously-dead-code-eliminated branches live for the
 first time, and some of them hit this) fails to compile with several
