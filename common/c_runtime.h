@@ -69,6 +69,14 @@ typedef void *_CG_nil_type;
 #define _CG_make_tuple _CG_symbol
 #define _CG_Symbol(_x, _y) ((void *)(uintptr_t)_x)
 #define _CG_String(_x) ((char *)_x)
+// Length-aware _CG_String: cg.cc emits it for a string constant that may
+// hold an embedded NUL (ifa/issues/070), where strlen would stop short.
+static inline char *_CG_String_n(const void *x, size_t len) {
+  char *str = (char *)MALLOC(len + 1);
+  memcpy(str, x, len);
+  str[len] = 0;
+  return str;
+}
 #define null ((void *)0)
 #define bool int
 #define True 1
@@ -182,6 +190,17 @@ static inline void _CG_float_printf(double d, bool ln) {
 #define _CG_list_total_len(_c, _l) (_CG_list_to_struct(_l)->total_len)
 #define _CG_list_ptr(_l) (_CG_list_to_struct(_l)->ptr)
 #define _CG_list_data(_l) (&_CG_list_to_struct(_l)->data[0])
+// ifa/185, ifa/102: the high bits of a tuple's total_len say whether it has
+// a static arity; cg.cc's P_prim_make sets them. pyc_c_runtime.h holds the
+// full commentary; these must stay identical to it.
+#define _CG_TUPLE_FIXED_ARITY 0x80000000u
+#define _CG_tuple_set_fixed(_l) (_CG_list_to_struct(_l)->total_len |= _CG_TUPLE_FIXED_ARITY)
+#define _CG_tuple_is_fixed(_l) ((_CG_list_to_struct(_l)->total_len & _CG_TUPLE_FIXED_ARITY) != 0)
+#define _CG_TUPLE_DYNAMIC 0x40000000u
+#define _CG_TUPLE_BITS (_CG_TUPLE_FIXED_ARITY | _CG_TUPLE_DYNAMIC)
+#define _CG_tuple_set_dynamic(_l) (_CG_list_to_struct(_l)->total_len |= _CG_TUPLE_DYNAMIC)
+#define _CG_tuple_is_dynamic(_l) ((_CG_list_to_struct(_l)->total_len & _CG_TUPLE_DYNAMIC) != 0)
+#define _CG_is_plain_list(_l) ((_CG_list_to_struct(_l)->total_len & _CG_TUPLE_BITS) == 0)
 #define _CG_prim_len(_c, _l) ((_l) ? _CG_list_len(_l) : 0)
 #define _CG_ptr_to_list(_l) ((_CG_list)(((char *)(_l)) + SIZEOF_LIST_HEADER))
 static inline _CG_list _CG_to_list(_CG_list l) { return l; }
@@ -371,3 +390,13 @@ typedef struct {
   const char *name;
 } _CG_TypeObject;
 #endif
+
+/* The emitted main() hands the process argv to the runtime before anything
+   runs (pyc reads it back through sys.argv). V has no way to read it, so the
+   ifa runtime only stores it; one translation unit, so static storage. */
+static int64 _cg_argc;
+static char **_cg_argv;
+static inline void _CG_set_argv(int64 argc, char **argv) {
+  _cg_argc = argc;
+  _cg_argv = argv;
+}
