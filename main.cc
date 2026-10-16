@@ -74,10 +74,13 @@ int main(int argc, char *argv[]) {
   init_config();
   if (fhtml || log_flags[0]) init_logs();
   if (do_unit_tests) _exit(UnitTest::run_all());
+  int status = 0;
   for (int i = 0; i < arg_state.nfile_arguments; i++) {
-    compile_one_file(arg_state.file_argument[i]);
+    // A failed compile must fail the process: `make test_llvm` used to go
+    // on and run a stale ./test_llvm, which hid a type error for days.
+    if (compile_one_file(arg_state.file_argument[i]) < 0) status = 1;
     if (fhtml) ifa_html(arg_state.file_argument[i], ".");
     if (fcode) ifa_code(arg_state.file_argument[i]);
   }
-  return 0;
+  return status;
 }

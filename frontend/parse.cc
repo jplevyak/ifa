@@ -168,7 +168,7 @@ int compile_one_file(cchar *fn) {
   if (getenv("IFA_LLVM")) {
     // Call LLVM backend directly - no serialization needed!
     llvm_codegen_write_ir(pdb->fa, if1->top->fun, fn);
-    llvm_codegen_compile(fn);
+    if (llvm_codegen_compile(fn) != 0) return -1;
   } else {
     ifa_cg(fn);
     ifa_compile(fn);

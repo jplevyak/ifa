@@ -4131,12 +4131,26 @@ bool mixed_basics(AVar *av) {
 // `{int64, B.f bound method}` aborted in `__str__` dispatch. `None` is not
 // pointer-shaped here -- {None, scalar} has its own rule (issues/048), since a
 // null test separates it except at a dispatch.
+//
+// The void and nil values are named differently by each frontend: pyc types
+// `sym_void` as `sym_void_type`, while the V prelude's `void : 0` makes
+// `sym_void` its own type, and its value's CreationSet then carries
+// `sym_void->meta_type`. Any of those is the unit, not a pointer. The meta
+// type counts only for a self-typed value: pyc's `sym_nil->meta_type` is
+// `type(None)`, a real object.
+static bool is_unit_value_sym(Sym *s) {
+  if (s == sym_nil_type || s == sym_void_type) return true;
+  for (Sym *u : {sym_void, sym_nil})
+    if (u && (s == u || s == u->type || (u->type == u && s == u->meta_type))) return true;
+  return false;
+}
+
 bool scalar_with_pointer(AType *t) {
   bool scalar = false, pointer = false;
   for (CreationSet *cs : *t) {
     if (!cs || !cs->sym || !cs->sym->type) continue;
     Sym *ty = cs->sym->type;
-    if (ty == sym_nil_type || ty == sym_void_type) continue;
+    if (is_unit_value_sym(cs->sym) || is_unit_value_sym(ty)) continue;
     Sym *b = to_basic_type(ty);
     if (b) scalar |= b->num_kind != 0;
     else pointer = true;

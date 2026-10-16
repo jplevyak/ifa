@@ -254,6 +254,7 @@ realclean: clean
 # issue 012 for the history.
 test_llvm: ifa
 	@echo "Testing LLVM backend..."
+	rm -f test_llvm
 	IFA_LLVM=1 ./ifa test_llvm.v
 	@echo "Running test_llvm..."
 	./test_llvm

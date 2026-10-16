@@ -123,3 +123,18 @@ pyc does not box, so refusal is the CPython-or-error answer.
 holds only the bound method, and prints `<instance>` where CPython prints
 `<bound method B.f of <__main__.B object at ...>>`. That is a repr fidelity
 gap for bound methods, unrelated to the union.
+
+**Follow-up (2026-10-16): the check broke the V-language LLVM smoke, and CI
+was red for three days without anyone seeing it.** `scalar_with_pointer`
+excluded the unit by `ty == sym_void_type`, which is pyc's shape. The V
+prelude's `void : 0` makes `sym_void` its own type, and its value reaches FA
+as `sym_void->meta_type`, so `make -C ifa test_llvm` refused
+`'void' holds both a number and an object ( int32 void )`. Local runs never
+showed it: `ifa` exited 0 after the error, and the rule then ran the
+`test_llvm` binary left over from before the change. Three fixes:
+`is_unit_value_sym` recognises both shapes (a meta type only for a
+self-typed value, since pyc's `sym_nil->meta_type` is `type(None)`); `ifa`
+exits 1 when a file fails to compile; and the rule deletes the old binary
+first. CI's other failure in the same window is unrelated: the runner image
+stopped shipping an unversioned `clang++`, which `Makefile.cg` hard-coded. It
+now reads `PYC_CXX`, which CI sets to `clang++-20`.
