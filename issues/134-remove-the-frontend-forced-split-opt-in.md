@@ -71,6 +71,19 @@ is identical to the old walk on every column of all 77
 (`check__PYC_CONSTCS_1__ea9a60bc+4d3e2e96` vs
 `check__default__ea9a60bc+4d3e2e96`). The A/B flag is deleted.
 
+## PER_CS_RECEIVER rides on the annotation (from 157, 2026-10-15)
+
+`split_for_per_cs_method_receivers` (the `PER_CS_RECEIVER` stage) acts only
+on classes flagged `clone_methods_per_cs`, and only a
+`__pyc_clone_constants__` on a constructor parameter sets that flag. So it
+is splitting driven by the annotation, not by a demand. The ifa/157 census
+(every corpus program, `PYC_DBG_STAGES`) found it acting on **0** programs,
+although it runs on each program's final pass with the cascade gate open.
+Decide it with the annotations that feed it: when the last ctor-param
+annotation goes, the stage and `clone_methods_per_cs` go too; before that,
+a same-binary corpus A/B with the stage disabled says whether any suite or
+corpus program still needs it.
+
 ## The 9 that stay
 
 | line | without it | what would retire it |

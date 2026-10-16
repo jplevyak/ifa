@@ -43,7 +43,7 @@ content in both.
 **Not the fix:** a pass cap. Truncation makes `amaze` and `msp_ss` fail
 to compile, and the author's direction is *"no artificial pass limits; the
 analysis should recognise it is not making progress"*. See
-[157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) item 4
+[157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md) item 4
 (terminate on a fixed point).
 
 ## Two routes

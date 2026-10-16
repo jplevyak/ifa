@@ -120,7 +120,7 @@ matches CPython, its "1 group" declines occur only up to pass 13, and its
 unresolved dispatches fall from 143 on pass 1 to 0 from pass 15. The
 default ladder resolves them before convergence. The ES-demand link that
 was meant to feed this decline (`PYC_RETDEMAND`) was measured inert and
-deleted ([157](157-FA-all-demand-must-be-evaluated-at-quiescence.md)
+deleted ([157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md)
 item 3, [146](146-remove-all-arbitrary-splitting.md)).
 
 ## A test without the None is NOT this issue (2026-10-15)

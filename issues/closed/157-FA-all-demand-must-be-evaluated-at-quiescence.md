@@ -1,10 +1,17 @@
 # ifa/157 — ALL demand must be evaluated at quiescence
 
-**Status:** open. Architecture issue: when may a demand test run, and why do
+**Status: CLOSED 2026-10-15.** Item 1 (the rename) is done; items 3 and 4
+were measured inert and their levers deleted; item 2 has no witness (the
+census under it: every corpus program but othello3 converges with the
+cascade gate open on its final pass, so starvation delays a stage and never
+loses a demand). Whether to delete PER_CS_RECEIVER, which acted on no
+program, moved to [134](../134-remove-the-frontend-forced-split-opt-in.md)
+with the annotations that are its only input. The rule it states stays in
+AGENTS.md. Architecture issue: when may a demand test run, and why do
 the lower rungs of the ladder almost never get to? Rewritten 2026-09-28.
-This file now also carries [148](closed/148-stage-5-starvation-root-caused.md)
+This file now also carries [148](148-stage-5-starvation-root-caused.md)
 (stage starvation, termination) and the residual of
-[007](closed/007-FA-mark-type-stage-coverage.md) (SETTER_OF_SETTER is never
+[007](007-FA-mark-type-stage-coverage.md) (SETTER_OF_SETTER is never
 reached). The full record, including every probe's output, is in git:
 `git show 3f36072b:ifa/issues/157-FA-all-demand-must-be-evaluated-at-quiescence.md`.
 
@@ -48,11 +55,14 @@ re-route of an unchanged group to the same home.)
 
 ## The four defects, and the plan for each
 
-### 1. Rename the gate to what it tests
+### 1. Rename the gate to what it tests — DONE 2026-10-15
 
-The misnomer is load-bearing. It is why "stages 6+ are starved" read as a
-convergence problem across two issues. Rename it and its comments to a
-cascade-priority gate. No behaviour change.
+The misnomer was load-bearing. It is why "stages 6+ are starved" read as a
+convergence problem across two issues. Renamed: `split_css_by_defs`'s
+`quiescent` parameter is `higher_stages_idle`, the probe is
+`PYC_DBG_CASCADE`, and every comment that called the `!analyze_again` gate
+"quiescence" calls it the cascade gate. The comments that mean real
+convergence (a pass's fixed point) keep the word. No behaviour change.
 
 ### 2. Give every stage route 4's shape: TOLD, not gated
 
@@ -70,6 +80,33 @@ it gets the parameter: *"the answer has to be a reason this stage may act,
 not permission to act without one."* `collect_setter_confluences` builds
 `setter_starters` with no demand test at all (every container allocation
 qualifies), which is why lifting its gate over-splits.
+
+**Census 2026-10-15: no witness.** Every corpus program compiled with
+`PYC_DBG_OSC`, `PYC_DBG_STAGES` and `PYC_DBG_CASCADE` (commit `197a2e11` +
+the item-1 rename):
+
+- **No run ends at the pass cap or the stall guard**, and every one ends
+  with zero violations. The one exception is othello3, which does not
+  finish (600 s); its compile time is
+  [186](../186-FA-pass-one-confluence-through-shared-builtins.md)'s.
+- **The gated stages are not starved to death.** The cascade gate is open
+  on 292 of 1,494 passes (20%). SETTER_OF_SETTER acted on 15 programs
+  (bh, chull, dijkstra, dijkstra2, genetic2, go, kmeanspp, life, loop,
+  plcfrs, pylife, sat, softrender, sunfish, voronoi2), VIOLATION on 5
+  (doom, fysphun, quameon, richards, softrender). The "fires ZERO times"
+  above was true when written and is not now.
+- **PER_CS_RECEIVER acted on 0.** It acts only on classes flagged
+  `clone_methods_per_cs`, which only [134](../134-remove-the-frontend-forced-split-opt-in.md)'s
+  forced-split annotations set, and on each program's final pass (where
+  the gate is open) it found nothing.
+
+The structural reason starvation cannot lose a demand: the loop ends only
+on a pass where no stage acted, and on that pass the cascade gate is open,
+so every gated stage runs on the converged state before the analysis
+stops. Starvation delays a stage; it cannot keep it from running, except
+in a run cut off by the pass cap or the stall guard, and none is. So the
+route-4 shape would change WHEN these stages act, not WHETHER, and no
+program is known to need it sooner.
 
 ### 3. Route the ES-side demand to an actuator instead of dropping it
 
@@ -89,7 +126,7 @@ So the dispatch ambiguity is a SYMPTOM. On `sudoku4` 102 ambiguous sites
 come from **5** distinct receiver unions, each a `{dict, bool, list,
 tuple, set, int64, str}` union the program never makes. Fix the few merges
 upstream, not the broadcast. That was the shared-writer decline, now
-[178](178-FA-route4-declines-records-built-through-one-constructor.md)'s.
+[178](../178-FA-route4-declines-records-built-through-one-constructor.md)'s.
 
 **Measured 2026-10-15.** sudoku4 now compiles warning-free and matches
 CPython. With `IFA_DBG_RETCONF` / `IFA_DBG_CSDEFSPLIT` its unresolved
@@ -153,7 +190,7 @@ showed no longer occurs. The test stays as the `IFA_DBG_TYPEMOVE` probe.
   (3).)
 - For (4): if `TYPEMOVE` increases passes without changing any result, the
   moving types are a period-2 oscillation, which is
-  [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)'s
+  [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md)'s
   business and not a termination problem. (Hit 2026-10-15, but not as an
   oscillation: the one added pass moves nothing. See (4).)
 
@@ -174,8 +211,8 @@ showed no longer occurs. The test stays as the `IFA_DBG_TYPEMOVE` probe.
 
 `IFA_DBG_CONFLEVEL`, `IFA_DBG_RETCONF[_V]`, `IFA_DBG_INCOMPAT`,
 `IFA_DBG_SEED`, `IFA_DBG_CSDEFS`, `IFA_DBG_SCSS`, `IFA_DBG_ESDEMAND`,
-`PYC_DBG_QUIESCE` (misnamed: it counts passes on which stage 1 found
-nothing), `PYC_DBG_STAGEDELTA`, `IFA_DBG_REPARK`.
+`PYC_DBG_CASCADE` (renamed from `PYC_DBG_QUIESCE`: it counts passes on
+which stages 1-5 all found nothing), `PYC_DBG_STAGEDELTA`, `IFA_DBG_REPARK`.
 
 ## Verification
 

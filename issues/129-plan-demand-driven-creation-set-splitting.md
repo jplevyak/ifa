@@ -93,8 +93,8 @@ that look like this family and are not:
 
 | was | now |
 | --- | --- |
-| A. the shared-writer decline ("1 group") and the ES demand link | [178](178-FA-route4-declines-records-built-through-one-constructor.md): no known witness; `PYC_RETDEMAND` deleted ([157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) item 3) |
-| C. stage 5's fan and the lower rungs | [146](146-remove-all-arbitrary-splitting.md) (inventory empty), [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) |
+| A. the shared-writer decline ("1 group") and the ES demand link | [178](178-FA-route4-declines-records-built-through-one-constructor.md): no known witness; `PYC_RETDEMAND` deleted ([157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md) item 3) |
+| C. stage 5's fan and the lower rungs | [146](146-remove-all-arbitrary-splitting.md) (inventory empty), [157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md) |
 | D. constants | [134](134-remove-the-frontend-forced-split-opt-in.md): 9 forced-split annotations |
 | E. performance | [111](111-FA-selective-invalidation-per-pass.md), not a precondition |
 | taking decisions back | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) |

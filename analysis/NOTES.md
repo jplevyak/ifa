@@ -170,7 +170,7 @@ This section focuses strictly on open issues and active capability gaps for revi
   Per-branch SSU AVars (`v_v1`, `v_v2`) are successfully narrowed by `Code_IF`, but pyc's strict no-boxing default can emit `BOXING` violations on the original Var `v` before the narrowed views can gate downstream uses. Needs liveness-aware box-checking or SSU rewrite-and-prune.
 - **Permissive-Mode Voiding of NOTYPE ([ifa/issues/049](../issues/closed/049-FA-raise-only-contour-notype.md), [ifa/issues/124](../issues/124-FA-refuse-imprecise-inference.md), [ifa/issues/145](../issues/closed/145-numeric-coercion-is-not-gated-on-permissive-mode.md))**:
   `convert_NOTYPE_to_void()` silently salvages bottom-typed AVars under `fruntime_errors` (pyc default) by converting them to `void`, producing `return 0` clones rather than failing loudly. IFA should refuse imprecise inference or gate salvage strictly behind permissive runtime error flags.
-- **Splitter Stage Cascade and Quiescence Gating ([ifa/issues/146](../issues/146-remove-all-arbitrary-splitting.md), [ifa/issues/157](../issues/157-FA-all-demand-must-be-evaluated-at-quiescence.md))**:
+- **Splitter Stage Cascade and Quiescence Gating ([ifa/issues/146](../issues/146-remove-all-arbitrary-splitting.md), [ifa/issues/157](../issues/closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md))**:
   Auditing remaining splitters to eliminate any residual arbitrary/structural splitting, and ensuring all demand tests are evaluated once types have converged at quiescence.
 
 ### 2. Open Capability Gaps and Design Observations

@@ -13,7 +13,7 @@ converged types no longer justify it.**
 A contour exists because something observed a distinction that required it
 (AGENTS.md). A distinction observed on pass-0 imprecision, or on a
 half-populated contour, is a statement about the analysis, not about the
-program. [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md)'s rule
+program. [157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md)'s rule
 is that demand is a property of CONVERGED types. The corollary here: **a
 contour whose demand has evaporated at convergence is unjustified and
 should go.** Retiring one costs nothing in soundness, because

@@ -306,7 +306,7 @@ The rest of the corpus's non-convergence is a different disease,
 characterized in [101](101-FA-first-time-forever-splitting.md): 95-98% of
 split decisions are first-time signatures, so nothing that keys on a repeat
 can help. The first-stage-wins cascade that starves later stages is
-[157](../157-FA-all-demand-must-be-evaluated-at-quiescence.md).
+[157](157-FA-all-demand-must-be-evaluated-at-quiescence.md).
 
 ## Dead ends (measured; do not repeat)
 

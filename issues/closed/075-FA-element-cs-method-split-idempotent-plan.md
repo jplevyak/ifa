@@ -1,6 +1,6 @@
 # 075 — Escaping the local maximum: idempotent element-CS container-method separation (the shedskin `dcpa` model)
 
-> **CLOSED 2026-09-28 (rejected direction).** Per-receiver-CS container-method contours (shedskin's `dcpa` dimension as identity) are structural splitting: they multiply contours whether or not a demand asks ([146](../146-remove-all-arbitrary-splitting.md) B). Measured in [157](../157-FA-all-demand-must-be-evaluated-at-quiescence.md): `CSM_ELEMENT_CS` fires zero times at the default, and with its gate lifted the element confluences are byte-identical while errors rise 0 -> 9. `PYC_CSM` is on 146's delete list. The shared-writer problem it targeted is solved on demand by `PYC_ESBLOCK=1` (default).
+> **CLOSED 2026-09-28 (rejected direction).** Per-receiver-CS container-method contours (shedskin's `dcpa` dimension as identity) are structural splitting: they multiply contours whether or not a demand asks ([146](../146-remove-all-arbitrary-splitting.md) B). Measured in [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md): `CSM_ELEMENT_CS` fires zero times at the default, and with its gate lifted the element confluences are byte-identical while errors rise 0 -> 9. `PYC_CSM` is on 146's delete list. The shared-writer problem it targeted is solved on demand by `PYC_ESBLOCK=1` (default).
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 

@@ -879,7 +879,7 @@ enum class FAPassStage {
                           // (ifa/issues/045: precision split of
                           // method contours per receiver CS for
                           // clone_methods_per_cs classes; runs only
-                          // on quiescence of all stages above)
+                          // when no stage above acted this pass)
   CSM_ELEMENT_CS,         // deleted (ifa/075 PYC_CSM, ifa/146); the slot
                           // stays so stage numbering and names are stable
   CARTESIAN_PRODUCT,      // split_ess_cartesian_product (ifa/issues/074,
@@ -895,7 +895,7 @@ enum class FAPassStage {
                           // (cs->defs) so the conflicting elements stop
                           // sharing one contour. shedskin's ladder route
                           // 4 (infer.py:1576), and like it the LAST rung:
-                          // runs only on quiescence of every stage above,
+                          // told whether any stage above acted this pass,
                           // so anything a finer route can separate is
                           // separated first.
   CONST_DEMAND,           // split_for_constant_demand (ifa/151): a

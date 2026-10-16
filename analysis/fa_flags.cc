@@ -393,8 +393,8 @@ int cskey_enabled() {
 // (`infer.py:1576`), and there too it is tried only after no-confusion,
 // confluence-partition and path-partition have failed. It is the coarsest
 // separation available, so it must not preempt a finer one: the call site
-// is gated on quiescence of every stage above, exactly as PER_CS_RECEIVER
-// and CSM_ELEMENT_CS are.
+// is told whether any stage above acted this pass (the cascade gate),
+// which PER_CS_RECEIVER sits behind.
 //
 // Termination is structural, not a cap. After the re-point `cs_map` names
 // the new CreationSet, and `creation_point` is memo-first, so the next

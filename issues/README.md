@@ -36,7 +36,7 @@ one is a lesson this directory paid for.
    off.**
 4. **Types are already converged when the split stages run.** "When" is
    not the defect. The cascade-priority gate is (it starves every lower
-   stage). ([157](157-FA-all-demand-must-be-evaluated-at-quiescence.md))
+   stage). ([157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md))
 5. **The confluence is a CONTOUR, and the demand is observed where the
    union is USED**, usually far from the merge. Backtrack it. Do not act
    at the symptom. (AGENTS.md; closed/152)
@@ -66,7 +66,6 @@ one is a lesson this directory paid for.
 | --- | --- |
 | [129](129-plan-demand-driven-creation-set-splitting.md) | **the plan**: start-merged CreationSets, demand-driven separation, a ledger. Landed; open only on the one-creation-point family (no current corpus case); the shared-writer decline moved to 178. What is settled. |
 | [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (no default-path violation is known as of 2026-10-13), and a verdict for every off-by-default splitting lever. Every DELETE and MEASURE lever was deleted 2026-10-15, then SLOTARITY, TYPEMOVE and RETDEMAND; the inventory is empty. |
-| [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) | **when demand is asked**: the gate is a cascade priority, not quiescence. Give each stage route 4's shape; route ES-side demands to an actuator; terminate on a fixed point. |
 | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
 | [134](134-remove-the-frontend-forced-split-opt-in.md) | constants: 9 `__pyc_clone_constants__` annotations remain, each with a named replacement. |
 | [132](132-arity-is-representation-not-provenance.md) | arity in CS identity (landed); a slot holding two arities shown sound, `PYC_SLOTARITY` deleted (2026-10-15); open: the untagged-dispatch test, via 178. |
@@ -143,6 +142,7 @@ one is a lesson this directory paid for.
 | [150](closed/150-is-not-none-never-folds.md) | fixed | 134 |
 | [151](closed/151-split-an-entryset-on-a-constant-argument-on-demand.md) | CONST_DEMAND landed | 134 |
 | [156](closed/156-FA-split-int-from-float-coerce-last.md) | split side complete: every remaining mix is a genuine flow or temporal merge | 189 |
+| [157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md) | the gate renamed (cascade, not quiescence); RETDEMAND and TYPEMOVE inert, deleted; the stage census found no starved demand | 134 (PER_CS_RECEIVER) |
 | [188](closed/188-FA-field-and-method-of-one-name-on-two-classes.md) | a number and an object in one value had no BOXING check (silent miscompile); now refused | — |
 | [189](closed/189-FA-coercion-warns-per-expression-not-per-origin.md) | one coercion warning per origin, naming its source lines and reach | — |
 | [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |

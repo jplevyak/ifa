@@ -4664,8 +4664,9 @@ SplitDecision *FA::ledger_add_cs(uint sig, CreationSet *product) {
 // And the framing was wrong besides: `analyze_to_convergence` drains its
 // worklists BEFORE calling `extend_analysis`, so the types every split stage
 // reads are ALREADY at a fixed point. This detector was never reading stale
-// types, and the `!analyze_again` gate the comments below call quiescence is
-// not one -- it tests whether a higher-priority stage acted. See ifa/157.
+// types, and the `!analyze_again` gate (the cascade gate, once called
+// quiescence) is not one -- it tests whether a higher-priority stage acted.
+// See ifa/157.
 static int conflevel_probe() {
   static int e = -1;
   if (e < 0) e = getenv("IFA_DBG_CONFLEVEL") ? 1 : 0;
@@ -9042,7 +9043,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   return 0;
 }
 
-[[nodiscard]] static int split_css_by_defs(int quiescent) {
+[[nodiscard]] static int split_css_by_defs(int higher_stages_idle) {
   if (!csdefsplit_enabled()) return 0;
   const bool dbg = getenv("IFA_DBG_CSDEFSPLIT") != nullptr;
   // Entry trace. Absence of the per-CS lines below has THREE causes --
@@ -9054,7 +9055,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   // ifa/133: bring the VIOLATION demand here directly, instead of via stage
   // 5. On `bh` stage 5 is starved on all 40 passes (`analyze_again=1 ->
   // starved`), so a violation is never consulted -- and un-starving it by
-  // lifting the quiescence gate costs 16 suite tests, which is the retreat
+  // lifting the cascade gate costs 16 suite tests, which is the retreat
   // CLAUDE.md warns about. But the deferral does not need the STAGE: route 4
   // runs on EVERY pass regardless, and all the demand has to do is name a
   // CreationSet. So walk each violation backward and offer every CreationSet
@@ -9071,13 +9072,13 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   // exactly as a violation does. The rungs below then
   // partition the one that merged, or decline when the union is genuine.
   Vec<CreationSet *> field_named;
-  // Only when no higher stage acted this pass (`quiescent`). Not because
+  // Only when no higher stage acted this pass (`higher_stages_idle`). Not because
   // the types are unconverged (ifa/157: they are converged when this runs)
   // but because a union that a higher stage is still separating is not yet
   // the program's: plcfrs's pass-0 'count' write spans seven classes, and
   // acting on it named 93-184 CreationSets and added 306 to the analysis
   // for no verdict change.
-  if (quiescent) {
+  if (higher_stages_idle) {
     static int dbg_fm = getenv("IFA_DBG_FIELDMIXED") ? 1 : 0;
     std::set<std::pair<int, std::string>> native;
     auto record_classes = [](AVar *obj, Vec<Sym *> &out) {
@@ -9155,7 +9156,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   // The two receivers met upstream, so walk the receiver's value flow back
   // to the CONFLUENCE -- a CreationSet whose content holds both -- and name
   // it, exactly as the field demand above does; the rungs below then
-  // partition it by creation point or decline. Same quiescence gate, for
+  // partition it by creation point or decline. Same cascade gate, for
   // the same reason.
   Vec<CreationSet *> dispatch_named;
   // When the ambiguous receivers meet not in a CreationSet but in the
@@ -9167,7 +9168,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   // #1960, #3451}, whose `charges` are an int-list and a float-list.
   Vec<AVar *> per_cs_formals;
   static int dbg_ut = getenv("IFA_DBG_UNTAGGED") ? atoi(getenv("IFA_DBG_UNTAGGED")) : 0;
-  if (quiescent) {
+  if (higher_stages_idle) {
     static std::set<std::pair<int, int>> reported_ut;  // (es id, pnode id), once per analysis
     for (EntrySet *es : fa->ess) {
       if (!es) continue;
@@ -9505,7 +9506,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       // and a `_ReNode` contour carrying members of other classes all read
       // as int/float mixes, and splitting `_ReNode`'s `__new__` on it cost
       // 21 EntrySets and 83 CreationSets for no change in any verdict.
-      if (csnumsplit_enabled() && quiescent && defs.n == 1 && defs.v[0] && defs.v[0]->contour_is_entry_set &&
+      if (csnumsplit_enabled() && higher_stages_idle && defs.n == 1 && defs.v[0] && defs.v[0]->contour_is_entry_set &&
           defs.v[0]->contour != GLOBAL_CONTOUR) {
         Vec<AVar *> mix;
         cs_numeric_mix_content(cs, mix);
@@ -9759,7 +9760,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       // actually reach ITS objects. The blind content walk cannot say that:
       // on the enumerate shape both Point creation points sit behind one
       // list contour and every path reaches both.
-      if (ngroups < 2 && csnumsplit_enabled() && quiescent) {
+      if (ngroups < 2 && csnumsplit_enabled() && higher_stages_idle) {
         Vec<AVar *> mix;
         cs_numeric_mix_content(cs, mix);
         CSFlowGraph *gn = mix.n ? build_cs_flow_graph_over(cs, mix, kCallMatchNumeric) : nullptr;
@@ -10862,7 +10863,7 @@ static void clear_splits() {
 // file already names for `split_es_by_call_site` mode 1: "a FAN-OUT, not a
 // separation -- the partition size is the caller count rather than the
 // number of distinct element types". Modes >= 2 additionally lifted the
-// quiescence gate, so the fan preempted the finer stages that exist to
+// cascade gate, so the fan preempted the finer stages that exist to
 // make it unnecessary.
 //
 // Measured on `bh` before removal, and the numbers are the tell: =2 left 1
@@ -11756,7 +11757,7 @@ static bool formal_types_moved(int aa) {
   }
   log(LOG_SPLITTING, "split_ess_for_mark_type %d\n", analyze_again);
   // 3) split based on setters of type
-  // Gated on quiescence. Lifting the gate (PYC_SETTERGATE) is permission
+  // Behind the cascade gate. Lifting it (PYC_SETTERGATE) is permission
   // without a reason, and =2 cost +31% CreationSets; deleted (ifa/146).
   // ifa/issues/055 probe: PYC_NOSETTER=1 skips the SETTER stage entirely.
   static int nosetter = -1;
@@ -11872,22 +11873,23 @@ static bool formal_types_moved(int aa) {
   }
   log(LOG_SPLITTING, "split_for_violations %d\n", analyze_again);
   // 6) precision: per-receiver-CS method contours for
-  // clone_methods_per_cs classes (ifa/issues/045). Only on full
-  // quiescence of stages 1-5 so it cannot perturb their
-  // trajectories within a pass.
+  // clone_methods_per_cs classes (ifa/issues/045). Only when stages 1-5
+  // all found nothing this pass (the cascade gate), so it cannot perturb
+  // their trajectories within a pass.
   // The stage IS starved on plcfrs/rdb/sudoku5 -- TYPE_CONFLUENCE fires
   // every pass there, so `!analyze_again` is never true and this never
   // runs. PYC_RECVFAN=2 used to lift the gate for that reason and was
   // removed 2026-09-07 (see the note at split_for_per_cs_method_receivers):
-  // lifting a quiescence gate to let an ARBITRARY fan run earlier answers
+  // lifting a cascade gate to let an ARBITRARY fan run earlier answers
   // starvation with more splitting rather than with a demand test. The
   // starvation is real and still open; the answer has to be a reason this
   // stage may act, not permission to act without one.
-  // ifa/156 PROBE (PYC_DBG_QUIESCE): how often is the quiescence gate that
-  // stages 6+ hang on actually REACHED? "All demand after quiescence" is only
-  // implementable if quiescence happens.
-  if (getenv("PYC_DBG_QUIESCE"))
-    fprintf(stderr, "[quiesce] p=%d reached=%d\n", analysis_pass, analyze_again ? 0 : 1);
+  // ifa/156 PROBE (PYC_DBG_CASCADE, was PYC_DBG_QUIESCE): how often do
+  // stages 1-5 all find nothing, so that the cascade gate stages 6+ sit
+  // behind is open? (It is not quiescence: the types are converged on every
+  // pass, ifa/157.)
+  if (getenv("PYC_DBG_CASCADE"))
+    fprintf(stderr, "[cascade] p=%d idle=%d\n", analysis_pass, analyze_again ? 0 : 1);
   if (!analyze_again) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
       census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
@@ -11910,11 +11912,11 @@ static bool formal_types_moved(int aa) {
   // creation points when a type confluence landed on its contour and
   // every finer stage above has declined. shedskin's ladder route 4, in
   // the position shedskin puts it: coarsest separation, tried last, so it
-  // can never preempt a split that keeps more precision. Gated on full
-  // quiescence for the same reason PER_CS_RECEIVER is.
-  // Called on EVERY pass, not only on quiescence, so the ripeness count
-  // above sees every pass; `quiescent` decides whether an unripe candidate
-  // may be acted on. A quiescent pass behaves exactly as before.
+  // can never preempt a split that keeps more precision. Told the cascade
+  // gate, for the same reason PER_CS_RECEIVER sits behind it.
+  // Called on EVERY pass, not only when the gate is open, so the ripeness
+  // count above sees every pass; `higher_stages_idle` decides whether an
+  // unripe candidate may be acted on. An idle pass behaves exactly as before.
   {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
       census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;

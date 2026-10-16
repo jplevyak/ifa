@@ -1,6 +1,6 @@
 # ifa/148 — stage 5 is starved, and the starvation is load-bearing
 
-> **CLOSED 2026-09-28 (merged into 157).** Its findings (stage 1 monopolises the cascade; `analyze_again` conflates "a stage split" with "the state moved"; `PYC_ROUTESTABLE` now default; `PYC_TYPEMOVE`, `PYC_ESPATH` and stage 5's per-CS fan) are carried in [157](../157-FA-all-demand-must-be-evaluated-at-quiescence.md) and [146](../146-remove-all-arbitrary-splitting.md).
+> **CLOSED 2026-09-28 (merged into 157).** Its findings (stage 1 monopolises the cascade; `analyze_again` conflates "a stage split" with "the state moved"; `PYC_ROUTESTABLE` now default; `PYC_TYPEMOVE`, `PYC_ESPATH` and stage 5's per-CS fan) are carried in [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) and [146](../146-remove-all-arbitrary-splitting.md).
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
