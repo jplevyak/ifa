@@ -289,7 +289,7 @@ with different factories — `defaultdict(int, board)` and
 cannot fold across the merge, so the None arm is type-checked and
 `self.factory()` fails. Same shape as the `min`/`max` case in
 [150](150-is-not-none-never-folds.md), reached through truthiness rather
-than `is None`. Surfaced by [125](../../../issues/125-in-has-no-iterable-fallback.md)'s
+than `is None`. Surfaced by [125](../../../issues/closed/125-in-has-no-iterable-fallback.md)'s
 `list()` fallback, which let the analysis get that far.
 
 ## Plan
