@@ -4273,22 +4273,43 @@ static void collect_var_type_violations() {
     // CreationSet. Same receiver test and exemption as codegen's.
     // At FA time a method call is `P_prim_period(obj, sel)` (then a call
     // of the bound method); obj is rvals[1], the selector rvals[3].
+    //
+    // issues/183: an OPERATOR is the same dispatch, and it was missed. `x + 5`
+    // is a send whose rvals[0] is the selector symbol (`__add__`) and whose
+    // operands follow -- no period -- so a {None, int} operand compiled in
+    // every mode, the None arm was dropped, and None read as 0 where
+    // CPython raises TypeError. Every operand is checked: `5 + x` and
+    // `x == 0` cannot tell None from 0 either.
+    auto nil_scalar = [](AVar *v) {
+      if (!v || !v->out) return false;
+      bool has_nil = false, has_scalar = false;
+      for (CreationSet *cs : v->out->sorted) if (cs && cs->sym) {
+        if (cs->sym->type == sym_nil_type) has_nil = true;
+        else if (cs->sym->type && cs->sym->type->num_kind) has_scalar = true;
+      }
+      return has_nil && has_scalar;
+    };
+    auto truthiness = [](Sym *sel) {
+      return !strcmp(sel->name, "__pyc_to_bool__") || !strcmp(sel->name, "__bool__") || !strcmp(sel->name, "__not__");
+    };
     for (EntrySet *es : fa->ess) {
       for (PNode *p : es->fun->fa_all_PNodes) {
-        if (!p->prim || p->prim->index != P_prim_period || p->rvals.n < 4) continue;
         if (!es->live_pnodes.set_in(p)) continue;
-        Sym *sel = p->rvals[3]->sym;
-        if (!sel || !sel->name) continue;
-        if (!strcmp(sel->name, "__pyc_to_bool__") || !strcmp(sel->name, "__bool__") || !strcmp(sel->name, "__not__"))
+        if (p->prim) {
+          if (p->prim->index != P_prim_period || p->rvals.n < 4) continue;
+          Sym *sel = p->rvals[3]->sym;
+          if (!sel || !sel->name || truthiness(sel)) continue;
+          AVar *recv = make_AVar(p->rvals[1], es);
+          if (nil_scalar(recv)) type_violation(ATypeViolation_kind::BOXING, recv, recv->out, nullptr, nullptr);
           continue;
-        AVar *recv = make_AVar(p->rvals[1], es);
-        if (!recv->out) continue;
-        bool has_nil = false, has_scalar = false;
-        for (CreationSet *cs : recv->out->sorted) if (cs && cs->sym) {
-          if (cs->sym->type == sym_nil_type) has_nil = true;
-          else if (cs->sym->type && cs->sym->type->num_kind) has_scalar = true;
         }
-        if (has_nil && has_scalar) type_violation(ATypeViolation_kind::BOXING, recv, recv->out, nullptr, nullptr);
+        if (!p->code || p->code->kind != Code_SEND || p->rvals.n < 2) continue;
+        Sym *sel = p->rvals[0]->sym;
+        if (!sel || !sel->is_symbol || !sel->name || truthiness(sel)) continue;
+        for (int i = 1; i < p->rvals.n; i++) {
+          AVar *opnd = make_AVar(p->rvals[i], es);
+          if (nil_scalar(opnd)) type_violation(ATypeViolation_kind::BOXING, opnd, opnd->out, nullptr, nullptr);
+        }
       }
     }
     // ifa/134: a RECORD (fixed-arity, field-per-position -- a tuple) whose
