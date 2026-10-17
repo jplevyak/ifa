@@ -156,6 +156,8 @@ void report_degenerate_avars();
 void report_incompat();
 void report_dead_stores();  // ifa/191 census
 void report_overwrite_probe();  // ifa/191 direction 2
+int decide_overwritten_stores();  // ifa/191: at a fixed point, record never-read None stores
+bool store_is_overwritten(PNode *p);  // ifa/191: the setter transfer skips a recorded store
 void report_keydrift();
 void report_keyspace();
 void report_cs_population();

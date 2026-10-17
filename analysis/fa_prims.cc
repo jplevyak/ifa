@@ -319,7 +319,9 @@ switch (p->prim->index) {
         AVar *val = make_AVar(p->rvals[4], es);
         fill_tvals(es->fun, p, 1);
         AVar *tval = make_AVar(p->tvals[0], es);
-        flow_vars(val, tval);
+        // ifa/191: a recorded store is never read before its overwrite, so its
+        // value is not part of the field's type (overwrite.cc).
+        if (!store_is_overwritten(p)) flow_vars(val, tval);
         set_container(tval, obj);
         for (CreationSet *sel : selector->out->sorted) {
           cchar *symbol = sel->sym->name;

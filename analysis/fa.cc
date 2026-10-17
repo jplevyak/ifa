@@ -13946,11 +13946,15 @@ static void analyze_to_convergence() {
       // (The CSELEM resplit and rejoin that ran after it were deleted with
       // PYC_CSELEM, ifa/146.)
       if (!ext && !rea && !fil) ret = if1->callback->retract_derived_state() ? 1 : 0;
+      // ifa/191: at a fixed point, a None store no read can observe before its
+      // overwrite is recorded and stops flowing into the field (overwrite.cc).
+      int ow = 0;
+      if (!ext && !rea && !fil && !ret) ow = decide_overwritten_stores();
       fa->last_pass_reanalyze = (rea != 0);
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d viol=%d\n",
                 analysis_pass, ext, rea, fil, ret, fa->type_violations.set_count());
-      loop_again = (ext || rea || fil || ret || raise_grew);
+      loop_again = (ext || rea || fil || ret || ow || raise_grew);
     }
   } while (loop_again && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))

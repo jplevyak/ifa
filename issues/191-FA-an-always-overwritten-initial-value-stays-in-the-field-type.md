@@ -1,6 +1,6 @@
 # 191 — an initial value that is always overwritten before any read stays in the field's type
 
-**Status:** open. Filed 2026-10-17. Not attempted.
+**Status:** partial. Filed 2026-10-17. **Direction 2 landed the same day** (rows 2-4, below): `ifa/analysis/overwrite.cc`. Open: row 5 (`[None] * n` with scalar elements), direction 3.
 
 ## Symptom
 
@@ -160,7 +160,7 @@ field store and is not covered.
 passes). The implementation should walk only a `None` store whose field's
 type also holds a scalar -- the 8 above -- not every `None` store.
 
-### Applying it (next)
+### Applying it (landed 2026-10-17)
 
 1. At the end of a pass, for each `None` store whose field is `{None,
    scalar}` and whose walk is NEVER, record the store in a DECISION ledger
@@ -173,6 +173,31 @@ type also holds a scalar -- the 8 above -- not every `None` store.
 4. `--strict`: this is CPython-exact (the placeholder is never observed), so it
    applies in every mode; no flag gate is needed, but it gets one
    (`PYC_OVERWRITE`) for the A/B.
+
+**Landed as planned**, in `ifa/analysis/overwrite.cc`
+(`decide_overwritten_stores`, called from `analyze_to_convergence` when no
+other end-of-pass repair acted; `store_is_overwritten` read by the
+`P_prim_setter` transfer in `fa_prims.cc`). A store is recorded only when its
+field also holds a number and EVERY contour of its function walks NEVER; a
+recorded store that later becomes observable fails the compile naming it.
+`PYC_OVERWRITE=0` turns it off. Codegen needed nothing: the dropped store's
+C is a `None` into the now-`int64` slot, emitted as a zero that nothing reads.
+
+- **Fixed:** rows 2, 3 and 4, and issues/048's `none_int_field_pair`,
+  `none_int_field_zero` and `none_float_field` (all row 4). Their
+  `.known_issue` sidecars are removed; each test now says it passes since 191.
+  All compile under `--strict` and match CPython on both backends.
+- **Still refused, correctly:** all nine hazard programs above. Two
+  regression tests pin both sides:
+  `tests/field_none_read_before_overwrite.py` (`.check_fail`, a read in a method
+  `__init__` calls) and `tests/field_none_overwritten_two_objects.py` (two
+  objects, overwritten in the opposite order from construction).
+- **Corpus:** `check__default__d84aea97+38ad5631` against
+  `check__PYC_OVERWRITE_0__d84aea97+38ad5631`, one binary: identical in all 77
+  rows and every column, and identical to the pre-191
+  `check__default__cfce7227+5071387a`. As the census predicted.
+- `make test`: 486 passed, 15 known, 0 failed on both backends (478 / 21
+  before: six known issues flipped, two tests added).
 
 ## Stop conditions
 
