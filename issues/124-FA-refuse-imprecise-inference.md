@@ -1,9 +1,9 @@
 # 124 — `--refuse-imprecise`: refuse where inference left a type untyped, instead of emitting codegen's guess
 
-**Status:** open on two small residuals. The option landed 2026-09-01
-(off by default). The root cause it found landed 2026-09-02 (nil-only edge
-types in the splitter), and `go` then compiled and ran. Rewritten
-2026-09-28; history in git:
+**Status:** open on one residual: 6 sites in `go`. Residual 1 is fixed
+(2026-10-17, below). The option landed 2026-09-01 (off by default). The root
+cause it found landed 2026-09-02, and `go` then compiled and ran. Rewritten
+2026-09-28 and 2026-10-17; history in git:
 `git show 3f36072b:ifa/issues/124-FA-refuse-imprecise-inference.md`.
 It now also owns the remainder of
 [123](closed/123-CGEN-union-receiver-field-access-has-no-discrimination.md).
@@ -44,24 +44,43 @@ and is removed. Its constant rule (closed/169) survives as `edge_arg_type`.
 
 ## Residuals
 
-1. **The check has a false positive on nil-only formals.**
-   `tests/comprehension_index_untypes_list.py` (`.known_issue`) still
-   reports 3 sites. They are `append`/`len` parameters that are provably
-   always `None`: precise, merely lacking a C representation. Exempt
-   nil-only formals from the check, and the fixture flips to PASS by
-   itself.
-2. **FIXED 2026-10-03, `go` compiles.** `str.strip`/`lstrip`/`rstrip`
-   now exist with a `chars` argument. Re-measure `go` under
-   `--refuse-imprecise`. History: **`go` did not compile at `4b61e721`, and the cause was not
-   imprecision.** Its first error is `unresolved member 'rstrip' of class
-   'str'` (`go.py:514`, `sys.stdin.readline().rstrip('\n')`):
-   `__pyc__/01_str.py` defines `strip` but not `rstrip` / `lstrip`. That
-   is a builtin-library gap for the top-level `issues/` tree, not this
-   issue. Fix it, then re-measure `go`. If a `Square | UCTNode` union
-   reappears, it is an inference merge. Find the merged contour with
-   `IFA_DBG_ELEMCONF`. Do not build discriminated field access for a
-   union of UNRELATED classes (AGENTS.md: a union pyc invented is pyc's
-   bug).
+1. **FIXED 2026-10-17: the nil-only diagnosis was wrong; it was a C naming
+   gap.** `tests/comprehension_index_untypes_list.py` reported 3 sites, and
+   they were NOT nil-only formals: they were `append`'s `self` and `len`'s
+   `x`, typed as a clone of `list` (`list#19102`) whose C type was `_CG_any`.
+   Three lines reproduce it: `xs = [1, 2]; xs.append(3); print(len(xs))` was
+   refused under `--refuse-imprecise`, and compiled and printed `3` without
+   it. The mechanism: `clone.cc`'s primitive branch gives a container group
+   with an element its own copy of the builtin's type sym (`sym->copy()`),
+   and does so before codegen names the builtins (`S(list)` ->
+   `_CG_list`, `cg.cc` `build_type_strings`), so the copy had no C name and
+   `assign_type_cg_strings_pass1`'s default gave it `_CG_any`. The analysis
+   knew it was a list; the check reads the C type string, so it reported a
+   naming artifact as imprecision.
+
+   **Fix:** pass1 maps each named primitive's meta type to its C name, and a
+   primitive with no name of its own takes the name of the named primitive of
+   the same meta type (a copy keeps its builtin's meta type: same class, same
+   representation). The layout contract's two tables (`cg_ptrish_ct`,
+   `cg_ctype_width`) did not know `_CG_tuple` / `_CG_vector`, both `void *` in
+   both runtimes; without them `genetic2_idioms` failed `'Item' ... member type
+   differs (width unknown) (_CG_nil_type vs _CG_tuple)`. Added.
+
+   Measured: the fixture flips to PASS on both backends (sidecar removed);
+   `tests/list_literal_append_refuse_imprecise.py` pins the 3-line shape;
+   `go` goes from 69 sites to 6; `make test` 488 passed / 14 known / 0 failed;
+   corpus `check__default__4d1e5d39+4c13869d` identical to
+   `check__default__d84aea97+38ad5631` in all 77 rows.
+2. **`go`: 6 sites left** (it compiles, runs and matches CPython; only
+   `--refuse-imprecise` refuses it): the element type of `path = [node]`
+   (`go.py:330`, `_CG_any`), the `select` (`go.py:351`) and `best_child`
+   (`go.py:391`) parameters, and `__len__`, `__str__`, `__pyc_to_bool__`.
+   Next: classify them with `IFA_DBG_ELEMCONF`. Several `UCTNode`
+   CreationSets in one element is a legitimate union of one class (shared
+   prefix layout); unrelated classes would be an inference merge to find,
+   not a layout to build (AGENTS.md).
+3. **Consider basing the check on FA types**, not on C type strings, so a
+   codegen naming gap cannot read as imprecision again.
 
 ## Verification
 

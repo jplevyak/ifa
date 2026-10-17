@@ -1711,6 +1711,18 @@ void assign_fun_cg_strings(FA *fa, bool annotate, Vec<Var *> *globals) {
 }
 
 void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp) {
+  // ifa/124: clone.cc gives a container group with an element its own copy
+  // of the builtin's type sym (`list` -> a new `list`), and it does so before
+  // codegen names the builtins (`_CG_list`), so the copy has no C name and
+  // fell to `_CG_any` below: `xs = [1, 2]; xs.append(3)` declared xs
+  // `_CG_any`, and --refuse-imprecise reported it as untyped. A copy keeps
+  // its builtin's meta type, so a primitive type with no name of its own
+  // takes the name of the named primitive of the same meta type -- the same
+  // class, hence the same representation.
+  Map<Sym *, cchar *> primitive_name;
+  for (Sym *s : allsyms)
+    if (s->type_kind == Type_PRIMITIVE && !s->num_kind && s->meta_type && cg_get_string(s))
+      primitive_name.put(s->meta_type, cg_get_string(s));
   for (Sym *s : allsyms) {
     if (s->num_kind) {
       cg_set_string(s, num_string(s));
@@ -1719,7 +1731,10 @@ void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp) {
     } else if (!cg_get_string(s)) {
       switch (s->type_kind) {
         default:
-          cg_set_string(s, dupstr("_CG_any"));
+          if (cchar *n = (s->type_kind == Type_PRIMITIVE && s->meta_type) ? primitive_name.get(s->meta_type) : nullptr)
+            cg_set_string(s, n);
+          else
+            cg_set_string(s, dupstr("_CG_any"));
           break;
         case Type_FUN:
           if (s->fun) break;

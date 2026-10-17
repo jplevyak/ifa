@@ -365,7 +365,7 @@ static bool cg_ptrish_ct(cchar *t) {
   if (!strncmp(t, "_CG_ps", 6) || !strncmp(t, "_CG_pf", 6)) return true;
   return !strcmp(t, "_CG_any") || !strcmp(t, "_CG_void") || !strcmp(t, "_CG_nil_type") ||
          !strcmp(t, "_CG_list") || !strcmp(t, "_CG_string") || !strcmp(t, "_CG_bytes") ||
-         !strcmp(t, "_CG_function");
+         !strcmp(t, "_CG_function") || !strcmp(t, "_CG_tuple") || !strcmp(t, "_CG_vector");
 }
 
 // ifa/153: a list literal's element store needs the same cast the RECORD path
@@ -438,6 +438,7 @@ static int cg_ctype_width(cchar *t) {
   struct { cchar *n; int w; } kW[] = {
       {"_CG_void", 8},   {"_CG_void_type", 8}, {"_CG_any", 8},    {"_CG_list", 8},
       {"_CG_string", 8}, {"_CG_bytes", 8},     {"_CG_function", 8}, {"_CG_nil_type", 8},
+      {"_CG_tuple", 8},  {"_CG_vector", 8},  // void * in both runtimes (ifa/124: list-layout clones now name them)
       {"_CG_int64", 8},  {"_CG_uint64", 8},    {"_CG_float64", 8},
       {"_CG_int32", 4},  {"_CG_uint32", 4},    {"_CG_float32", 4}, {"_CG_int", 4},
       {"_CG_int16", 2},  {"_CG_uint16", 2},

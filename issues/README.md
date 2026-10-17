@@ -82,7 +82,7 @@ one is a lesson this directory paid for.
 | [050](050-FA-general-constant-propagation-unreachable-code.md) | a global slot's value is not call-graph precise. Stages 2-3 (mod-set, per-ES summary). |
 | [119](119-sccp-as-an-outer-fixed-point-over-fa.md) | SCCP: explicit executability, dead edges as a between-pass decision, fact providers. |
 | [039](039-FA-uninitialized-local-reads-silent.md) | unbound locals: analysis done, `--safe` fill done. Open: the runtime check, DEFINITELY-unbound on by default. |
-| [124](124-FA-refuse-imprecise-inference.md) | `--refuse-imprecise`: a nil-only-formal false positive. `go` compiles now (`str.rstrip` landed); re-measure it. |
+| [124](124-FA-refuse-imprecise-inference.md) | `--refuse-imprecise`: its false positive was a C naming gap (a list/tuple type clone named `_CG_any`), fixed 2026-10-17. `go` has 6 sites left to classify. |
 | [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that does arrive at an operation reads as zero. Permissive runtime check, strict refusal. |
 | [185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) | performance: sunfish compiles in 537 s. A tuple receiver merged across every arity keeps all 64 steps of the unrolled tuple methods live for ~13 passes; capping the unroll at 8 gives 48 s. |
 | [186](186-FA-pass-one-confluence-through-shared-builtins.md) | performance: othello3 never finishes pass 1. Shared builtin contours (`__list_iter__.__next__`, `len`, `__eq__`) carry a ~2,039-CS whole-program union, rebuilt one CS at a time at tens of thousands of AVars. |
