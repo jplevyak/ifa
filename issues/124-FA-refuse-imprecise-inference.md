@@ -1,6 +1,6 @@
 # 124 — `--refuse-imprecise`: refuse where inference left a type untyped, instead of emitting codegen's guess
 
-**Status:** open on one residual: 6 sites in `go`. Residual 1 is fixed
+**Status:** open on one residual: 6 sites in `go`, caused by a SETTER split; a demand gate for SETTER was tried and needs a redesign (below). Residual 1 is fixed
 (2026-10-17, below). The option landed 2026-09-01 (off by default). The root
 cause it found landed 2026-09-02, and `go` then compiled and ran. Rewritten
 2026-09-28 and 2026-10-17; history in git:
@@ -141,6 +141,47 @@ and is removed. Its constant rule (closed/169) survives as `edge_arg_type`.
    Separately, the `deepcopy_union_receiver_keeps_method_slots` C error is a
    latent codegen gap (a nil store into a pointer field without a cast) that
    any merge of that field would expose.
+
+   **The full demand gate, tried 2026-10-17 and reverted (stop condition
+   hit).** The gate went inside the SETTER stage only (stage 1,
+   TYPE_CONFLUENCE, reads the same `collect_type_confluences` list and was
+   left alone), behind `PYC_SETTERDEMAND`. A confluence was passed to
+   `compute_setters` only when demanded. Four formulations, each measured on
+   the e2e suite (both backends) and `go`:
+
+   | demand test | `go` sites | suite |
+   | --- | --- | --- |
+   | SETTER_OF_SETTER's member test + content walk, with the receiver clause counting only two or more non-`None` classes, as FLOW reach from the receiver | 6 | `nil_receiver_method_send` only |
+   | the same without the content walk | **1**, output = CPython, `dynamic=0` | `nil_receiver_method_send`, and `13_setter_split.ir` (`{int32, float64}` not counted) |
+   | + a numeric mix and `{None, scalar}` count as irrepresentable | 1 | 5 synthetic `fa-init` goldens (one ES / CS fewer each) + 7 e2e failures per backend: `builtin_type_factory`, `defaultdict_eq`, `match_map_star`, `polymorphic_field_per_type` (compile: `{float64, C}`, `{list, int64}` no longer split), `decorator_recursion` (**wrong answer**), `star_args` (timeout), `nil_receiver_method_send` |
+   | + nominate everything on the backward reach of ANY irrepresentable AVar or violation | 1 | the same, less `star_args` |
+
+   What this establishes:
+
+   - **The content walk is mis-targeted for SETTER.** It nominated
+     `UCTNode.parent` at passes 8-10 because a `UCTNode` it holds carries some
+     demand in its own content -- which splitting by `parent`'s writers does not
+     partition. Removing it is what fixes `go`.
+   - **A per-confluence test breaks SETTER's chains.** The confluence SETTER
+     must split is often upstream of the union it separates and has a
+     representable type of its own; `polymorphic_field_per_type`'s `{float64, C}`
+     and `collections.py`'s `{list, int64}` (defaultdict) went unsplit.
+     Reach-based nomination from every irrepresentable AVar did NOT restore them,
+     so the missing link is not plain backward flow -- most likely the demand
+     appears only after the merge it would prevent (the union is not there yet
+     on the pass where SETTER must act), the transient-types problem of
+     [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md).
+   - **`nil_receiver_method_send`'s change is the rule working, not a loss:**
+     its two `F` objects stop being split by `vertex`'s `None` and the calls
+     become null tests (`direct=77 niltest=3` -> `76 / 6`, `dynamic=0`, output
+     unchanged).
+
+   So a demand-gated SETTER needs the demand to be seen BEFORE the merge it
+   would prevent -- a counterfactual ("would merging these setters make an
+   irrepresentable union?") rather than an observation of the converged types.
+   That is a design question for IFA's splitting core, not a gate. Until then
+   `go`'s 6 sites stand, and `go` compiles, runs and matches CPython at the
+   default.
 
 3. **Consider basing the check on FA types**, not on C type strings, so a
    codegen naming gap cannot read as imprecision again.
