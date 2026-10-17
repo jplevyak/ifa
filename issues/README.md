@@ -75,6 +75,7 @@ one is a lesson this directory paid for.
 
 | issue | what |
 | --- | --- |
+| [191](191-FA-an-always-overwritten-initial-value-stays-in-the-field-type.md) | an initial `None` always overwritten before any read stays in a field's or element's type, so `{None, int}` is refused (since issues/183) where CPython runs. Not a split (temporal): a dominated-store kill, decided before the fixed point or after convergence. 4 `.known_issue` tests. |
 | [072](072-FA-empty-container-notype-current-mechanism-and-plan.md) | a never-written container's bottom element reaching live code. Derive "zero-trip" and "raises" from it. |
 | [178](178-FA-route4-declines-records-built-through-one-constructor.md) | route 4 cannot separate two creation points of a class built through one constructor; also the general writer split (moved from 129). No known program needs either (2026-10-15). |
 | [025](025-FA-intra-function-union-narrowing.md) | branch correlation over a class union: now refused. Tail duplication, or a permissive runtime check. |
