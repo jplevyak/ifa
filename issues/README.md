@@ -50,8 +50,9 @@ one is a lesson this directory paid for.
    depth are handles at most. ([130](closed/130-FA-identity-keyed-on-sym-name.md),
    [132](closed/132-arity-is-representation-not-provenance.md))
 8. **Measure on the corpus, same binary, env toggled.** The suite is
-   blind to most of this area, and a 1–2 program delta between two
-   builds is noise. ([147](147-analysis-result-depends-on-the-binary-not-the-inputs.md))
+   blind to most of this area. Two builds of one tree that differ only in
+   dead code now give identical sweeps, but a one-binary A/B is still the
+   cleanest attribution. ([147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md))
 9. **Check for a missing builtin before blaming FA.** `list.copy`,
    `dict.copy` and `str.rstrip` were each the first error of a corpus
    program whose failure was being read as a splitting problem.
@@ -82,7 +83,6 @@ one is a lesson this directory paid for.
 | [039](039-FA-uninitialized-local-reads-silent.md) | unbound locals: analysis done, `--safe` fill done. Open: the runtime check, DEFINITELY-unbound on by default. |
 | [124](124-FA-refuse-imprecise-inference.md) | `--refuse-imprecise`: a nil-only-formal false positive. `go` compiles now (`str.rstrip` landed); re-measure it. |
 | [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that does arrive at an operation reads as zero. Permissive runtime check, strict refusal. |
-| [147](147-analysis-result-depends-on-the-binary-not-the-inputs.md) | determinism: the result depends on the binary layout. Canonicalise every order that reaches a decision. |
 | [185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) | performance: sunfish compiles in 537 s. A tuple receiver merged across every arity keeps all 64 steps of the unrolled tuple methods live for ~13 passes; capping the unroll at 8 gives 48 s. |
 | [186](186-FA-pass-one-confluence-through-shared-builtins.md) | performance: othello3 never finishes pass 1. Shared builtin contours (`__list_iter__.__next__`, `len`, `__eq__`) carry a ~2,039-CS whole-program union, rebuilt one CS at a time at tens of thousands of AVars. |
 | [111](111-FA-selective-invalidation-per-pass.md) | performance: pass cost tracks accumulated contours (selective invalidation, blocked on setter classing; or rebuild from decisions). Re-measure first. |
@@ -146,6 +146,7 @@ one is a lesson this directory paid for.
 | [189](closed/189-FA-coercion-warns-per-expression-not-per-origin.md) | one coercion warning per origin, naming its source lines and reach | — |
 | [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
 | [177](closed/177-FA-narrowing-does-not-reach-a-module-global.md) | fixed: a guard's load is reused in its true branch | — |
+| [147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md) | two builds differing only in dead code give identical sweeps (all 77 rows) and byte-identical C; repeat compiles are identical under ASLR | — (oracle recorded in the issue) |
 | [132](closed/132-arity-is-representation-not-provenance.md) | arity in CS identity landed; a two-arity slot is sound (`PYC_SLOTARITY` deleted); quameon runs. Closed with quameon as the witness: a small program splits upstream on `{None}` before the demand is reached | 178 (synthetic test) |
 | [179](closed/179-LLVM-quameon-computes-nan.md) | fixed by 180 (`**` had no LLVM emitter) | — |
 | [120](closed/120-union-types-are-never-interned.md) | value unions interned; the audit found no post-handout write but codegen's C name, and the segfault no longer reproduces | — |

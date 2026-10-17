@@ -207,7 +207,7 @@ pass — every `append` contour ends with a single-type value formal and the
 pins it and is load-bearing: 0 warnings with the flag, 1 without.
 
 Corpus, one binary with the env toggled (a real A/B, not the cross-binary
-comparison [147](../147-analysis-result-depends-on-the-binary-not-the-inputs.md)
+comparison [147](147-analysis-result-depends-on-the-binary-not-the-inputs.md)
 invalidates):
 
 | arm | cfail | warns | container CS |

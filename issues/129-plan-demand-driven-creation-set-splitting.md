@@ -129,6 +129,6 @@ backflow walk answers must-reach where route 4 asks may-reach), `PYC_CSPEEL2`,
 ## Verification, for any change here
 
 Six CI gates on both backends; same-binary `./corpus_sweep.sh -m check`
-A/B, compared per program; `ess`/`css` down, not up. A 1–2 program move
-between two BUILDS is not attributable
-([147](147-analysis-result-depends-on-the-binary-not-the-inputs.md)).
+A/B, compared per program; `ess`/`css` down, not up. Prefer an env-toggled A/B
+from one binary
+([147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md), closed: two builds of one tree now agree).

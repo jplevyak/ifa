@@ -217,7 +217,7 @@ rc=0. `chull` still compiles with 0 errors and 0 warnings.
 **A note for whoever reads `cs=1561` later.** That an arity-1 list literal's
 correctness depends on the analysis running 78 passes, with route 4
 declining on it every one of them, is its own latent fragility — the
-[147](../147-analysis-result-depends-on-the-binary-not-the-inputs.md) family.
+[147](147-analysis-result-depends-on-the-binary-not-the-inputs.md) family.
 This issue does not fix it; it stops tripping over it. Whatever is grinding
 `cs=1561` down one def per pass is not identified.
 

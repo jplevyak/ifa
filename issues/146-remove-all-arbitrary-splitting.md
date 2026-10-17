@@ -95,8 +95,8 @@ Audited and **not** splitters (keep): `PYC_SELFPROD` (6), `PYC_HARDREUSE`
 
 Six CI gates (`make test`), then a corpus `./corpus_sweep.sh -m check` A/B
 from ONE binary with the env toggled
-([147](147-analysis-result-depends-on-the-binary-not-the-inputs.md): a
-1–2-program delta between two builds is noise). Report per-program
+(the cleanest attribution;
+[147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md) found two builds of one tree now agree). Report per-program
 `compile_rc` / `run_rc` / `stdout_match` and container CS / shapes. A
 removal that loses a working program is not automatically wrong, but the
 trade is recorded, and the lost program is root-caused rather than used as

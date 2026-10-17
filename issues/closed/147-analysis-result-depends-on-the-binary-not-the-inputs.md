@@ -1,8 +1,10 @@
 # ifa/147 — the analysis result depends on the BINARY, not only on its inputs
 
-**Status:** open. Rewritten 2026-09-28. It now also carries the
-reproducibility half of [010](010-CLEANUP-vec-set-api-cleanup.md) (and,
-through it, closed issues/021).
+**Status:** CLOSED 2026-10-16. Both verification criteria hold on
+`e05f62b5`, and the symptom no longer reproduces; see "Closed" at the end.
+Rewritten 2026-09-28. It also carried the reproducibility half of
+[010](../010-CLEANUP-vec-set-api-cleanup.md) (and, through it, closed
+issues/021).
 
 ## Symptom
 
@@ -65,3 +67,39 @@ which is consistent with a few specific order-dependent decisions.
 Two builds differing only in dead code give byte-identical emitted C and
 identical per-program sweep rows. `expr_evaluator.py` compiled 8 times
 gives one `.ll`.
+
+## Closed (2026-10-16): the result no longer depends on the binary
+
+Measured on `e05f62b5` with the issue's own perturbation: a second build of
+the same tree with 40 never-executing `getenv`-gated `static` helpers added
+to `fa.cc`, and calls to them in a function FA calls per AVar
+(18,619,096-byte binary vs 18,570,432).
+
+- **Corpus, the issue's verification.** `./corpus_sweep.sh -m compile` from
+  each binary: `compile__default__e05f62b5+83753197` (main) and
+  `compile__default__e05f62b5+e5287435` (padded) are identical in all 77
+  rows and every column -- `compile_rc`, warnings, `ess`, `css`,
+  container CSs, shapes. In 2026-09-10's measurement this perturbation took
+  `compile_fail` from 2 to 4.
+- **Emitted code.** linalg, sudoku5 (the two programs that moved), quameon,
+  chull, sat, plcfrs and richards give byte-identical C from the two
+  binaries, about 200,000 lines, apart from the `#include` line naming each
+  build's own directory.
+- **One binary, repeated runs.** The same seven compiled 4 times each with
+  ASLR on (`randomize_va_space=2`, so every run's heap addresses differ):
+  one C file per program. `tests/expr_evaluator.py`, which gave 8 distinct
+  `.ll` in 8 compiles, gives one `.ll` in 8.
+- **A standing gate exists.** `test_pyc.py` compiles every test twice and
+  byte-compares the generated code (closed/035's determinism gate), on both
+  backends, as part of `make test`. One test opts out
+  (`list_index_type_mismatch_salvage.py`).
+
+**Not done:** "What to do" 1, the audit of every pointer-keyed iteration that
+reaches a decision. These measurements cannot rule out an order-dependent
+decision no measured program reaches; if two builds ever disagree again,
+the oracle above (pad, sweep, diff) is the first thing to run, and its
+first differing `-v` pass line names the decision.
+
+**The working rule stays, as practice rather than as a known defect:** an
+A/B that toggles an env var on one binary is still the cleanest attribution,
+and `corpus_sweep.sh -e` exists for it.
