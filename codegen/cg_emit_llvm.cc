@@ -3090,7 +3090,7 @@ class LLVMEmitter : public VirtualCGEmitter {
     // time from cg_new_to_val_map instead, which is what dispatch reads.
     if (idx == P_prim_setter && pn->rvals.n >= 5 && fun_sym_for_var(pn->rvals.v[4])) return true;
     // A store of a FAKE value -- a frontend marker that only declares the
-    // field (pyc's `value = __pyc_declare__` class attribute). The C
+    // field (a frontend placeholder whose Sym is `is_fake`). The C
     // backend gives fake Vars no C name and emits no store; same here.
     if (idx == P_prim_setter && pn->rvals.n >= 5 && pn->rvals.v[4] && pn->rvals.v[4]->sym &&
         pn->rvals.v[4]->sym->is_fake)

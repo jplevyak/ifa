@@ -7470,7 +7470,8 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
         // and this peel-one-class-per-iteration loop cannot keep the
         // home group while evicting that remainder without merging the
         // two (measured: it collapses a dispatch distinction and
-        // pyc_declare crashes with "matching function not found"). So
+        // tests/polymorphic_field_per_type.py, then named pyc_declare.py,
+        // crashes with "matching function not found"). So
         // self-product falls back to the original mint + record-only DUP
         // count (the 065-gap-2 analog, left to the phase-ordering half).
         bool route = d && d->pass_made != analysis_pass && d->cs_product && d->cs_product != cs;
