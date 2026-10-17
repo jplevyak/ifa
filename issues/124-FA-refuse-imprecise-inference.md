@@ -71,14 +71,45 @@ and is removed. Its constant rule (closed/169) survives as `edge_arg_type`.
    `go` goes from 69 sites to 6; `make test` 488 passed / 14 known / 0 failed;
    corpus `check__default__4d1e5d39+4c13869d` identical to
    `check__default__d84aea97+38ad5631` in all 77 rows.
-2. **`go`: 6 sites left** (it compiles, runs and matches CPython; only
-   `--refuse-imprecise` refuses it): the element type of `path = [node]`
-   (`go.py:330`, `_CG_any`), the `select` (`go.py:351`) and `best_child`
-   (`go.py:391`) parameters, and `__len__`, `__str__`, `__pyc_to_bool__`.
-   Next: classify them with `IFA_DBG_ELEMCONF`. Several `UCTNode`
-   CreationSets in one element is a legitimate union of one class (shared
-   prefix layout); unrelated classes would be an inference merge to find,
-   not a layout to build (AGENTS.md).
+2. **`go`: 6 sites left, all one cause -- a SETTER split nothing demanded**
+   (classified 2026-10-17). `go` compiles, runs and matches CPython; only
+   `--refuse-imprecise` refuses it. The sites are the element type of
+   `path = [node]` (`go.py:330`), the `select` and `best_child` receivers,
+   and `__len__` / `__str__` / `__pyc_to_bool__`.
+
+   - **They are one union.** `UCTNode` has two instance layouts,
+     `_CG_ps30288` (the root, built by `UCTTree`'s `UCTNode()`) and
+     `_CG_ps30303` (children, built at `go.py:338`). `play` takes the root,
+     `score` the child, and `select` / `best_child` / `path`'s element hold
+     both, which has no single C type: `_CG_any`.
+   - **The two layouts differ in ONE field:** `parent` is `_CG_nil_type` in the
+     root (it is only ever `self.parent = None`) and `_CG_any` in the child
+     (`child.parent = node`, which is either layout). Merged, `parent` would be
+     `{None, UCTNode}`, a nullable pointer: representable, and exactly what
+     shedskin emits (one `UCTNode`).
+   - **Who split it:** not route 4 (`IFA_DBG_CSDEFSPLIT`: `UCTNode` has one
+     creation point, DECLINED every pass) and not a creation point
+     (`IFA_DBG_CSMINT` mints only the prototype and cs 1994). A copy
+     constructor probe shows cs 2537 copied from 1994 at pass 10 by stage 2,
+     **SETTER**: `UCTNode.parent` is a type confluence (`{None}` from
+     `__init__`, `{UCTNode}` from `play`), and SETTER splits the CreationSet by
+     setter class.
+   - **That is a fact, not a demand** (AGENTS.md: "this formal's type is a
+     union ... facts"). Nothing observes `{None, UCTNode}` and fails to
+     proceed. The split CREATES the unions the check reports.
+   - **Probe:** `PYC_NOSETTER=1` (the whole stage off, a probe only) gives
+     `go` one `UCTNode` instance layout, 1 imprecise site (a builtin `__str__`
+     parameter), and output identical to CPython's.
+
+   **Fix direction (not attempted):** nominate a SETTER confluence only on a
+   demand, as SETTER_OF_SETTER already does (ifa/146: `sos_type_conflict` --
+   an irrepresentable union, the backward reach of a violation, two receivers
+   of a send that dispatches to two functions, or a CreationSet carrying one
+   of these). The narrowest first step: a confluence whose only addition is
+   `None` joining pointer-shaped types is representable and is not one. That
+   is a change to IFA's core splitting trigger, so it needs a same-binary
+   corpus `check` A/B; 146 records that the weaker SoS gates lost dijkstra2,
+   plcfrs, pylife and sunfish, so the dispatch clause matters.
 3. **Consider basing the check on FA types**, not on C type strings, so a
    codegen naming gap cannot read as imprecision again.
 
