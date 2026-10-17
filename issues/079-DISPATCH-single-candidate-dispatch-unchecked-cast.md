@@ -1,51 +1,64 @@
 # 079 — the single-candidate dispatch fast path casts without checking the union's other members
 
-**Status:** open, root-caused, not attempted. Rewritten 2026-09-28;
-history in git:
-`git show 3f36072b:ifa/issues/079-DISPATCH-single-candidate-dispatch-unchecked-cast.md`.
+**Status:** open, CLEANUP, not attempted. **Shrunk 2026-10-16** to the
+codegen safeguard alone: the crash it was filed for can no longer reach
+codegen (below), and the correlated-branch half belongs to
+[025](025-FA-intra-function-union-narrowing.md). History in git:
+`git show 3f36072b:ifa/issues/079-DISPATCH-single-candidate-dispatch-unchecked-cast.md`
+(the full original), and `git show e3b44e2c:` this path (the 2026-09-28
+rewrite).
 
-## The defect
+## What changed
 
-`cg.cc:2690` (`directs.n == 1`), after the nil test and the classtag
-compares, calls the one remaining candidate directly with
-`(ft)(void*)arg`. Its comment reasons that *"the single untagged candidate
-is everything the nil test / tag compares above didn't claim"*. That is
-true only if every other member of the receiver's union either got a tag
-branch or is nil. **A member with no implementation of the method at all
-was never a candidate**, so it gets no branch, and the cast silently
-reinterprets it. Found on `bh` (`b.hack_gravity(...)` with `b : Body |
-Cell`, where `Cell` has no `hack_gravity`): a segfault. `bh` no longer
-forms that union, but the fast path is unchanged. The multi-candidate
-path already ends in `assert(!"…no branch matched")`, and this one has
-no equivalent. The cast is also not recorded with the blind-cast layout
-contract (`cg_note_blind_cast`), unlike the classtag branches above it
-(`cg.cc:2659`).
+Filed on `bh`: `b.hack_gravity(...)` with `b : Body | Cell`, where `Cell`
+has no `hack_gravity`, compiled to a direct call to `Body.hack_gravity`
+with `b` cast to `Body *`, and segfaulted on a `Cell`.
 
-## Principle
+That shape is now refused in every mode, `--strict` included, with
+`illegal call argument type expression illegal: B`. A union member with no
+candidate for the method is a type violation, and since
+[closed/158](closed/158-FA-every-type-violation-is-fatal.md) every violation is fatal.
+That was the original issue's "in FA" half. Re-verified 2026-10-16 on
+`c7b54d6a`, both with a reachable `B` (`x = A() if c else B(); x.m()`)
+and with the call guarded by a correlated `if c:`.
 
-A union member with no candidate for the method is a dispatch that
-CANNOT resolve for that member. That is a demand FA should observe
-([102](102-corpus-programs-compile-then-abort-at-runtime.md)'s rule), not
-something codegen should paper over:
+The correlated case is a valid CPython program (it prints `done`) that pyc
+now REFUSES. That is not this issue: it is
+[025](025-FA-intra-function-union-narrowing.md), branch correlation over a
+class union. The original "permissive raises `AttributeError`" remedy needs
+025's narrowing first, and moves there with it.
 
-- **In FA:** report it as a violation. Either the member is a union pyc
-  invented (then the demand drives the split that removes it; AGENTS.md
-  says such unions are pyc's bug), or it is genuinely reachable (then
-  see below).
-- **In codegen, permissive mode:** if the member really can arrive
-  (branch correlation, [025](025-FA-intra-function-union-narrowing.md)),
-  emit a tag test for `directs[0]`'s own class, with the final `else`
-  raising `AttributeError` (CPython's behaviour), instead of the
-  unconditional call. `--strict` refuses.
+## What remains: the fast path itself
 
-Compute "the receiver's union minus what the branches above covered"
-from the same `plains`/`directs` construction codegen already has.
-Do not re-derive it. This is the hottest dispatch path, so a monomorphic
-receiver (the common case) must stay a direct call with no test.
+`cg.cc:2912` (`directs.n == 1`), after the nil test and the classtag
+compares, still calls the one remaining candidate with `(ft)(void*)arg`.
+Its comment assumes *"the single untagged candidate is everything the nil
+test / tag compares above didn't claim"*. FA now guarantees that, but
+codegen does not check it, and two things the neighbouring paths do are
+missing here:
+
+- **The blind-cast layout contract.** The classtag branches above it record
+  their casts with `cg_note_blind_cast` (`cg.cc:295`); this one does not, so
+  a cast between layouts that differ is not reported.
+- **A no-match guard.** The multi-candidate path ends in
+  `assert(!"runtime error: polymorphic dispatch: no branch matched")`
+  (`cg.cc:2938`). This one has no equivalent.
+
+## The fix
+
+At codegen time, compute the receiver's union minus what the nil test and
+the tag branches above covered, from the `plains`/`directs` construction
+codegen already has (do not re-derive it). Every member left must be one
+`directs[0]` accepts. Record the cast with `cg_note_blind_cast`, and if a
+member is left that it does not accept, fail the compile naming it: FA should
+have refused, so reaching this is an FA bug, not a runtime case.
+
+This is the hottest dispatch path. The check runs in the compiler only: a
+monomorphic receiver (the common case) must stay a direct call with no
+emitted test.
 
 ## Verification
 
-A fixture with `x : A | B`, `A.m` only, reached through a correlated
-branch: permissive raises `AttributeError` only if the `B` path runs, and
-strict refuses. Monomorphic calls emit byte-identical C (diff the corpus's
-emitted C before and after). Six gates, plus a corpus `check` A/B.
+The corpus's emitted C is byte-identical before and after (ifa/147's oracle:
+`pyc` each program, diff the `.py.c`). The two probes above are still refused
+in every mode. `make test`.

@@ -92,7 +92,7 @@ one is a lesson this directory paid for.
 | issue | what |
 | --- | --- |
 | [102](102-corpus-programs-compile-then-abort-at-runtime.md) | an unresolved call becomes a silent runtime stub. Make it an FA violation. Also the untyped-value work list. |
-| [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
+| [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | cleanup: the single-candidate fast path casts with no blind-cast record and no no-match guard. The crash it was filed for is refused by FA since closed/158; the correlated-branch case is 025. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
 | [093](093-CGEN-int-float-union-move-not-coerced.md) | LLVM: an int MOVE into a float64 slot stores raw bits (missing `sitofp`). |
 | [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) | performance: high fan-out dispatch has no table. |
