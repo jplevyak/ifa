@@ -48,7 +48,7 @@ one is a lesson this directory paid for.
    partitioning are identity. Arity and other representation properties
    are legitimate (behind `IFACallbacks`). Allocation site, call site and
    depth are handles at most. ([130](closed/130-FA-identity-keyed-on-sym-name.md),
-   [132](132-arity-is-representation-not-provenance.md))
+   [132](closed/132-arity-is-representation-not-provenance.md))
 8. **Measure on the corpus, same binary, env toggled.** The suite is
    blind to most of this area, and a 1–2 program delta between two
    builds is noise. ([147](147-analysis-result-depends-on-the-binary-not-the-inputs.md))
@@ -68,7 +68,6 @@ one is a lesson this directory paid for.
 | [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (no default-path violation is known as of 2026-10-13), and a verdict for every off-by-default splitting lever. Every DELETE and MEASURE lever was deleted 2026-10-15, then SLOTARITY, TYPEMOVE and RETDEMAND; the inventory is empty. |
 | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
 | [134](134-remove-the-frontend-forced-split-opt-in.md) | constants: 9 `__pyc_clone_constants__` annotations remain, each with a named replacement. |
-| [132](132-arity-is-representation-not-provenance.md) | arity in CS identity (landed); a slot holding two arities shown sound, `PYC_SLOTARITY` deleted (2026-10-15); open: the untagged-dispatch test, via 178. |
 | [190](190-CODEGEN-run-time-dispatch-census.md) | **zero run-time dispatch**: census of the corpus's dynamic calls, 272 → 95. Nullable receivers are null tests (177). Of the 95: 71 class hierarchies (legitimate), 4 clones of one class (each a merge no contour split can separate), 7 exception printer, 13 builtin shapes; none unrelated. |
 
 ### FA: typing and precision
@@ -147,6 +146,7 @@ one is a lesson this directory paid for.
 | [189](closed/189-FA-coercion-warns-per-expression-not-per-origin.md) | one coercion warning per origin, naming its source lines and reach | — |
 | [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
 | [177](closed/177-FA-narrowing-does-not-reach-a-module-global.md) | fixed: a guard's load is reused in its true branch | — |
+| [132](closed/132-arity-is-representation-not-provenance.md) | arity in CS identity landed; a two-arity slot is sound (`PYC_SLOTARITY` deleted); quameon runs. Closed with quameon as the witness: a small program splits upstream on `{None}` before the demand is reached | 178 (synthetic test) |
 | [179](closed/179-LLVM-quameon-computes-nan.md) | fixed by 180 (`**` had no LLVM emitter) | — |
 | [120](closed/120-union-types-are-never-interned.md) | value unions interned; the audit found no post-handout write but codegen's C name, and the segfault no longer reproduces | — |
 | [121](closed/121-CGEN-dead-clones-emitted.md) | dead clones fixed before codegen; every narrowing to one clone is proven or calls the site's clone; the argument-chosen residual is warned (190) | 190 |

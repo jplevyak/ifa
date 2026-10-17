@@ -18,7 +18,7 @@ path. For a uniform-arity tuple the header is written and never read.
 
 The decision belongs to FA's representation layer, not to either
 backend: a tuple CreationSet needs a header iff it can reach an AVar whose
-type unions it with a tuple CS of a different arity. That is [132](132-arity-is-representation-not-provenance.md)'s
+type unions it with a tuple CS of a different arity. That is [132](closed/132-arity-is-representation-not-provenance.md)'s
 cross-CreationSet arity question, and `IFA_DBG_SLOTREP` already
 enumerates those AVars. Mark the contributing CreationSets (per CS, not per
 `Sym`, or a monomorphic site pays for a heterogeneous one). Both backends

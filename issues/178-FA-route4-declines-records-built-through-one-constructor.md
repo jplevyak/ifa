@@ -1,7 +1,7 @@
 # 178 — route 4 cannot separate two creation points of a class built through one constructor
 
 **Status:** open. Filed 2026-09-30 from
-[132](132-arity-is-representation-not-provenance.md), whose synthetic test it
+[132](closed/132-arity-is-representation-not-provenance.md), whose synthetic test it
 blocks. **The repro passes by default since 2026-10-02**: None is kept in the
 type projection (see "Flipped" at the end), so `__init__` and `Pot` split on
 `{list}` vs `{None}`. It is `tests/none_default_arg_splits_record.py`.
@@ -150,8 +150,12 @@ key, with no witness.
 ## Verification
 
 The repro prints `5` and `4` on both backends, with two `Pot`
-CreationSets. It then becomes 132's synthetic test, for the untagged-dispatch
-demand and the clone-collapse rule.
+CreationSets. A synthetic test of
+[132](closed/132-arity-is-representation-not-provenance.md)'s untagged-dispatch
+demand and clone-collapse rule now lives here: 132 closed 2026-10-16 with
+quameon as its witness, because a small program splits on `{None}` before the
+demand is reached. The test needs two instances whose constructor arguments
+agree in type, which is this issue's open half.
 
 ## Probe: keep None in the type projection (`PYC_KEEPNIL=1`), 2026-10-01
 

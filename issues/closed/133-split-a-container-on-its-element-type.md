@@ -110,7 +110,7 @@ itself be the whole story for container literals.
 The identity rule is a **joiner** and a **separator**, and they exist for
 different reasons. The joiner is one CreationSet per sym (128) — deliberate,
 per CLAUDE.md's premise of starting from minimum contours. The separator is
-**arity** ([132](../132-arity-is-representation-not-provenance.md)) — carved
+**arity** ([132](132-arity-is-representation-not-provenance.md)) — carved
 back out because merging different arities is UNREPRESENTABLE, which is
 CLAUDE.md's legitimate third category (*what the target language can
 represent*), not provenance.

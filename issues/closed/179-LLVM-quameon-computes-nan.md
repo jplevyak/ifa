@@ -3,7 +3,7 @@
 **Status: CLOSED 2026-10-12. Fixed by `c479bd6d`
 ([180](180-LLVM-pow-operator-emitted-nothing.md)): `**` had no LLVM emitter
 and was silently dropped.** Filed 2026-09-30, found while fixing
-[132](../132-arity-is-representation-not-provenance.md).
+[132](132-arity-is-representation-not-provenance.md).
 
 ## Closure (2026-10-12)
 

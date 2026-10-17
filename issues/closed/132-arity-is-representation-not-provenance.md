@@ -1,9 +1,13 @@
 # 132 — Arity is representation, not provenance
 
-**Status: open only on the untagged-dispatch test (via 178).** The
-one-slot arity conflict was shown sound and `PYC_SLOTARITY` deleted on
-2026-10-15 (below). quameon resolved 2026-09-30. The principle landed 2026-09-05. Rewritten 2026-09-28; the
-full record is in git:
+**Status: CLOSED 2026-10-16, with quameon as the witness.** Everything this
+issue claimed is landed or settled: arity is part of CreationSet identity
+(2026-09-05); a slot holding two arities was shown sound and `PYC_SLOTARITY`
+deleted (2026-10-15); quameon, which turned out to be an untagged dispatch
+ambiguity rather than arity, runs (2026-09-30). The one open item, a
+synthetic test of the untagged-dispatch demand, moves to
+[178](../178-FA-route4-declines-records-built-through-one-constructor.md). See
+"Closed" at the end. Rewritten 2026-09-28; the earlier record is in git:
 `git show 3f36072b:ifa/issues/132-arity-is-representation-not-provenance.md`.
 
 ## The principle (landed)
@@ -98,7 +102,7 @@ returning either arity, a member set to either arity then iterated, rows of
 different length plus a tuple of two arities, a float member that is a
 literal or an `append`-filled `[]`, and mutation through the shared slot
 (`append`, item store, slice, `==`, `in`, `+`).
-[`tests/slot_arity_conflict.py`](../../tests/slot_arity_conflict.py) keeps
+[`tests/slot_arity_conflict.py`](../../../tests/slot_arity_conflict.py) keeps
 the member, mutation and return cases, so a layout change that breaks
 this fails visibly.
 
@@ -163,12 +167,12 @@ program whose contours moved (ess 925 -> 928, css 2594 -> 2617), and no
 other verdict changed. `make test`: 378 passed, 0 failed.
 
 **Open, filed separately:**
-- [178](178-FA-route4-declines-records-built-through-one-constructor.md):
+- [178](../178-FA-route4-declines-records-built-through-one-constructor.md):
   a synthetic test of this fix needs two separate records of a class, and
   in small programs both creation points merge through the constructor.
   Route 4 declines them ("every creation point on the same assign sets").
   quameon is the witness until then.
-- [179](closed/179-LLVM-quameon-computes-nan.md) (closed: fixed by 180): on LLVM quameon computed `nan`,
+- [179](179-LLVM-quameon-computes-nan.md) (closed: fixed by 180): on LLVM quameon computed `nan`,
   independently of this fix.
 
 ## Next
@@ -187,3 +191,22 @@ on both backends (the conflicts `IFA_DBG_SLOTREP` counts need not fall,
 since they are sound); a
 genuinely dynamic list built by `append` in a loop still gets ONE contour
 with list layout.
+
+## Closed (2026-10-16): quameon is the witness
+
+The synthetic test stays out of reach, for a reason that is itself a result.
+The minimal quameon shape -- one `Pot` class whose `charges` is an int literal
+in one instance and an `append`-filled float list in the other, read through
+one method -- matches CPython on both backends, but `IFA_DBG_UNTAGGED` never
+fires. The constructor calls differ in the type of `charges` (`{list}` vs
+`{None}`), and since 2026-10-02 None is kept in the type projection, so the
+two instances split upstream, before any dispatch is ambiguous (178's
+"Flipped"). A test that reaches the demand needs two instances whose
+constructor arguments agree in type but whose contents differ, which is
+178's open half, and no known program needs it.
+
+quameon stays the witness, and the corpus `check` sweep keeps it compared
+with CPython every time it runs: `check__default__cfce7227+5071387a`
+(2026-10-16) has it compiling, running and matching (`stdout_match yes`).
+If a change breaks the untagged-dispatch demand or the clone-collapse
+refusal, quameon's verdict moves.

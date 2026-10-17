@@ -42,7 +42,7 @@ if (arity >= 0 && x->static_arity >= 0 && x->static_arity != arity && !x->no_sta
 `arity == -1`, so the check was skipped entirely and it joined a
 fixed-arity CreationSet unchecked.
 
-[132](../132-arity-is-representation-not-provenance.md) established that
+[132](132-arity-is-representation-not-provenance.md) established that
 arity is a representation property CreationSet identity must respect, and
 its comment covers one direction — a CS that has *already* lost its static
 arity is on list layout, reads its length at run time, and can absorb any

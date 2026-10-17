@@ -35,7 +35,7 @@ creation point this is) may be as fine as it likes, and **compatibility**
 | piece | issue | what it does |
 | --- | --- | --- |
 | `PYC_CSDCPA1=2` | 128/129 | start merged |
-| arity in CS identity | [132](132-arity-is-representation-not-provenance.md) | a representation property is not provenance |
+| arity in CS identity | [132](closed/132-arity-is-representation-not-provenance.md) | a representation property is not provenance |
 | `CS_DEF_PARTITION` (route 4), uncapped | 133, 142 | partition `cs->defs` by assign-set signature, as the last rung, on a demand only (146) |
 | `PYC_CSCONTENT=1` | 133/154 | build the flow graph over the channel that holds the content (element, or positional slots) |
 | `PYC_CSBACKTRACK=1` | 152 | walk a `defs=1` demand back to the merged CS upstream |
