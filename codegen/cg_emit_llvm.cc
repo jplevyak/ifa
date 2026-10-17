@@ -505,10 +505,9 @@ llvm::Value *materialize_pyc_string(cchar *raw, int len = -1) {
           llvm::ConstantInt::get(i32_ty, 1),
           llvm::ConstantInt::get(i32_ty, 0) });
   }
+  // The constant is the string's value: a frontend strips its quotes. This
+  // used to strip a surrounding pair itself, which printed pyc's '"hi"' as hi.
   std::string text = (len >= 0) ? std::string(raw, (size_t)len) : std::string(raw);
-  if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
-    text = text.substr(1, text.size() - 2);
-  }
   llvm::Type *i64_ty = llvm::Type::getInt64Ty(*TheContext);
   llvm::Constant *cdata =
       llvm::ConstantDataArray::getString(*TheContext, text);
@@ -2950,12 +2949,18 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
                       : Builder->CreateZExt(val, i32_ty, "zext");
         Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, ext});
       } else if (vty->isFloatingPointTy()) {
-        cchar *fmt = last_nl ? "%g\n" : "%g";
+        // The shortest decimal that round-trips, as the C backend's
+        // _CG_float_printf writes it; `%g` kept six digits, so the two
+        // backends printed 3.14 + 2.0 differently.
+        cchar *fmt = last_nl ? "%s\n" : "%s";
         llvm::Value *fmt_v = Builder->CreateGlobalString(fmt, ".fmt");
         llvm::Value *dv =
             vty->isDoubleTy() ? val
                               : Builder->CreateFPExt(val, dbl_ty, "fpext");
-        Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, dv});
+        llvm::FunctionCallee repr_fn = TheModule->getOrInsertFunction(
+            "_CG_str_from_float", llvm::FunctionType::get(ptr_ty, {dbl_ty}, false));
+        llvm::Value *s = Builder->CreateCall(repr_fn, {dv}, "frepr");
+        Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, s});
       } else {
         // Pointer or other opaque type: skip (unsupported).
         cchar *ph = last_nl ? "<unsupported>\n" : "<unsupported>";

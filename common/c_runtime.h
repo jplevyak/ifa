@@ -152,21 +152,60 @@ static inline char *_CG_char_from_string(void *s, int i) {
   return x;
 }
 
+// A float prints as the SHORTEST decimal that round-trips (CPython's repr),
+// as it does on the LLVM backend, which calls pyc's _CG_str_from_float. This
+// is a copy of pyc_c_runtime.h's _CG_float_repr_buf; keep the two identical.
+// It used to be %.17g, which printed 3.14 + 2.0 as 5.1400000000000006.
+static inline int _CG_float_repr_buf(double d, char *out) {
+  if (isnan(d)) { strcpy(out, "nan"); return 3; }
+  if (isinf(d)) { strcpy(out, d < 0 ? "-inf" : "inf"); return d < 0 ? 4 : 3; }
+  if (d == 0) { strcpy(out, signbit(d) ? "-0.0" : "0.0"); return signbit(d) ? 4 : 3; }
+  char e[48];
+  for (int p = 1; p <= 17; p++) {
+    snprintf(e, sizeof(e), "%.*e", p - 1, d);
+    if (strtod(e, 0) == d) break;
+  }
+  // e is [-]D[.DDD]e[+-]XX
+  const char *q = e;
+  int n = 0;
+  if (*q == '-') { out[n++] = '-'; q++; }
+  char dig[24];
+  int nd = 0;
+  for (; *q && *q != 'e'; q++)
+    if (*q != '.') dig[nd++] = *q;
+  int x = atoi(q + 1);
+  while (nd > 1 && dig[nd - 1] == '0') nd--;
+  if (x >= -4 && x < 16) {
+    if (x >= 0) {
+      for (int i = 0; i <= x; i++) out[n++] = i < nd ? dig[i] : '0';
+      out[n++] = '.';
+      if (nd > x + 1)
+        for (int i = x + 1; i < nd; i++) out[n++] = dig[i];
+      else
+        out[n++] = '0';
+    } else {
+      out[n++] = '0';
+      out[n++] = '.';
+      for (int i = 0; i < -x - 1; i++) out[n++] = '0';
+      for (int i = 0; i < nd; i++) out[n++] = dig[i];
+    }
+  } else {
+    out[n++] = dig[0];
+    if (nd > 1) {
+      out[n++] = '.';
+      for (int i = 1; i < nd; i++) out[n++] = dig[i];
+    }
+    n += snprintf(out + n, 8, "e%c%02d", x < 0 ? '-' : '+', x < 0 ? -x : x);
+  }
+  out[n] = 0;
+  return n;
+}
+
 static inline char *_CG_prim_primitive_to_string(double d) {
-  char s[100], *p = s;
-  snprintf(s, 100, "%.17g", d);
-  while (*p)
-    if (*p < '0' || *p > '9')
-      break;
-    else
-      p++;
-  if (!*p) {
-    *p++ = '.';
-    *p++ = '0';
-  } else
-    while (*p) p++;
-  char *r = (char *)MALLOC(p - s);
-  memcpy(r, s, p - s);
+  char s[48];
+  int n = _CG_float_repr_buf(d, s);
+  char *r = (char *)MALLOC(n + 1);
+  memcpy(r, s, n + 1);
   return r;
 }
 
