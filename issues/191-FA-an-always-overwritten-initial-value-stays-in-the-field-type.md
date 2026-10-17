@@ -116,6 +116,64 @@ builtin prototypes' method slots (`__deepcopy__`, `__init__`) assigned twice,
 each leaving a slot typed with both functions. Whether that feeds run-time
 dispatch ([190](190-CODEGEN-run-time-dispatch-census.md)) is unmeasured.
 
+### Direction 2 probe (2026-10-17): the question is answerable, and sound on every hazard tried
+
+`IFA_DBG_OVERWRITE=1` (`report_overwrite_probe`, `fa_debug.cc`; read-only,
+end of every pass) takes each store of `None` into a field and walks forward
+from it: over the CFG, into callees (a summary: every path overwrites, or the
+callee returns, or it reads), and, when the store's function returns, out to
+every caller after its call. It tracks the Vars that MUST hold the object (the
+receiver, plain MOVEs, a callee formal bound to it, a call result that returns
+it); a path ends at a store of the field through one of them. The `None` is
+OBSERVED if a path reaches a read of the field, or any primitive that may read
+fields, on a value whose type MAY include the object's CreationSet. Reads are
+checked by type, so an alias that escaped is still caught. Verdicts: `NEVER`,
+`OBSERVED at=<node> line=`, `BUDGET` (gave up after 200,000 nodes), plus
+`RAISE` when a raising callee sat on a path, `scalar=1` when the field's type
+also holds a number, and `pass=`.
+
+**Hazards tried** (small programs, each with a read the probe must
+find): a read in `__init__` between the stores; in a method `__init__` calls;
+by the caller; in a function the object is passed to; through an alias
+(`[a][0].x`); in a loop that constructs and reads each iteration; in an
+`except` handler after the overwrite's value raised; through `copy.copy`; a
+generator that yields the object before overwriting it. **Every one is
+OBSERVED at the right line, and two independent objects each overwritten
+before any read are NEVER.** The generator case is caught only because the
+`yield` primitive receives the object and an unlisted primitive counts as a
+read: the walk does not model suspension, so whatever applies this verdict
+must keep that rule.
+
+**Census, last pass of every program** (earlier passes see less of the program
+and must not be used: `loop`'s `MaoCFG.start_node_` is NEVER at an early pass
+and OBSERVED, correctly, at the last, at `find_loops`'s `if not
+self.cfg_.start_node_`): 3,524 verdicts over the 521 tests and 77 corpus
+programs, 2,450 NEVER, 808 OBSERVED, 266 BUDGET. **NEVER with `scalar=1`, the
+case that is refused today: exactly 8 fields in 6 programs**, the three row 2-4
+fixtures above and issues/048's `none_int_field_pair` (`a`, `b`),
+`none_int_field_zero` (`a`, `b`) and `none_float_field` (`a`), each of which is
+row 4 (`self.a = None` in `__init__`, the caller assigns before any read) and
+carries a `.known_issue`. **None in the corpus.** Row 5 (`[None] * n`) is not a
+field store and is not covered.
+
+**Cost.** voronoi2 compiles in 6.0 s, 13.0 s with the probe (663 walks over its
+passes). The implementation should walk only a `None` store whose field's
+type also holds a scalar -- the 8 above -- not every `None` store.
+
+### Applying it (next)
+
+1. At the end of a pass, for each `None` store whose field is `{None,
+   scalar}` and whose walk is NEVER, record the store in a DECISION ledger
+   (persisting across passes, like the split ledger), and re-run the pass.
+2. In the setter transfer (`fa_prims.cc`, `P_prim_setter`), a recorded store
+   does not flow its value into the field. Codegen emits nothing for it.
+3. Re-check every recorded store at the end of every later pass. A store that
+   becomes OBSERVED (a later pass reached more code) is the stop condition
+   below, not something to revoke quietly.
+4. `--strict`: this is CPython-exact (the placeholder is never observed), so it
+   applies in every mode; no flag gate is needed, but it gets one
+   (`PYC_OVERWRITE`) for the A/B.
+
 ## Stop conditions
 
 - For 1: if killing the dominated store changes any corpus `check` verdict

@@ -155,6 +155,7 @@ void report_retconf();
 void report_degenerate_avars();
 void report_incompat();
 void report_dead_stores();  // ifa/191 census
+void report_overwrite_probe();  // ifa/191 direction 2
 void report_keydrift();
 void report_keyspace();
 void report_cs_population();
