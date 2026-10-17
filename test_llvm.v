@@ -35,8 +35,9 @@ test_float f g : {
   print(f * g);
 };
 
-// Test nested expressions
-test_expr : {
+// Test nested expressions. `()` makes it a nullary function: a bare
+// `test_expr : {...}` is a variable, evaluated where it is defined.
+test_expr () : {
   print((2 + 3) * (4 - 1));
   print(1 + 2 + 3);
 };

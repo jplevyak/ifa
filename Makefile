@@ -252,12 +252,22 @@ realclean: clean
 # -lm -lgc -lgccpp link flags needed for GC_malloc references in
 # the emitted IR. No separate clang invocation needed here. See
 # issue 012 for the history.
+#
+# Both backends run it, and each must print test_llvm.v.expected exactly:
+# the exit status alone let LLVM print every string as "(null)" unnoticed.
 test_llvm: ifa
 	@echo "Testing LLVM backend..."
 	rm -f test_llvm
 	IFA_LLVM=1 ./ifa test_llvm.v
 	@echo "Running test_llvm..."
-	./test_llvm
+	./test_llvm > test_llvm.out
+	diff -u test_llvm.v.expected test_llvm.out
+	@echo "Testing C backend..."
+	rm -f test_llvm
+	./ifa test_llvm.v
+	./test_llvm > test_llvm.out
+	diff -u test_llvm.v.expected test_llvm.out
+	rm -f test_llvm.out
 	@echo "Test passed!"
 
 # ifa-test runs one --phase at a time. The driver loop here iterates

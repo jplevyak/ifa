@@ -1,0 +1,31 @@
+=== Arithmetic (10, 3) ===
+13
+7
+30
+3
+1
+=== Comparisons (5, 10) ===
+0
+1
+1
+0
+=== Conditionals (42) ===
+100
+300
+=== Loop (0 to 2) ===
+0
+1
+2
+=== Function add(7, 8) ===
+15
+=== Float (3.14, 2.0) ===
+5.140000000000001
+6.28
+=== Expressions ===
+15
+6
+=== Direct operations ===
+8
+15
+999
+=== DONE ===
