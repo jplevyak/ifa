@@ -154,6 +154,7 @@ void report_cs_flow_graphs();
 void report_retconf();
 void report_degenerate_avars();
 void report_incompat();
+void report_dead_stores();  // ifa/191 census
 void report_keydrift();
 void report_keyspace();
 void report_cs_population();

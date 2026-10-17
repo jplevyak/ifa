@@ -2399,3 +2399,84 @@ void report_demand_ratio() {
     fprintf(stderr, " census.esl_hit=%d census.esl_walk=%d census.mint_in_child=%d mint_child_noparentbinding=%d census.mint_child_cmc=%d census.esl_reached=%d census.esl_decline=%d\n", census.esl_hit, census.esl_walk, census.mint_in_child, census.mint_child_novar, census.mint_child_cmc, census.esl_reached, census.esl_decline);
   }
 }
+
+// ifa/191 census: a field store that a later store to the same receiver
+// Var and field kills on every CFG path, with no use of the receiver in
+// between. Read-only, after convergence; decides nothing. Each candidate
+// prints KILL (no send on any path between) or CALL (a send between,
+// which might raise or observe the object), the two values, and per
+// EntrySet whether the first value adds a type the killing stores' do not.
+static Sym *setter_field(PNode *n) {
+  if (!n || !n->code || n->code->kind != Code_SEND || !n->prim || n->prim->index != P_prim_setter) return nullptr;
+  if (n->rvals.n < 5 || !n->rvals[3]) return nullptr;
+  return n->rvals[3]->sym;
+}
+
+static bool pnode_reads(PNode *n, Var *o) {
+  for (Var *v : n->rvals) if (v == o) return true;
+  for (Var *v : n->lvals) if (v == o) return true;
+  for (PNode *m : n->phi) { for (Var *v : m->rvals) if (v == o) return true; }
+  for (PNode *m : n->phy) { for (Var *v : m->rvals) if (v == o) return true; }
+  return false;
+}
+
+void report_dead_stores() {
+  static int want = getenv("IFA_DBG_DEADSTORE") ? 1 : 0;
+  if (!want) return;
+  int n_set = 0, n_kill = 0, n_call = 0, n_adds = 0;
+  for (Fun *f : fa->funs) {
+    if (!f) continue;
+    for (PNode *p : f->fa_send_PNodes) {
+      Sym *field = setter_field(p);
+      if (!field) continue;
+      n_set++;
+      Var *o = p->rvals[1];
+      Vec<PNode *> killers, work;
+      Vec<PNode *> seen;
+      bool ok = true, call = false;
+      for (PNode *s : p->cfg_succ) if (s && seen.set_add(s)) work.add(s);
+      for (int i = 0; ok && i < work.n; i++) {
+        PNode *n = work[i];
+        if (n == f->exit) { ok = false; break; }
+        if (setter_field(n) == field && n->rvals[1] == o) { killers.add(n); continue; }
+        if (pnode_reads(n, o)) {
+          // A store to ANOTHER field of o whose value is not o is not a read.
+          Sym *g = setter_field(n);
+          if (!(g && n->rvals[1] == o && n->rvals[4] != o)) { ok = false; break; }
+        }
+        if (n->code && n->code->kind == Code_SEND && !setter_field(n)) call = true;
+        if (!n->cfg_succ.n) { ok = false; break; }
+        for (PNode *s : n->cfg_succ) if (s && seen.set_add(s)) work.add(s);
+      }
+      if (!ok || !killers.n) continue;
+      if (call) n_call++; else n_kill++;
+      bool adds_any = false;
+      for (EntrySet *es : f->ess) {
+        AVar *v1 = make_AVar(p->rvals[4], es);
+        if (!v1 || !v1->out) continue;
+        Vec<CreationSet *> later;
+        for (PNode *k : killers) {
+          AVar *v2 = make_AVar(k->rvals[4], es);
+          if (v2 && v2->out) for (CreationSet *c : v2->out->sorted) later.set_add(c);
+        }
+        bool adds = false, slot = v1->out->sorted.n > 0;
+        for (CreationSet *c : v1->out->sorted) {
+          if (c && !later.set_in(c)) adds = true;
+          if (!c || !c->sym || !c->sym->is_fun) slot = false;  // a method-slot store: every value a function
+        }
+        if (adds) adds_any = true;
+        fprintf(stderr, "[deadstore] %s%s fun=%s es=%d field=%s recv=%s killers=%d adds=%d first=",
+                call ? "CALL" : "KILL", slot ? "-SLOT" : "", f->sym && f->sym->name ? f->sym->name : "?", es->id,
+                field->name ? field->name : "?", o->sym && o->sym->name ? o->sym->name : "?", killers.n, adds);
+        show_type(v1->out->sorted, stderr, 0);
+        fprintf(stderr, " later=");
+        Vec<CreationSet *> lv;
+        for (CreationSet *c : later) if (c) lv.add(c);
+        show_type(lv, stderr, 0);
+        fprintf(stderr, "\n");
+      }
+      if (adds_any) n_adds++;
+    }
+  }
+  fprintf(stderr, "[deadstore] summary setters=%d kill=%d call=%d adds_type=%d\n", n_set, n_kill, n_call, n_adds);
+}

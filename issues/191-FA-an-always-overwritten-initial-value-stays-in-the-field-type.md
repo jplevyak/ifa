@@ -92,8 +92,29 @@ convergence, never by retraction during it.
    fact, much narrower than 2; check whether 164's machinery already has the
    coverage half.
 
-Order of attack: 1 (cheapest, local, likely covers most real code), then 3,
-then 2.
+Order of attack, revised by the census below: **2, then 3**; 1 is a special
+case of 2.
+
+### Census (2026-10-17): direction 1 alone finds nothing to fix
+
+`IFA_DBG_DEADSTORE=1` (`report_dead_stores`, `fa_debug.cc`; read-only,
+after convergence) prints every field store that a later store to the SAME
+receiver `Var` and field kills on every CFG path with no use of the receiver
+between: `KILL`, or `CALL` when a send sits between (it might raise or
+observe the object), and per EntrySet whether the first value adds a type.
+`-SLOT` marks a store whose every value is a function (a method slot).
+
+Over all 521 tests and 77 corpus programs (othello3 timed out at 900 s, as
+it always does): **one** dominated data store, the row-2 fixture itself
+(`first=__pyc_None_type__ later=int64`, adds a type). **Zero in the corpus.**
+Rows 3-5 are not found, as expected: each needs more than one function.
+The stop condition in the plan ("if no corpus program has a dominated store
+that adds a type, rows 3-5 are where the value is") fired, so 2 comes first.
+
+Seen, not pursued: ~3,000 `KILL-SLOT` and ~10,500 `CALL-SLOT` lines, the
+builtin prototypes' method slots (`__deepcopy__`, `__init__`) assigned twice,
+each leaving a slot typed with both functions. Whether that feeds run-time
+dispatch ([190](190-CODEGEN-run-time-dispatch-census.md)) is unmeasured.
 
 ## Stop conditions
 

@@ -13496,6 +13496,7 @@ static void complete_pass() {
   report_degenerate_avars();
   report_keydrift();
   report_incompat();
+  report_dead_stores();  // ifa/191
   report_retconf();  // ifa/157
   audit_edge_arg_values();
   collect_results();
