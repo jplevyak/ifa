@@ -110,6 +110,38 @@ and is removed. Its constant rule (closed/169) survives as `edge_arg_type`.
    is a change to IFA's core splitting trigger, so it needs a same-binary
    corpus `check` A/B; 146 records that the weaker SoS gates lost dijkstra2,
    plcfrs, pylife and sunfish, so the dispatch clause matters.
+   **The narrow gate, tried 2026-10-17 and reverted (stop condition hit).**
+   Three variants of "a confluence whose only disagreement is `None` joining
+   pointer-shaped types is not one" (`collect_type_confluence`):
+
+   | variant | `go` sites | regressions |
+   | --- | --- | --- |
+   | skip every `None`-only confluence | 1, output = CPython | 3: `const_bytes_truthiness_or` (`dynamic` 0 -> 1), `nil_receiver_method_send` (`niltest` 3 -> 6), `deepcopy_union_receiver_keeps_method_slots` (C compile error: a `None` stored into a struct-pointer field without a cast, `t1->e0 = t2`) |
+   | skip unless SETTER_OF_SETTER's demand test (`sos_type_conflict`) fires | 6 (unchanged) | none |
+   | skip unless that demand fires with `None` not counted as a receiver | 1 | the same 3 |
+
+   **Why no local rule separates them.** The demand that keeps `go`'s split
+   is the receiver clause: `parent` is `{None, UCTNode}`, and a send on it
+   dispatches to two functions -- truthiness (`if node.parent:`, `go.py:380`)
+   resolves to `NoneType`'s and `UCTNode`'s `__pyc_to_bool__`. That is the
+   same shape as `const_bytes_truthiness_or`'s `components = {None, bytes}`,
+   whose truth test also dispatches to two functions. The difference is
+   DOWNSTREAM: there the per-`None` contour lets `components or
+   bytearray(n)` fold, and without it the result is `{bytes, bytearray}`,
+   which needs a run-time dispatch; in `go` the merged contour costs nothing
+   (`PYC_DBG_CALLS`: `direct=681 dynamic=0 niltest=6` in the default, the
+   gate, and `PYC_NOSETTER=1` alike). So the confluence itself never says
+   whether the split is needed; only a demand backtracked from what the
+   merge would break does.
+
+   **Next, if pursued:** the full demand gate -- nominate a SETTER confluence
+   only by a demand backtracked to it, which for `const_bytes` means the
+   `{bytes, bytearray}` dispatch backtracked to the `components` formal (the
+   test's own comment says CONST_DEMAND's walk cannot get there today).
+   Separately, the `deepcopy_union_receiver_keeps_method_slots` C error is a
+   latent codegen gap (a nil store into a pointer field without a cast) that
+   any merge of that field would expose.
+
 3. **Consider basing the check on FA types**, not on C type strings, so a
    codegen naming gap cannot read as imprecision again.
 
