@@ -1,15 +1,43 @@
 # 111 — FA pass cost tracks ACCUMULATED contours: every pass re-walks the whole graph
 
 **Status:** open. Performance only, and not a precondition for any
-precision work. Rewritten 2026-09-28. It now also carries
+precision work. Rewritten 2026-09-28; re-measured 2026-10-17. It now also carries
 [113](closed/113-FA-setter-equivalence-is-a-global-batch-partition.md), the
 setter-classing blocker. The full record (M1–M3, seven attempts, the
 shedskin instrumentation) is in git:
 `git show 3f36072b:ifa/issues/111-FA-selective-invalidation-per-pass.md`.
 
-**Re-measure before resuming.** Every number below predates start-merged
-identity (`PYC_CSDCPA1=2`), parent-first routing and the owner lift, which
-cut contours 3-4× (chess ess 1591 → 426). The gap may be much smaller now.
+**Re-measured 2026-10-17** (below): the cost is much smaller on chess and
+now sits in a few long-running programs, plcfrs above all. The September
+numbers further down predate start-merged identity (`PYC_CSDCPA1=2`),
+parent-first routing and the owner lift, which cut contours 3-4× (chess ess
+1591 → 426); they are kept as the record of the shape.
+
+## Re-measured 2026-10-17
+
+`PYC_DBG_WORK=1` (edge visits per pass, `census.work_edges`), at `f1ca0e2e`,
+each program compiled alone from a scratch copy. "FA pass time" is the sum
+of the per-pass `pass_time` the same line reports; "wall" is the whole
+compile.
+
+| program | passes | per-pass work, first → last | total edge visits | FA pass time / wall | ess / css |
+| --- | --- | --- | --- | --- | --- |
+| chess | 16 (31 in Sept.) | 18 272 → 179 143 (×9.8; ×48 in Sept.) | 1.69 M (22.5 M in Sept.) | 3.0 s / 8.0 s | 433 / 1506 |
+| voronoi2 | 25 | 37 811 → 222 305 (×5.9) | 3.28 M | 3.1 s / 6.6 s | 417 / 1605 |
+| plcfrs | 67 | 226 878 → 2 139 573 (×9.4) | 89.5 M | 93.1 s / 118.3 s | 1374 / 3921 |
+| sunfish | 31 | 1 239 322 → 4 359 061 (×3.5) | 111.9 M | 91.9 s / 204.3 s | 789 / 3434 |
+
+- **chess**, the September showcase, does 13× less work: half the passes and a
+  fifth of the per-pass growth. For programs of that size this issue no
+  longer matters much.
+- **plcfrs** is where the shape still bites: 67 passes, work growing ×9.4 per
+  pass, and FA 79% of the compile. It is the program to measure a fix on.
+- **sunfish** spends only 92 of its 204 s in FA passes; the rest is post-FA,
+  [185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md)'s
+  territory, not this one. othello3, which never finishes pass 1, is
+  [186](186-FA-pass-one-confluence-through-shared-builtins.md).
+- Neither route below has been attempted since September, and the cheap
+  "preserve only settled monomorphic contours" measurement is still untaken.
 
 ## The shape of the cost
 

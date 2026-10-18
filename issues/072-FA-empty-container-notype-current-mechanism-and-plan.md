@@ -1,6 +1,7 @@
 # 072 — a never-written container's bottom element reaches live code
 
-**Status:** open. Rewritten 2026-09-28. It owns three `.known_issue`
+**Status:** open, not attempted. Rewritten 2026-09-28; re-checked
+2026-10-17 (both fixtures below still fail). It owns two `.known_issue`
 fixtures. The history (shedskin's backward pass, the negative seeding
 prototype, the 043 family) is in git:
 `git show 3f36072b:ifa/issues/072-FA-empty-container-notype-current-mechanism-and-plan.md`.
@@ -36,12 +37,12 @@ inference is write-driven).
 | fixture | shape |
 | --- | --- |
 | `tests/empty_container_elem.py` | `x = []; x[0]`: a mutual error (CPython raises `IndexError`). Today it is a NOTYPE refusal. |
-| `tests/dict_empty_next_to_populated.py` | `dict([])` beside a populated dict. Once closed/172 separates their CSs, the empty one's `for pair in pairs` and `while i < self._len` are type-checked as live over a bottom element. |
+| `tests/dict_empty_next_to_populated.py` | `dict([])` beside a populated `dict([(1, 2), (3, 4)])`. Once closed/172 separates their CSs, the empty one's code is type-checked as live over a bottom element: `dict.__str__`'s `while i < self._len` with `_len` 0, and the pairs loop over `[]`. Since issues/178 (`dict(x)` dispatches `x.__pyc_dict_into__(d)`) it is reported as `illegal call argument type ... int64` and `unresolved member '__getitem__' of class 'int64'`; before, as `'pair' has no type`. Measured 2026-10-17: `dict([])` alone, the populated `dict(...)` alone, and `{}` beside the populated `dict(...)` all compile and match CPython -- only the two `dict(...)` calls together fail. |
 
-The last points at closed/160 in its `.known_issue` text. It belongs
-here. (`tests/empty_list_compare_via_dict.py`, a list read out of a dict
-compared to `[]`, was the third fixture; it compiles and matches CPython
-on both backends as of 2026-10-14, not bisected, and its `.known_issue` is
+Its `.known_issue` text says "(was 160)"; it belongs here.
+(`tests/empty_list_compare_via_dict.py`, a list read out of a dict
+compared to `[]`, was a third fixture; it compiles and matches CPython on
+both backends as of 2026-10-14, not bisected, and its `.known_issue` is
 gone.)
 
 Also in this family: **a METHOD DISPATCHED on the element** of a
@@ -72,6 +73,6 @@ dead edge is recomputed every pass, never only accumulated.
 
 ## Verification
 
-The three fixtures flip to PASS (`empty_container_elem` as a clean
+The two fixtures flip to PASS (`empty_container_elem` as a clean
 runtime `IndexError`, matching CPython). Nothing that types today
 regresses. Corpus `check` neutral or better.
