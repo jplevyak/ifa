@@ -40,8 +40,13 @@ It DOES:
 - Synthesize a C-ABI `main()` that calls IF1's main_fun.
 - Verify the produced module (`llvm::verifyModule`).
 - Write a `.ll` text file.
-- Spawn clang to link against `libpyc_runtime.a` and
-  Boehm GC.
+- Spawn clang to link against the runtime and Boehm GC. By default
+  (since 2026-10-18) the IR is compiled with `-flto` and linked under
+  `-fuse-ld=lld` with `pyc_runtime_lto.o`, the runtime as LLVM bitcode, so
+  the runtime helpers inline as the C backend's do from `pyc_c_runtime.h`
+  (17% faster geomean on 8 corpus programs). When that object or lld is
+  missing, or `PYC_LLVM_LTO=0`, it links `libpyc_runtime.a` as before
+  (`llvm_lto_runtime`).
 
 Entry point: `llvm_codegen_write_ir(fa, main_fun, fn)` +
 `llvm_codegen_compile(fn)`, both in `llvm.cc`.  Despite
