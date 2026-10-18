@@ -12453,9 +12453,19 @@ static void probe_invalidation_closure() {
         fprintf(stderr, "ESSIG pass=%d  %4d %s\n", analysis_pass, -ts[i].first, ts[i].second.substr(0, 300).c_str());
     }
   }
-  if (getenv("PYC_DBG_WORK"))  // ifa/111 probe
-    fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f\n", analysis_pass, census.work_edges,
-            census.work_sends, census.work_escons, pass_timer.time);
+  // ifa/111 probe. The census counters are reset once per analysis
+  // (initialize), so they are RUNNING TOTALS; this prints the per-pass
+  // difference as edges/sends/es_constraints and the totals as cum_*. Until
+  // 2026-10-17 it printed the totals under the per-pass names, and 111's
+  // "per-pass work grows 48x" was read off them.
+  if (getenv("PYC_DBG_WORK")) {
+    static long prev_e = 0, prev_s = 0, prev_c = 0;
+    if (census.work_edges < prev_e) prev_e = prev_s = prev_c = 0;  // a new analysis
+    fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f cum_edges=%ld cum_sends=%ld\n",
+            analysis_pass, census.work_edges - prev_e, census.work_sends - prev_s, census.work_escons - prev_c,
+            pass_timer.time, census.work_edges, census.work_sends);
+    prev_e = census.work_edges, prev_s = census.work_sends, prev_c = census.work_escons;
+  }
   if (write_code_exit == analysis_pass) {
     if1_simple_dead_code_elimination(fa->pdb->if1);
     ifa_code("if1");
@@ -13484,6 +13494,37 @@ static bool settle_gated_contours() {
   return changed;
 }
 
+// ifa/111 probe (PYC_DBG_PASSCONT): per pass, the contours reached and
+// allocated, and how many reached EntrySets DUPLICATE another of the same
+// function by converged formal types (canonical ATypes are hash-consed, so
+// pointer equality is type equality). A duplicate is a contour a
+// types-only derivation (shedskin's CPA) would fold into its sibling:
+// its existence is carried by the split decision, not by the types.
+static void report_pass_contours() {
+  static int on = -1;
+  if (on < 0) on = getenv("PYC_DBG_PASSCONT") ? 1 : 0;
+  if (!on) return;
+  std::map<std::pair<Fun *, std::vector<AType *>>, int> groups;
+  int funs_split = 0;
+  std::map<Fun *, int> per_fun;
+  for (EntrySet *es : fa->ess) {
+    if (!es || !es->fun) continue;
+    std::vector<AType *> key;
+    for (MPosition *mp : es->fun->positional_arg_positions) {
+      AVar *a = es->args.get(mp);
+      key.push_back(a && a->out ? a->out->type : nullptr);
+    }
+    groups[{es->fun, key}]++;
+    per_fun[es->fun]++;
+  }
+  int dups = 0, dup_groups = 0;
+  for (auto &g : groups) if (g.second > 1) { dups += g.second - 1; ++dup_groups; }
+  for (auto &f : per_fun) if (f.second > 1) ++funs_split;
+  fprintf(stderr, "PASSCONT pass=%d ess=%d css=%d all_ess=%d all_css=%d funs=%zu funs_split=%d type_dup_ess=%d dup_groups=%d\n",
+          analysis_pass, fa->ess.n, fa->css.n, fa->all_entry_sets.n, fa->all_creation_sets.n, per_fun.size(), funs_split,
+          dups, dup_groups);
+}
+
 static void complete_pass() {
   settle_gated_liveness();
   report_gated_calls();
@@ -13501,6 +13542,7 @@ static void complete_pass() {
   report_retconf();  // ifa/157
   audit_edge_arg_values();
   collect_results();
+  report_pass_contours();  // ifa/111
   collect_argument_type_violations();
   collect_member_violations();
   if (getenv("IFA_DBG_DISPATCHFAIL"))

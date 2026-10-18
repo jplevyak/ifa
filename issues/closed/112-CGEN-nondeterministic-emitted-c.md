@@ -185,7 +185,7 @@ on, and reproducible builds generally.
 - [closed/009](009-fa-violations-nondeterminism.md) — FA
   violation-order nondeterminism, also fixed. FA state is stable here,
   so this is not that.
-- [111](../111-FA-selective-invalidation-per-pass.md) — found by its
+- [111](111-FA-selective-invalidation-per-pass.md) — found by its
   harness; that harness now works around this rather than waiting on it.
 
 ## Fixed 2026-08-30 — three sources, and the one that was not cosmetic

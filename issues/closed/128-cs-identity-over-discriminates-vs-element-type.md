@@ -47,7 +47,7 @@ method contour is taken per receiver CS:
 
 shedskin gets 3 because `list<T>` is parameterised by `T` and chess has ~3
 distinct `T`. This is also the root of
-[111](../111-FA-selective-invalidation-per-pass.md)'s 7.4× wall-clock gap:
+[111](111-FA-selective-invalidation-per-pass.md)'s 7.4× wall-clock gap:
 `ess` drives the per-pass edge count, which climbs 30,823 → 1,484,115 across
 one compile while shedskin's per-iteration work stays flat.
 

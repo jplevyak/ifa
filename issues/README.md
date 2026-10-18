@@ -86,7 +86,6 @@ one is a lesson this directory paid for.
 | [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that does arrive at an operation reads as zero. Permissive runtime check, strict refusal. |
 | [185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) | performance: sunfish compiles in 537 s. A tuple receiver merged across every arity keeps all 64 steps of the unrolled tuple methods live for ~13 passes; capping the unroll at 8 gives 48 s. |
 | [186](186-FA-pass-one-confluence-through-shared-builtins.md) | performance: othello3 never finishes pass 1. Shared builtin contours (`__list_iter__.__next__`, `len`, `__eq__`) carry a ~2,039-CS whole-program union, rebuilt one CS at a time at tens of thousands of AVars. |
-| [111](111-FA-selective-invalidation-per-pass.md) | performance: pass cost tracks the EntrySets persisted routing still reaches. ifa keeps decisions and rebuilds structure like shedskin; the difference is that it also persists function-contour splits and never retires them. Re-measured 2026-10-17: chess 13× better than September, plcfrs still 67 passes. |
 
 ### Codegen, dispatch, representation
 
@@ -148,6 +147,7 @@ one is a lesson this directory paid for.
 | [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
 | [177](closed/177-FA-narrowing-does-not-reach-a-module-global.md) | fixed: a guard's load is reused in its true branch | — |
 | [147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md) | two builds differing only in dead code give identical sweeps (all 77 rows) and byte-identical C; repeat compiles are identical under ASLR | — (oracle recorded in the issue) |
+| [111](closed/111-FA-selective-invalidation-per-pass.md) | premise false: per-pass work falls and stays flat; the "grows 48x" figures were a running-total counter (PYC_DBG_WORK, fixed). FA time is early-pass call matching | 185, 186 (matching cost), 170 (type-duplicate EntrySets) |
 | [132](closed/132-arity-is-representation-not-provenance.md) | arity in CS identity landed; a two-arity slot is sound (`PYC_SLOTARITY` deleted); quameon runs. Closed with quameon as the witness: a small program splits upstream on `{None}` before the demand is reached | 178 (synthetic test) |
 | [179](closed/179-LLVM-quameon-computes-nan.md) | fixed by 180 (`**` had no LLVM emitter) | — |
 | [120](closed/120-union-types-are-never-interned.md) | value unions interned; the audit found no post-handout write but codegen's C name, and the segfault no longer reproduces | — |
