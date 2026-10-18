@@ -460,7 +460,8 @@ void declare_globals(FA *fa) {
     } else if (t->isFloatingPointTy()) {
       init = llvm::ConstantFP::get(t, 0.0);
     } else {
-      init = llvm::UndefValue::get(t);
+      // Zero, as a C global is (and so nothing reads undef from it).
+      init = llvm::Constant::getNullValue(t);
     }
     llvm::GlobalVariable *gv = new llvm::GlobalVariable(
         *TheModule, t, /*isConstant=*/false,
@@ -1054,6 +1055,18 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
 // emit_send_unaryop — P_prim_lnot and P_prim_minus.
 // -------------------------------------------------------------
 
+// `nsw` exactly where the C backend's arithmetic is signed-overflow UB:
+// the result's pyc type is a signed integer and the operation is at least
+// 32 bits wide (C promotes int8/int16 operands to int, so they cannot
+// overflow at their own width). Unsigned types and bool wrap by definition
+// and get no flag. pyc's own code that relies on wrapping goes through
+// _CG_hash_mix, which wraps in unsigned arithmetic.
+static bool int_op_is_nsw(Var *dst_v, llvm::Value *operand) {
+  if (!dst_v || !dst_v->type || !operand || !operand->getType()->isIntegerTy()) return false;
+  if (dst_v->type->num_kind != IF1_NUM_KIND_INT) return false;
+  return operand->getType()->getIntegerBitWidth() >= 32;
+}
+
 bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   int op = pn->prim->index;
@@ -1095,7 +1108,7 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
     if (val->getType()->isFloatTy() || val->getType()->isDoubleTy()) {
       res = Builder->CreateFNeg(val);
     } else if (val->getType()->isIntegerTy()) {
-      res = Builder->CreateNeg(val);
+      res = Builder->CreateNeg(val, "", int_op_is_nsw(dst, val));
     }
   }
 
@@ -1264,15 +1277,15 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   switch (idx) {
     case P_prim_add:
       res = is_float ? Builder->CreateFAdd(lhs, rhs)
-                     : Builder->CreateAdd(lhs, rhs);
+                     : Builder->CreateAdd(lhs, rhs, "", false, int_op_is_nsw(dst_v, lhs));
       break;
     case P_prim_subtract:
       res = is_float ? Builder->CreateFSub(lhs, rhs)
-                     : Builder->CreateSub(lhs, rhs);
+                     : Builder->CreateSub(lhs, rhs, "", false, int_op_is_nsw(dst_v, lhs));
       break;
     case P_prim_mult:
       res = is_float ? Builder->CreateFMul(lhs, rhs)
-                     : Builder->CreateMul(lhs, rhs);
+                     : Builder->CreateMul(lhs, rhs, "", false, int_op_is_nsw(dst_v, lhs));
       break;
     case P_prim_div:
       res = is_float ? Builder->CreateFDiv(lhs, rhs)
@@ -4662,6 +4675,11 @@ void discover_phi_targets(EmitCtx &ctx, Fun *f) {
       if (!t || t->isVoidTy()) t = llvm::PointerType::getUnqual(*TheContext);
       cchar *name = cg_get_string(v);
       slot = Builder->CreateAlloca(t, nullptr, name ? name : "");
+      // Zero-initialised, as the C backend's `T x = {};` locals are, so a
+      // slot read before any store yields zero, never undef. That is what
+      // makes the `noundef` on parameters and returns sound; mem2reg drops
+      // the store wherever a real one dominates the read.
+      Builder->CreateStore(llvm::Constant::getNullValue(t), slot);
       class_slot.put(root, slot);
     }
     ctx.alloca_map.put(v, slot);
@@ -4946,6 +4964,16 @@ llvm::Function *build_fun_signature(EmitCtx &ctx, Fun *f) {
 
   if (f->sym && (f->sym->is_async || f->sym->is_generator)) {
     llvm_fn->addFnAttr(llvm::Attribute::PresplitCoroutine);
+  } else {
+    // `noundef` on scalar and pointer parameters and returns, as clang puts on
+    // the C backend's C++ functions. Sound because no value pyc emits is undef:
+    // locals and globals are zero-initialised (above / emit globals). Not on an
+    // aggregate (it would also assert defined padding), and not on coroutines,
+    // whose ramp and resume functions are rewritten by CoroSplit.
+    auto scalar = [](llvm::Type *t) { return t->isIntegerTy() || t->isFloatingPointTy() || t->isPointerTy(); };
+    for (unsigned i = 0; i < llvm_fn->arg_size(); i++)
+      if (scalar(llvm_fn->getArg(i)->getType())) llvm_fn->addParamAttr(i, llvm::Attribute::NoUndef);
+    if (scalar(ret_ty)) llvm_fn->addRetAttr(llvm::Attribute::NoUndef);
   }
 
   // Bind each llvm::Argument back to its Var via the per-Fun
