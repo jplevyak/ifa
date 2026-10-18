@@ -102,7 +102,9 @@ that look like this family and are not:
 ## Settled — do not re-litigate
 
 - **A merge can be taken back.** `analyze_to_convergence` resets before
-  every pass; only the DECISION (`av->cs_map`) persists. Wholesale
+  every pass; only the DECISIONS persist (`av->cs_map` for CreationSets;
+  EntrySets and `AEdge::to` for function contours; the split ledger --
+  [111](111-FA-selective-invalidation-per-pass.md)). Wholesale
   re-deriving costs precision, never correctness.
 - **Mint-time reuse keying cannot work.** The key is read when the element
   is unfilled by construction (402 of 795 such mints never acquire a

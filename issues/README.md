@@ -86,7 +86,7 @@ one is a lesson this directory paid for.
 | [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that does arrive at an operation reads as zero. Permissive runtime check, strict refusal. |
 | [185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) | performance: sunfish compiles in 537 s. A tuple receiver merged across every arity keeps all 64 steps of the unrolled tuple methods live for ~13 passes; capping the unroll at 8 gives 48 s. |
 | [186](186-FA-pass-one-confluence-through-shared-builtins.md) | performance: othello3 never finishes pass 1. Shared builtin contours (`__list_iter__.__next__`, `len`, `__eq__`) carry a ~2,039-CS whole-program union, rebuilt one CS at a time at tens of thousands of AVars. |
-| [111](111-FA-selective-invalidation-per-pass.md) | performance: pass cost tracks accumulated contours (selective invalidation, blocked on setter classing; or rebuild from decisions). Re-measure first. |
+| [111](111-FA-selective-invalidation-per-pass.md) | performance: pass cost tracks the EntrySets persisted routing still reaches. ifa keeps decisions and rebuilds structure like shedskin; the difference is that it also persists function-contour splits and never retires them. Re-measured 2026-10-17: chess 13× better than September, plcfrs still 67 passes. |
 
 ### Codegen, dispatch, representation
 

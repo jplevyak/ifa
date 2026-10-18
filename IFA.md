@@ -559,9 +559,10 @@ is banned.
 **Corollary.** A merge you cannot undo is not a reason to record
 provenance — it is a reason to split coarser and let the analysis
 re-derive. `analyze_to_convergence` resets *before* every pass
-(`fa.cc:10904-10909`), so derived ATypes are already re-derived from
-bottom; only the DECISION (`av->cs_map`) persists, and `split_css` can
-re-point it. Wholesale splitting by creation point therefore costs
+(`clear_results`), so derived ATypes are already re-derived from bottom;
+only the DECISIONS persist -- the CreationSet assignment (`av->cs_map`,
+which `split_css` can re-point), the EntrySets and each call edge's binding
+to one (`AEdge::to`), and the split ledger (ifa/issues/111). Wholesale splitting by creation point therefore costs
 precision, not correctness. If the precision cost bites, the answer is a
 finer demand test (shedskin's ladder tries no-confusion, confluence
 partition and path partition before wholesale — all keyed on deduced

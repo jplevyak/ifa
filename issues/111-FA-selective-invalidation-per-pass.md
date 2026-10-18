@@ -1,4 +1,4 @@
-# 111 — FA pass cost tracks ACCUMULATED contours: every pass re-walks the whole graph
+# 111 — FA pass cost tracks ACCUMULATED contours: every pass re-walks every EntrySet its persisted routing still reaches
 
 **Status:** open. Performance only, and not a precondition for any
 precision work. Rewritten 2026-09-28; re-measured 2026-10-17. It now also carries
@@ -42,9 +42,32 @@ compile.
 ## The shape of the cost
 
 `analyze_to_convergence` calls `clear_results()` before every pass. That
-clears values AND the constraint graph (`forward`/`backward`), and
-`add_es_constraints` rebuilds it from `top_edge`. So pass N re-walks every
-contour ever minted.
+clears every DERIVED thing -- AVar values (`in`/`out`/`gen`), the
+constraint graph (`forward`/`backward`), setter sets and classes, each
+EntrySet's `live_pnodes` / `out_edges` / `creates`, each CreationSet's
+`defs` / `ess`, each edge's `args` / `rets` / formal filters -- and
+`add_es_constraints` rebuilds them from `top_edge`.
+
+**What survives the reset is the DECISIONS** (verified 2026-10-17 in
+`clear_avar` / `clear_es` / `clear_cs` / `clear_edge`, `fa.cc`):
+
+- **data contours:** the CreationSets themselves (`fa->all_creation_sets`)
+  and each creation point's assignment to one (`AVar::cs_map`);
+- **function contours:** the EntrySets (`fa->all_entry_sets`), their
+  `filters` and `type_key`, and each call edge's binding to one --
+  `AEdge::to`, which `make_entry_set` reuses on every later pass (`if
+  (e->to) { edges.add(e); return; }`); the edge objects persist in
+  `es->out_edge_map`, which the reset does not clear;
+- **the split ledger** (`fa->split_ledger`), and the other between-pass
+  decision tables: numeric coercion (`AVar::num_coerce`),
+  `apply_unbound_fills`' IF1 rewrites (039), the frontend's field
+  promotions, the 191 overwrite ledger.
+
+So ifa, like shedskin, keeps decisions and rebuilds the structure. Pass N
+re-walks every EntrySet still reached from `top_edge` through those
+persisted bindings -- not every contour ever minted (one no route reaches
+is not walked), but in practice nearly every one, because a binding is never
+retired ([170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)).
 
 Measured 2026-09-04 on chess, pyc vs shedskin, same source:
 
@@ -57,16 +80,26 @@ Measured 2026-09-04 on chess, pyc vs shedskin, same source:
 
 **pyc is ~9× cheaper per unit and does ~68× more units.** Type violations
 reach zero at pass 6. The remaining 25 passes are pure splitting, and each
-re-walks the whole accumulated network to service a frontier of a few
-dozen contours.
+re-walks every EntrySet the persisted routing reaches -- a set that grows
+with every split -- to service a frontier of a few dozen contours.
 
-**Why shedskin stays flat:** `restore_network` resets the graph to a
-FIXED-size snapshot every iteration (20 543 nodes on all 38). What
-persists is knowledge in side tables: `alloc_info` (allocation decisions,
-content-addressed by `(func, cart, site)`), the class-split table, and
-edits to the snapshot. pyc keeps the structure and re-walks it; shedskin
-keeps the decisions and rebuilds the structure. Contour identity is by
-content in both.
+**Why shedskin stays flat -- the real difference is WHICH decisions
+persist** (verified 2026-10-17 in `shedskin/infer.py`). Both keep decisions
+and rebuild the structure. `iterative_dataflow_analysis` takes
+`backup_network` once, before the first iteration, and `restore_network`
+resets to it after every splitting iteration (20 543 nodes on all 38) --
+and sets `func.cp = {}` for every function, discarding every
+cartesian-product FUNCTION contour. What persists is DATA-contour decisions
+only: `alloc_info` (`(func, cart, alloc_node) -> (class, dcpa)`), the class
+copies (`class_copy`, `cl.dcpa`), and the split classes written into the
+snapshot (`beforetypes[n] = {(cl, newnr)}`). Each iteration's `propagate`
+then re-derives the function contours by CPA from the current types.
+
+ifa persists its FUNCTION-contour decisions too -- EntrySet splits and edge
+bindings -- and never retires them (170), so the set a pass walks only
+grows: chess 30 823 -> 1 484 115 edge visits per pass in September,
+18 272 -> 179 143 today. shedskin's walked set is re-derived, so it stays
+flat. Contour identity is by content in both.
 
 **Not the fix:** a pass cap. Truncation makes `amaze` and `msp_ss` fail
 to compile, and the author's direction is *"no artificial pass limits; the
@@ -107,13 +140,24 @@ contour has none. Measure first: at a converged pass, how many AVars in
 live `Setters` sets belong to a Fun with exactly one ES? If ~0, preserving
 those contours sidesteps the assert.
 
-### Route 2 — keep decisions, rebuild structure (shedskin's shape)
+### Route 2 — stop persisting function contours that nothing still demands (shedskin's shape)
 
-Move the persisted state from the contour graph to side tables (the split
-ledger already is one), and rebuild contours from those tables against a
-bounded base each pass. Larger change. It sidesteps 113 entirely, because
-nothing derived survives a pass. This is the route the 48× growth points
-at.
+ifa already keeps decisions and rebuilds the structure (above), so this
+route is not "move state to side tables". It is the difference in WHICH
+decisions persist: shedskin re-derives every function contour each
+iteration and keeps only data-contour decisions. The ifa version is either
+
+- re-derive EntrySet bindings each pass from the converged types (persist
+  the data-contour decisions and the ledger, drop `AEdge::to` between
+  passes), or
+- retire an EntrySet split whose demand has gone at convergence, which is
+  [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md).
+
+Either bounds the walked set by what the current types need instead of by
+history. Neither touches setter classing, so 113 does not block it. The
+risk is the one ifa/124 measured on 2026-10-17: some demands are visible
+only BEFORE the merge they prevent (a demand-gated SETTER lost 7 tests), so
+a contour re-derived from converged types may not be re-derived at all.
 
 ## Verification
 
