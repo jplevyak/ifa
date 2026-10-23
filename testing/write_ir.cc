@@ -127,6 +127,8 @@ static void write_code_form(FILE *fp, Code *c, NameAssigner &na, LabelNames &lbl
       return;
     case Code_SEND:
       fputs("  (send", fp);
+      if (c->partial != if1->partial_default)
+        fputs(c->partial == Partial_OK ? " :partial ok" : c->partial == Partial_NEVER ? " :partial never" : " :partial always", fp);
       for (Sym *r : c->rvals) { fputc(' ', fp); na.print_ref(fp, r); }
       if (c->lvals.n) {
         fputs(" =>", fp);

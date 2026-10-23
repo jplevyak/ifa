@@ -1,0 +1,41 @@
+;; 02_operator_and_partial.ir -- an operator atom (#+) and a send marked
+;; `:partial always`, which builds a closure over its arguments. The
+;; closure is applied later with the remaining argument. Both forms must
+;; survive write_ir and parse_ir.
+
+(sym %k1 :is-constant :immediate (int64 1))
+(sym %k2 :is-constant :immediate (int64 2))
+
+(sym %l_x :is-local)
+(sym %l_y :is-local)
+(sym %l_s :is-local)
+(sym %l_cont)
+(fun %lam0
+  :args (%lam0 %l_x %l_y)
+  :rets (%l_s)
+  :cont %l_cont
+  :body
+    (send @operator %l_x #+ %l_y => %l_s)
+    (send @primitive @reply %l_cont %l_s))
+
+(sym %x :is-local)
+(sym %o_r :is-local)
+(sym %ocont)
+(fun %outer
+  :args (%outer %x)
+  :rets (%o_r)
+  :cont %ocont
+  :body
+    (send :partial always %lam0 %x => %o_r)
+    (send @primitive @reply %ocont %o_r))
+
+(sym %f :is-local)
+(sym %r :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send %outer %k1 => %f)
+    (send %f %k2 => %r))
+(entry %top)

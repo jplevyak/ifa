@@ -36,10 +36,12 @@ atom        := ref | keyword | numeric | bareword
 ref         := '%' ident   ; user reference  (e.g. %add)
               | '@' ident   ; builtin       (e.g. @int32)
               | '#' ident   ; symbol Sym    (e.g. #foo)
+              | '#' opchars ; operator atom (e.g. #+, #==, #.=)
 keyword     := ':' ident   ; field name     (e.g. :type)
 string      := '"' chars '"'
 numeric     := int | float
 ident       := [A-Za-z_][A-Za-z0-9_]*
+opchars     := [-+*/%<>=!&|^~.:#]+  ; what if1_make_symbol gives operators
 ```
 
 ### 2.1 Reference namespaces
@@ -192,6 +194,18 @@ Each form is a separate line for diff readability.
 ```
 (send %f %a1 %a2 => %r1 %r2)
 (send @sym_operator %lhs @sym_add %rhs => %result)
+```
+
+An optional `:partial ok|never|always` right after `send` sets
+`Code::partial`; without it the send takes `if1->partial_default`.
+`always` makes the send build a closure over its arguments (a
+`sym_closure` creation set) instead of calling: applying that closure
+later supplies the remaining arguments. The writer emits `:partial`
+only when it differs from the default.
+
+```
+(send :partial always %lam0 %x => %clo)   ; clo = lam0 with x bound
+(send %clo %y => %r)                      ; calls lam0(x, y)
 ```
 
 The `=>` separates rvals from lvals. No marker distinguishes

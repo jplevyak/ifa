@@ -111,6 +111,18 @@ static cchar *read_ident(Lex &L) {
   return if1_cannonicalize_string(if1, buf);
 }
 
+// An operator name: a run of the characters IF1's operator symbols use.
+static cchar *read_operator(Lex &L) {
+  cchar *start = L.cur;
+  while (*L.cur && strchr("+-*/%<>=!&|^~.:#", *L.cur)) advance_char(L);
+  int len = L.cur - start;
+  if (!len || len >= 16) return NULL;
+  char buf[16];
+  memcpy(buf, start, len);
+  buf[len] = 0;
+  return if1_cannonicalize_string(if1, buf);
+}
+
 static cchar *read_string(Lex &L) {
   // L.cur points at the opening "
   advance_char(L);  // skip "
@@ -190,7 +202,9 @@ static void next_token(Lex &L) {
   }
   if (c == '%' || c == '@' || c == '#' || c == ':') {
     advance_char(L);
-    cchar *name = read_ident(L);
+    // An atom can also be an operator (`#+`, `#==`, `#.=`), as write_ir
+    // emits the operator symbols a frontend makes with if1_make_symbol.
+    cchar *name = c == '#' && !is_ident_start((unsigned char)*L.cur) ? read_operator(L) : read_ident(L);
     if (!name) {
       lex_err(L, "expected identifier after '%c'", c);
       L.t.kind = TOK_EOF;
@@ -663,6 +677,16 @@ static void parse_move(Lex &L, Code **body) {
 // Parse (send F A1 A2 ... => R1 R2 ...). The `=>` is a bareword.
 static void parse_send(Lex &L, Code **body) {
   Code *send = if1_send1(if1, body);
+  // optional `:partial ok|never|always` (Code::partial; default if1->partial_default).
+  // `always` makes the send build a closure over its arguments.
+  if (L.t.kind == TOK_KEYWORD && !strcmp(L.t.text, "partial")) {
+    next_token(L);
+    if (L.t.kind == TOK_BAREWORD && !strcmp(L.t.text, "ok")) send->partial = Partial_OK;
+    else if (L.t.kind == TOK_BAREWORD && !strcmp(L.t.text, "never")) send->partial = Partial_NEVER;
+    else if (L.t.kind == TOK_BAREWORD && !strcmp(L.t.text, "always")) send->partial = Partial_ALWAYS;
+    else { parse_err(L, "expected ok, never or always after :partial"); return; }
+    next_token(L);
+  }
   // rvals
   while (L.t.kind == TOK_REF_USER || L.t.kind == TOK_REF_BLT || L.t.kind == TOK_REF_SYM) {
     Sym *r = parse_ref(L);
