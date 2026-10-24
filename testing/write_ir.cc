@@ -74,6 +74,9 @@ static cchar *type_kind_word(int k) {
 }
 
 static void write_sym_attrs(FILE *fp, Sym *s, NameAssigner &na) {
+  // A Sym whose %name was de-duplicated keeps its own name through :name.
+  cchar *assigned = na.name_of.get(s);
+  if (s->name && assigned && !s->is_constant && strcmp(assigned, s->name)) fprintf(fp, " :name \"%s\"", s->name);
   if (s->type) { fputs(" :type ", fp); na.print_ref(fp, s->type); }
   if (s->in) { fputs(" :in ", fp); na.print_ref(fp, s->in); }
   if (s->type_kind) fprintf(fp, " :kind %s", type_kind_word(s->type_kind));

@@ -1,0 +1,42 @@
+;; 07_same_field_name.ir -- two records each with a field named "x", as
+;; distinct Syms (%a_x, %b_x) given their user name by `:name`. A read
+;; of #x reaches each record's own field.
+
+(type %A :kind RECORD :has (%a_x))
+(sym %a_x :name "x" :in %A)
+(type %B :kind RECORD :has (%b_x))
+(sym %b_x :name "x" :in %B)
+
+(sym %k1 :is-constant :immediate (int64 1))
+(sym %kf :is-constant :immediate (float64 2.5))
+
+(sym %o :is-local)
+(sym %r :is-local)
+(sym %gcont)
+(fun %get_x
+  :args (%get_x %o)
+  :rets (%r)
+  :cont %gcont
+  :body
+    (send @operator %o @period #x => %r)
+    (send @primitive @reply %gcont %r))
+
+(sym %a :is-local)
+(sym %b :is-local)
+(sym %s1 :is-local)
+(sym %s2 :is-local)
+(sym %r1 :is-local)
+(sym %r2 :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r1)
+  :cont %tcont
+  :body
+    (send @primitive @new %A => %a)
+    (send @operator %a @setter #x %k1 => %s1)
+    (send @primitive @new %B => %b)
+    (send @operator %b @setter #x %kf => %s2)
+    (send %get_x %a => %r1)
+    (send %get_x %b => %r2))
+
+(entry %top)

@@ -536,6 +536,11 @@ static void parse_sym_attrs(Lex &L, Sym *s) {
     next_token(L);
     if (!strcmp(kw, "type")) {
       s->type = parse_ref(L);
+    } else if (!strcmp(kw, "name")) {
+      // The user name, when it differs from the %NAME the file refers to the Sym by:
+      // two records can each have a field named "x", as distinct Syms.
+      if (L.t.kind != TOK_STRING) parse_err(L, "expected a string after :name");
+      else { s->name = if1_cannonicalize_string(if1, L.t.text); next_token(L); }
     } else if (!strcmp(kw, "in")) {
       s->in = parse_ref(L);
     } else if (!strcmp(kw, "aspect")) {

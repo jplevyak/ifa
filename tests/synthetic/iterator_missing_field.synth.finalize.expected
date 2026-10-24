@@ -59,7 +59,7 @@
 (sym %c0 :immediate (int32 0))
 (sym %t6 :is-local :nesting-depth 1)
 (sym %e :is-local :nesting-depth 1)
-(sym %v_1 :is-local :nesting-depth 1)
+(sym %v_1 :name "v" :is-local :nesting-depth 1)
 (sym %t7)
 (sym %t8)
 (sym %t9 :is-local :nesting-depth 1)
