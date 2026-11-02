@@ -70,6 +70,7 @@ one is a lesson this directory paid for.
 | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
 | [134](134-remove-the-frontend-forced-split-opt-in.md) | constants: 9 `__pyc_clone_constants__` annotations remain, each with a named replacement. |
 | [190](190-CODEGEN-run-time-dispatch-census.md) | **zero run-time dispatch**: census of the corpus's dynamic calls, 272 → 95. Nullable receivers are null tests (177). Of the 95: 71 class hierarchies (legitimate), 4 clones of one class (each a merge no contour split can separate), 7 exception printer, 13 builtin shapes; none unrelated. |
+| [192](192-review-analysis-and-issues-2026-11.md) | **the 2026-11 review** of `ifa/analysis/` and this directory: three unflagged semantic deviations on the default path, the counterfactual setter demand that blocks 124/170/178/185, pass-1 width, and what an AI-centric loop needs (structured diagnostics, a decision snapshot across compiles, re-entrancy, a time budget). A prioritised plan with stop conditions. |
 
 ### FA: typing and precision
 
