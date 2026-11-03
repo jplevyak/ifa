@@ -1,6 +1,6 @@
 # 190 — CODEGEN: run-time dispatch census, toward zero
 
-**CLOSED 2026-11-03: the census is complete and the directive is met as far as splitting can meet it.** Of 95 dynamic calls, 71 are class hierarchies (legitimate polymorphism, hoisted not split), 4 are one class with two clones chosen by argument (warned, refused under `--strict`), 0 of 92 are separable by any contour split (the soft-demand inventory below). Residuals: the exception printer's 3 sites need the pending exception threaded along the propagation path ([issues/172](../../../issues/172-generator-send-channel-and-stopiteration-value.md)); the 13 builtin shapes and table dispatch for the 71 are [199](../199-emitted-code-performance.md).
+**CLOSED 2026-11-03: the census is complete and the directive is met as far as splitting can meet it.** Of 95 dynamic calls, 71 are class hierarchies (legitimate polymorphism, hoisted not split), 4 are one class with two clones chosen by argument (warned, refused under `--strict`), 0 of 92 are separable by any contour split (the soft-demand inventory below). Residuals: the exception printer's 3 sites need the pending exception threaded along the propagation path ([issues/172](../../../issues/172-stopiteration-value-reads-the-global-exception-slot.md)); the 13 builtin shapes and table dispatch for the 71 are [199](../199-emitted-code-performance.md).
 
 **Status:** open. Nullable receivers fixed, both tagged and untagged
 (2026-10-13). What remains is classified below.
@@ -141,7 +141,7 @@ class.
      model (threading the pending exception along the propagation path
      instead of through one flow-insensitive global), not to splitting.
      It is the same confluence as
-     [issues/172](../../../issues/172-generator-send-channel-and-stopiteration-value.md).
+     [issues/172](../../../issues/172-stopiteration-value-reads-the-global-exception-slot.md).
    - Corpus check -R `check__default__c3ea9eb3+3c8fdc66` against
      `check__default__4697b7c4+a77008dd`: every verdict and warning count
      identical on all 77; CreationSets -3 on every program (-228), and one

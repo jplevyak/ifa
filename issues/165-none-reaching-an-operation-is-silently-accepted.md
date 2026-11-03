@@ -20,7 +20,7 @@ The emitted check reports and exits: it is CPython's *uncaught*
 check through `__pyc_exc__`, which means arming `pyc_program_has_raise`
 for every call that has such a check. This is the same change as
 threading the pending exception along the propagation path
-([issues/172](../../issues/172-generator-send-channel-and-stopiteration-value.md),
+([issues/172](../../issues/172-stopiteration-value-reads-the-global-exception-slot.md),
 closed/190 item 3), and should land with it.
 
 ## Residual 2: argument positions other than string concatenation

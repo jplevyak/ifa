@@ -92,7 +92,7 @@ row are independent of each other.
 Frontend-side items from the same work are in the top-level `issues/`:
 [185](../../issues/185-list-eq-tuple-is-true.md) (`[1, 2] == (1, 2)` is True),
 [186](../../issues/186-duplicate-method-definitions-are-an-ambiguous-call.md)
-(duplicate defs), [172](../../issues/172-generator-send-channel-and-stopiteration-value.md)
+(duplicate defs), [172](../../issues/172-stopiteration-value-reads-the-global-exception-slot.md)
 (the global exception slot).
 
 ### Splitting and precision

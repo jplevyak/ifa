@@ -44,7 +44,7 @@ and not checked, or work nothing reads. Rows 1–3 are a day.
        (`strcmp(sym->name, "__pyc_exc__")`, called from `pyc.cc`). Mark the
        Sym from the frontend (`Sym::is_exception_slot`) and test the bit, or
        move the pass behind `IFACallbacks`. The pending-exception threading
-       ([issues/172](../../issues/172-generator-send-channel-and-stopiteration-value.md))
+       ([issues/172](../../issues/172-stopiteration-value-reads-the-global-exception-slot.md))
        touches this anyway.
 6. [ ] **Three traversals recurse to the graph's depth**: `mark_live_avar`
        over `backward`, `rename_edge` over `cfg_succ` (one frame and an
