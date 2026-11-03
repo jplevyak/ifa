@@ -104,6 +104,7 @@ one is a lesson this directory paid for.
 | --- | --- |
 | [094](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md) | an ASAN build crashes intermittently on `hello_world.py`. |
 | [010](010-CLEANUP-vec-set-api-cleanup.md) | split `Vec`'s array and set roles into two types. |
+| [193](193-review-optimize-against-analysis-2026-11.md) | **the 2026-11 review of `ifa/optimize/`** against the analysis: `check_invariants` compiled out by default, a two-hop store-liveness probe, a by-name exception fold, frequency estimation with no consumer, and the IR simplifications that shrink the graph FA walks (demand-placed phy, copy propagation before FA, dead arms as a decision table). A prioritised plan with stop conditions. |
 
 ## Closed on 2026-09-28, and where their residuals went
 
