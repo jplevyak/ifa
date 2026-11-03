@@ -17,7 +17,7 @@ NOT tuple slicing, which is what matters for closing this issue.
 **Correction (2026-09-02, same day):** the sentence that stood here
 attributed the abort to the `{list, tuple}` union receiver documented
 under "Still open" below —
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md), pinned by
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md), pinned by
 `tests/list_tuple_union_method.py`. That was inherited from this doc's
 older text, not measured. Running the binary shows the assert that
 actually FIRES is `getter not resolved`, in a degenerate
@@ -209,7 +209,7 @@ re-taken after every landed change**, not reused across them.
 ### Is it a net loss?
 
 Arguably not, by
-[102](../102-corpus-programs-compile-then-abort-at-runtime.md)'s own
+[102](../102-codegen-detected-conditions-are-refusals-or-demands.md)'s own
 argument — a compile-time diagnostic beats a runtime SIGABRT, and
 `sunfish` produced no useful output either way. But it is a real
 behaviour change in the wrong direction for that program, it was not
@@ -423,8 +423,8 @@ assert(!"runtime error: matching function not found");
 
 It is **not slice-specific** — `len(x)`, `x[0]` and `for v in x` fail
 identically on the same union. It is
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) /
-[102](../102-corpus-programs-compile-then-abort-at-runtime.md) class B, a
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) /
+[102](../102-codegen-detected-conditions-are-refusals-or-demands.md) class B, a
 separate problem from this issue.
 
 Worth recording why a `{tuple, str}` union does **not** fail: FA

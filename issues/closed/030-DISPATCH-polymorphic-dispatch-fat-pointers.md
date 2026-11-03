@@ -1,10 +1,12 @@
 # 030 — polymorphic dispatch is an if/else chain on the classtag; high fan-out has no table
 
+**CLOSED 2026-11-03: merged into [199](../199-emitted-code-performance.md)**, which owns a run-time benchmark mode as the prerequisite, then table dispatch (this issue), the tuple header (closed/054) and a switch threshold. The orientation section below (how class-tag dispatch is emitted, the two known backend divergences) is still accurate; the divergences are [200](../200-llvm-backend-parity.md)'s rows.
+
 **Status:** open, performance only. Classtag dispatch has been correct on
 both backends since 2026-07-04, and closure-carrier mixing since
 2026-08-06. Rewritten 2026-09-28; the mechanism write-up and root causes
 are in git:
-`git show 3f36072b:ifa/issues/030-DISPATCH-polymorphic-dispatch-fat-pointers.md`.
+`git show 3f36072b:ifa/issues/closed/030-DISPATCH-polymorphic-dispatch-fat-pointers.md`.
 
 ## How dispatch works (for orientation)
 
@@ -40,5 +42,5 @@ runtime assert rather than mis-dispatching.
 **Not this issue:** a union member with no implementation at all
 ([079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md)), and a
 `{list, tuple}` union with no tag
-([102](102-corpus-programs-compile-then-abort-at-runtime.md),
+([102](../102-codegen-detected-conditions-are-refusals-or-demands.md),
 `tests/list_tuple_union_method.py`).

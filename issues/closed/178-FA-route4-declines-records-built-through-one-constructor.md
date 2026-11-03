@@ -1,7 +1,9 @@
 # 178 — route 4 cannot separate two creation points of a class built through one constructor
 
+**CLOSED 2026-11-03: merged into [196](../196-the-setter-stage-splits-on-a-fact.md).** The repro passes by default since 2026-10-02 (None kept in the type projection). The receiver-aware route-4 key and the writer split have no known witness (six shared-constructor variants tried, 2026-10-15); they are a row of 196's watch list. Fixes 1 and 2 below (`gate_send`, `reroute_uncovered_edges`) are landed and stand on their own.
+
 **Status:** open. Filed 2026-09-30 from
-[132](closed/132-arity-is-representation-not-provenance.md), whose synthetic test it
+[132](132-arity-is-representation-not-provenance.md), whose synthetic test it
 blocks. **The repro passes by default since 2026-10-02**: None is kept in the
 type projection (see "Flipped" at the end), so `__init__` and `Pot` split on
 `{list}` vs `{None}`. It is `tests/none_default_arg_splits_record.py`.
@@ -120,7 +122,7 @@ matches CPython, its "1 group" declines occur only up to pass 13, and its
 unresolved dispatches fall from 143 on pass 1 to 0 from pass 15. The
 default ladder resolves them before convergence. The ES-demand link that
 was meant to feed this decline (`PYC_RETDEMAND`) was measured inert and
-deleted ([157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md)
+deleted ([157](157-FA-all-demand-must-be-evaluated-at-quiescence.md)
 item 3, [146](146-remove-all-arbitrary-splitting.md)).
 
 ## A test without the None is NOT this issue (2026-10-15)
@@ -136,7 +138,7 @@ contour, because the comparison runs in one shared `int.__gt__` contour
 whose `self` is not a constant; the second object's `__init__` stores both
 lists and appends ints into the str list. Constant-cloning `int.__gt__`
 (a probe, reverted) makes it print CPython's `5 4`. It is a constant demand
-([134](134-remove-the-frontend-forced-split-opt-in.md)), not a writer split,
+([134](../134-remove-the-frontend-forced-split-opt-in.md)), not a writer split,
 and it passes since CONST_DEMAND follows content to its writers (134,
 2026-10-15).
 
@@ -151,7 +153,7 @@ key, with no witness.
 
 The repro prints `5` and `4` on both backends, with two `Pot`
 CreationSets. A synthetic test of
-[132](closed/132-arity-is-representation-not-provenance.md)'s untagged-dispatch
+[132](132-arity-is-representation-not-provenance.md)'s untagged-dispatch
 demand and clone-collapse rule now lives here: 132 closed 2026-10-16 with
 quameon as its witness, because a small program splits on `{None}` before the
 demand is reached. The test needs two instances whose constructor arguments

@@ -1,6 +1,6 @@
 # 136 — a creation point's identity should be (ES × call site)
 
-> **CLOSED 2026-09-28 (absorbed).** The durable content is the assignment / identity / compatibility table, now in AGENTS.md. The "correction" section settled that identity is already (call site x ES). `PYC_CSCALLSITE` (mode 2 measured as a corpus-wide wash) is on [146](../146-remove-all-arbitrary-splitting.md)'s lever inventory.
+> **CLOSED 2026-09-28 (absorbed).** The durable content is the assignment / identity / compatibility table, now in AGENTS.md. The "correction" section settled that identity is already (call site x ES). `PYC_CSCALLSITE` (mode 2 measured as a corpus-wide wash) is on [146](146-remove-all-arbitrary-splitting.md)'s lever inventory.
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 

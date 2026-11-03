@@ -126,7 +126,7 @@ So the dispatch ambiguity is a SYMPTOM. On `sudoku4` 102 ambiguous sites
 come from **5** distinct receiver unions, each a `{dict, bool, list,
 tuple, set, int64, str}` union the program never makes. Fix the few merges
 upstream, not the broadcast. That was the shared-writer decline, now
-[178](../178-FA-route4-declines-records-built-through-one-constructor.md)'s.
+[178](178-FA-route4-declines-records-built-through-one-constructor.md)'s.
 
 **Measured 2026-10-15.** sudoku4 now compiles warning-free and matches
 CPython. With `IFA_DBG_RETCONF` / `IFA_DBG_CSDEFSPLIT` its unresolved

@@ -36,7 +36,7 @@ It is `sudoku4`'s first error (`sudoku4.py:40`,
 `search(assign(values.copy(), s, d))`: `unresolved member 'copy' of class
 'dict'`), and the Norvig-solver idiom that `sudoku2` also uses. Any
 precision diagnosis of sudoku4 (see
-[129](../129-plan-demand-driven-creation-set-splitting.md) A) made before this
+[129](129-plan-demand-driven-creation-set-splitting.md) A) made before this
 is fixed measures a cascade, not the splitter.
 
 ## Fix

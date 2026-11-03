@@ -1,105 +1,39 @@
-# 165 — `None` reaching an operation is silently accepted and read as the zero value
+# 165 — a `None` that does arrive at an operation: two residuals
 
-**Status: LARGELY FIXED 2026-09-28** (issues/171 #6). Open for the two
-residuals below.
+**Status: largely fixed 2026-09-28; open on two residuals.** Rewritten
+2026-11-03; the symptom, root cause and the 164/165 distinction are in git
+(`git show 123ac81:ifa/issues/165-none-reaching-an-operation-is-silently-accepted.md`).
 
-**What landed.** A `{None, T*}` RECEIVER is checked where the call is
-emitted, on both backends. `nil_receiver_rval` (fa.cc) names the rval
-whose actual carries `None` while the callee's `self` excludes it (the
-dispatch filter dropped it). The emitted test calls `_CG_none_receiver`
-(`pyc_c_runtime.h`), which prints CPython's message: `unsupported operand
-type(s) for +: 'NoneType'`, `'NoneType' object is not subscriptable`,
-`... has no attribute 'x'`, and so on. The inliner and DCE keep such a
-call and its receiver read, because otherwise inlining erased the call
-and the constant-folded body printed `xy`. `_CG_strcat` checks its
-operands, which covers the argument position for `str + None`. A
-`{None, scalar}` receiver has no null to test, so FA refuses it as a
-BOXING violation, with one message on both backends.
-`tests/none_receiver_raises.py` is the repro below.
+## What is fixed
 
-A method call whose callee ignores `self` skipped the check, and an
-attribute read on a `{None, T}` receiver was not checked at all. Both are
-fixed; the check now lives on the attribute read itself. See
-[184](closed/184-FA-none-check-misses-a-method-call-through-a-bound-method-closure.md).
+A `{None, T*}` receiver is tested where the call or attribute read is
+emitted, on both backends (`nil_receiver_rval`, `nil_period_receiver`;
+`_CG_none_receiver` prints CPython's message). `_CG_strcat` checks its
+operands. A `{None, scalar}` receiver has no null to test and is refused
+as BOXING. The inliner and DCE keep such a call and its receiver read
+(closed/184). `tests/none_receiver_raises.py`.
 
-**Residuals.** (1) The check reports and exits: it is CPython's
-*uncaught* `TypeError`, and `except TypeError` cannot catch it. That
-needs the check to raise through `__pyc_exc__`, which means arming
-`pyc_program_has_raise` for every call that has one. (2) The argument
-position of primitives other than string concatenation is unchecked.
+## Residual 1: the check exits instead of raising
 
-## Symptom
+The emitted check reports and exits: it is CPython's *uncaught*
+`TypeError`, and `except TypeError:` cannot catch it. The fix routes the
+check through `__pyc_exc__`, which means arming `pyc_program_has_raise`
+for every call that has such a check. This is the same change as
+threading the pending exception along the propagation path
+([issues/172](../../issues/172-generator-send-channel-and-stopiteration-value.md),
+closed/190 item 3), and should land with it.
 
-```python
-def f(n):
-    a = [None] * n
-    a[0] = "x"
-    return a[1] + "y"      # a[1] IS None
-print(f(3))
-```
+## Residual 2: argument positions other than string concatenation
 
-| | result |
-| --- | --- |
-| CPython | `TypeError: unsupported operand type(s) for +: 'NoneType' and 'str'` |
-| pyc | prints `xy`, exit 0 |
+Only `_CG_strcat` checks an argument for null. A `{None, T*}` value in any
+other primitive argument position is read as the zero value. Enumerate
+the primitives that take pointer arguments (`PRIMITIVES.md`) and emit the
+same test at each; measure first how many survive `RP_IsNotNilType`
+narrowing, since most nullable unions in the corpus sit under an explicit
+`is None` guard.
 
-No warning, no error, no runtime check. The `None` is represented as a
-null pointer and the string primitive reads it as `""`.
+## Verification
 
-This reproduces on today's `main` **and on every build before
-[164](closed/164-nil-union-at-a-primitive-argument-is-a-nullable-pointer.md)** —
-it goes through the RECEIVER position, which has always read the
-nil-stripped `->type` projection. 164 made the ARGUMENT position agree
-with the receiver; the residual wrongness is that the position they now
-agree on has no runtime check.
-
-## Root cause
-
-`{None, T}` for pointer-shaped `T` is represented as a nullable `T`
-(issue 060), and every consumer of `->type` sees only `T`. (2026-10-02:
-no longer so. `->type` keeps None since
-[ifa/178](178-FA-route4-declines-records-built-through-one-constructor.md),
-and `tests/none_receiver_raises.py` still passes. The representation is
-unchanged.) That is the
-right *representation* — see 164, and shedskin compiles the same programs
-with `str *` and `NULL`. What is missing is the *check*: nothing tests
-the pointer for null before the operation, so a `None` that really does
-arrive is read as the zero value instead of raising.
-
-## Why this is not 164's business
-
-164 is about a `None` that provably never arrives — `[None] * n` followed
-by a full overwrite, where the union is temporal and the program is
-correct. Rejecting those at compile time is a false positive on valid
-CPython programs, and it was rejecting them on ONE of the two operand
-positions.
-
-This issue is the opposite error on the other position: a `None` that
-DOES arrive produces a wrong answer rather than a `TypeError`. Fixing it
-is a runtime check, not a type rule.
-
-## Proposed fix
-
-Under `fruntime_errors` (the default), emit a null test on the nil member
-of a `{None, T}` union at the point of use and raise `TypeError`, the way
-CPython does. Under `--strict`, keep a compile-time refusal — CLAUDE.md's
-rule for permissive-only devices: *"an automatic coercion is a
-PERMISSIVE-only device ... `--strict` must error on anything that would
-otherwise require boxing"* (see
-[closed/145](closed/145-numeric-coercion-is-not-gated-on-permissive-mode.md)
-for the same shape).
-
-The cost to measure first is how many such checks survive optimisation —
-most nullable unions in the corpus are `self.next = None` linked
-structures where the null test is already present in the source as an
-`is None` guard, and `RP_IsNotNilType` narrowing (fa.cc:4383) should
-remove the redundant one.
-
-## Verification plan
-
-- The repro above must print CPython's `TypeError`.
-- `tests/nil_union_prealloc.py` must keep passing — a `None` that never
-  arrives must cost nothing observable.
-- Corpus: no program may regress from match to run-fail. `richards`,
-  `life` and `sokoban` carry the most nullable class fields and are the
-  ones to watch.
+The repro raises CPython's `TypeError` and is catchable; `tests/nil_union_prealloc.py`
+still costs nothing observable; corpus: richards, life and sokoban (the
+most nullable fields) do not regress from match to run-fail.

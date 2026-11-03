@@ -1,5 +1,7 @@
 # 193 — review of `ifa/optimize/` against `ifa/analysis/`: hazards, dead work, and the IR simplifications that shrink the graph FA walks
 
+**CLOSED 2026-11-03: distributed.** A1-A6 and B1-B4 → [204](../204-optimize-pass-fixes.md); C1-C5 → [203](../203-shrink-the-graph-fa-walks.md) (C3 also links [119](../119-sccp-as-an-outer-fixed-point-over-fa.md), C4 also [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md)); D1-D3 → [202](../202-health-docs-levers-probes-tests-and-ci.md). The review itself is the record.
+
 **Status: open. Umbrella / audit**, like [146](146-remove-all-arbitrary-splitting.md).
 Written 2026-11-03 against `829f43d`. Static reading plus counts over the
 sources and the checked-in fixtures; the compiler could not be built in

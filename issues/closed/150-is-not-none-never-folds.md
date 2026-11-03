@@ -111,7 +111,7 @@ folds, and the dead branch is never type-checked.
 
 ### This is a mechanism, and the principled replacement is a primitive
 
-Judged against [ifa/146](../146-remove-all-arbitrary-splitting.md)'s two-question
+Judged against [ifa/146](146-remove-all-arbitrary-splitting.md)'s two-question
 test, a per-constant contour is not demand-driven: it would split whether or
 not anything downstream asked. It is defensible here and no more — `bool`
 has exactly two constants, so the partition is bounded at 2 and is not a fan

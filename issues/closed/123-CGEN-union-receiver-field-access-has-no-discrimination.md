@@ -1,6 +1,6 @@
 # 123 — a method whose receiver is a UNION of unrelated classes gets a `void*` receiver and blind-casts to ONE member's layout; field access has no runtime discrimination
 
-> **CLOSED 2026-09-28 (done; residual moved).** Everything this issue built is default-on: the blind-cast layout contract (a layout violation is fatal), `PYC_PREFIX_LAYOUT=1`, `PYC_CLASSEQ=2`, `PYC_ELIDE_SLOTS=1`. The motivating crash is now a compile-time refusal. The remaining `go` failure, a `Square | UCTNode` union of UNRELATED classes, is an inference merge, not a missing codegen feature (AGENTS.md: a union pyc invented is pyc's bug). It is owned by [124](../124-FA-refuse-imprecise-inference.md). Do not build discriminated field access for unrelated-class unions.
+> **CLOSED 2026-09-28 (done; residual moved).** Everything this issue built is default-on: the blind-cast layout contract (a layout violation is fatal), `PYC_PREFIX_LAYOUT=1`, `PYC_CLASSEQ=2`, `PYC_ELIDE_SLOTS=1`. The motivating crash is now a compile-time refusal. The remaining `go` failure, a `Square | UCTNode` union of UNRELATED classes, is an inference merge, not a missing codegen feature (AGENTS.md: a union pyc invented is pyc's bug). It is owned by [124](124-FA-refuse-imprecise-inference.md). Do not build discriminated field access for unrelated-class unions.
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
@@ -24,7 +24,7 @@ DISPATCH and has no counterpart for FIELD ACCESS.
 `shedskin_examples/go` segfaults (`run_rc=139`); `shedskin_examples/bh`
 dies inside the collector (`GC_clear_fl_marks`), the signature of a
 wrong-offset write. Both are
-[102](../102-corpus-programs-compile-then-abort-at-runtime.md) members.
+[102](../102-codegen-detected-conditions-are-refusals-or-demands.md) members.
 
 ## Root cause, with the crash line
 
@@ -154,7 +154,7 @@ variable that genuinely holds either.
 4. **Stop FA producing the union.** The receiver is only a union because
    some call site is shared; more precision there
    ([074](074-FA-cross-pass-oscillation-plan.md)/
-   [030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md)) removes the
+   [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)) removes the
    need — but cannot be relied on in general.
 
 Options 1 and 2 are not exclusive: 2 is a day's work and stops the
@@ -172,7 +172,7 @@ miscompile now; 1 is the real fix.
 
 ## What this unblocks
 
-Two of [102](../102-corpus-programs-compile-then-abort-at-runtime.md)'s
+Two of [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)'s
 compiles-then-crashes programs, with a named cause rather than a
 bisection. More broadly it is the first crash in that bucket traced end
 to end from a compile-time diagnostic to the faulting line — which is

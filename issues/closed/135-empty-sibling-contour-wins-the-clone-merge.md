@@ -5,7 +5,7 @@
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
 **Status:** open, root-caused 2026-09-06. Group B of
-[129](../129-plan-demand-driven-creation-set-splitting.md)'s bill — **5 cases
+[129](129-plan-demand-driven-creation-set-splitting.md)'s bill — **5 cases
 from one mechanism**, 3 corpus (`kanoodle`, `path_tracing`, `pygmy`) and 2
 suite (`poly_dispatch_shared_method_extra_args`,
 `sibling_subclass_field_layout`) under `PYC_CSDCPA1=2`.

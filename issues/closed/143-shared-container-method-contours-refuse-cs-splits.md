@@ -1,6 +1,6 @@
 # 143 — a shared container-method EntrySet re-fuses every CreationSet the splitter separates
 
-> **CLOSED 2026-09-28 (fixed).** All three flag-arm blockers (bh, richards, sudoku5) and sudoku3 compile and run at today's default. The fixes: `PYC_CSDCPA1=2` with `PYC_CSCONTENT=1`, `PYC_CSBACKTRACK=1` (closed/152) and `PYC_ESBLOCK=1`. Two levers built here are still default-off and unmeasured since the flip (`PYC_VIOLCS`, `PYC_CSMEMBER`); they are on [146](../146-remove-all-arbitrary-splitting.md)'s inventory. Its retracted "one writer per method" root cause is kept below as a warning.
+> **CLOSED 2026-09-28 (fixed).** All three flag-arm blockers (bh, richards, sudoku5) and sudoku3 compile and run at today's default. The fixes: `PYC_CSDCPA1=2` with `PYC_CSCONTENT=1`, `PYC_CSBACKTRACK=1` (closed/152) and `PYC_ESBLOCK=1`. Two levers built here are still default-off and unmeasured since the flip (`PYC_VIOLCS`, `PYC_CSMEMBER`); they are on [146](146-remove-all-arbitrary-splitting.md)'s inventory. Its retracted "one writer per method" root cause is kept below as a warning.
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
@@ -10,7 +10,7 @@
 `shedskin_examples` program that runs correctly at the default and fails
 under `PYC_CSDCPA1=2`. It is not the only one -- `richards` does too, and
 `sudoku5` stops compiling. Attributing all seven flag-arm divergences
-across four arms ([129](../129-plan-demand-driven-creation-set-splitting.md))
+across four arms ([129](129-plan-demand-driven-creation-set-splitting.md))
 gives **three** blockers, not one and not seven:
 
 | program | default | under the flag | element union |

@@ -153,7 +153,7 @@ machinery.
 - `plcfrs`, `rdb`, `sudoku5` show a measurable drop in split count.
 - Full corpus: no exit-code changes **and** no run-status changes
   (`ifa/issues/runstatus.sh` — compile status alone is not evidence, see
-  [102](../102-corpus-programs-compile-then-abort-at-runtime.md)).
+  [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)).
 
 
 ## What the experiment found (2026-08-17)
@@ -309,7 +309,7 @@ So layout unification could address **6 %** of the mixed partitions on
 **The dominant case is a heterogeneous tuple unioned with a list.** That
 is not a layout problem at all — it is the
 [018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) boxing problem,
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) boxing problem,
 and no amount of unifying `list` with `tuple` touches it.
 
 ### Implementation cost, if pursued anyway
@@ -1113,7 +1113,7 @@ union of everything in the program**: bool, int, str, float, list, dict
 and half a dozen user classes, *plus* 25 tuple CreationSets that happen
 to span arities 2–4. The BOXING violation is caused by mixing scalars
 with pointers — [018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) — and the tuples
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) — and the tuples
 are incidental passengers.
 
 `with_multi_tuple=2083` equalling `WITH_MIXED_ARITY=2083` should have been

@@ -1,6 +1,9 @@
 # 119 — SCCP inside FA: a plan, grounded in what FA already does
 
-**Status:** plan, filed 2026-08-29. Splits out of
+**Status:** plan, filed 2026-08-29. Stage 1 (the explicit executability
+bit, recorded per contour and re-derived each pass) is
+[203](203-shrink-the-graph-fa-walks.md) C3's first half and should land
+there; stages 2-4 stay here. Splits out of
 [050](050-FA-general-constant-propagation-unreachable-code.md), whose
 "no SCCP" framing turns out to be too strong once measured. This issue
 is about the part that is genuinely missing and how to build it.

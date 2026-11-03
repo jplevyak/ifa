@@ -452,7 +452,7 @@ this sketch's prediction), regression test
 exact sketch — the literal code above triggers an unrelated
 pre-existing runtime crash mixing int/float/str through one
 `print()` call, tracked in
-[030-DISPATCH-polymorphic-dispatch-fat-pointers.md](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md);
+[030-DISPATCH-polymorphic-dispatch-fat-pointers.md](030-DISPATCH-polymorphic-dispatch-fat-pointers.md);
 the landed test keeps return types homogeneous per receiver to
 avoid it while still exercising the collapsing).
 
@@ -852,7 +852,7 @@ existing single-candidate guard.
   return types through one `print()` call; reproduced identically
   with this change reverted, so it predates M1 and is out of scope
   here — the same assert class tracked in
-  [030-DISPATCH-polymorphic-dispatch-fat-pointers.md](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md))
+  [030-DISPATCH-polymorphic-dispatch-fat-pointers.md](030-DISPATCH-polymorphic-dispatch-fat-pointers.md))
   — the landed test avoids that by keeping return types homogeneous
   per receiver while still exercising heterogeneous argument
   unions.

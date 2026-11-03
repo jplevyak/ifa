@@ -9,7 +9,7 @@ bitwise, in-place and formatting methods no longer carry
 `__pyc_clone_constants__`; their constants are split only on demand. The
 rest of the annotations remain -- see "What is left" below. Previously:
 open, root-caused, not built. Sequenced as
-[129](../129-plan-demand-driven-creation-set-splitting.md) step 4 — 129 is the
+[129](129-plan-demand-driven-creation-set-splitting.md) step 4 — 129 is the
 single integrated plan. Filed 2026-09-12 out of
 [150](150-is-not-none-never-folds.md), whose fix needed a per-constant
 contour and could only get one by hand-annotating `__pyc__`.
@@ -251,7 +251,7 @@ remedy.
 
 ## What "on demand" has to mean here
 
-Per [146](../146-remove-all-arbitrary-splitting.md)'s two-question test:
+Per [146](146-remove-all-arbitrary-splitting.md)'s two-question test:
 
 - **Would this split happen if the demand were absent?** It must not.
   `__pyc_clone_constants__` fails this today — it splits wherever a

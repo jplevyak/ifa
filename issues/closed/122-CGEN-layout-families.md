@@ -118,7 +118,7 @@ bh:  'Cell' blind-cast to 'Body', read at e28,
 `_CG_int64`** -- every later field shifts by 7 -- and segfaults
 (`run_rc=139`). `bh` casts to a struct one member short, and aborts
 (`run_rc=139`). Both are
-[102](../102-corpus-programs-compile-then-abort-at-runtime.md) members that
+[102](../102-codegen-detected-conditions-are-refusals-or-demands.md) members that
 now have a named, located, compile-time cause instead of only a crash.
 
 **Fatal in every mode as of 2026-09-01.** It first landed as a warning
@@ -176,7 +176,7 @@ formality.
 ## The alternative that dissolves the problem
 
 Phases 1-2 exist only because method pointers live **in every instance**.
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) is about moving
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) is about moving
 polymorphic dispatch off that model. With a per-class vtable, the dead
 method slots do not need eliding — **they do not exist**, `vec` stops
 carrying 23 method pointers next to its three doubles, and the
@@ -255,7 +255,7 @@ now complete. The canary, `tests/method_override_field_offset.py`,
 passes with zero diagnostics and correct output.
 
 **On "the alternative that dissolves the problem".** This issue argued
-Phases 1-2 are throwaway if [030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md)
+Phases 1-2 are throwaway if [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)
 lands a per-class vtable soon. That reasoning still holds in principle,
 but the measurement changes the priority rather than the design:
 [126](126-assess-residual-method-slot-reads.md) found that after this

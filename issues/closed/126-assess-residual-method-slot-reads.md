@@ -75,7 +75,7 @@ irreducible set is bh's six and little else — i.e. the classtag vtable
 would exist for a handful of genuinely polymorphic containers, and
 "eliminate unused slots" (123) becomes close to "eliminate the vtable".
 That changes the cost/benefit of every other dispatch idea in
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md).
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md).
 
 ## Assessed: `Basic_block | Union_find_node` — shedskin says imprecision
 

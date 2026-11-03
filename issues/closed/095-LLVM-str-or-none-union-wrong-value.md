@@ -10,7 +10,7 @@ branch, a `str` slice on the other) and its `is not None` check
 misbehaves specifically on the LLVM backend. C backend is correct.
 
 **Affects:** `ifa/codegen/cg_emit_llvm.cc` — likely the same general
-territory as [093](../093-CGEN-int-float-union-move-not-coerced.md) (a
+territory as [093](093-CGEN-int-float-union-move-not-coerced.md) (a
 scalar/pointer union collapsed to one storage representation, MOVE not
 handled correctly for one branch), but not confirmed to be the same
 root cause — `093` is a numeric int64-into-float64 coercion gap;
@@ -59,7 +59,7 @@ correct on both backends.
 
 Root cause not investigated past confirming the minimal repro and that
 it's LLVM-only. Candidate starting points, in likely order given
-[093](../093-CGEN-int-float-union-move-not-coerced.md)'s precedent:
+[093](093-CGEN-int-float-union-move-not-coerced.md)'s precedent:
 
 - Whatever MOVE-emission code path issue 093 identified for the
   int64-into-float64 case, checked for the analogous

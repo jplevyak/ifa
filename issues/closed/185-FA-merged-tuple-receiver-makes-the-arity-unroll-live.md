@@ -1,5 +1,7 @@
 # 185 — a merged tuple receiver makes the whole arity unroll live (sunfish: 537 s)
 
+**CLOSED 2026-11-03: the symptom is fixed.** sunfish compiles in 136 s (537 s at filing) with output identical to CPython, by per-arity tuple method bodies and arity dispatch (steps 1-6 below). What is left went elsewhere: item 3 (same-arity tuples with different element types in one list) and item 4 (a `no_static_arity` flip is not re-dispatched within its pass) to [197](../197-tuple-arity-dispatch-leftovers.md); item 2 (`[1, 2] == (1, 2)` is True) to [issues/185](../../../issues/185-list-eq-tuple-is-true.md); item 5 (duplicate method definitions) to [issues/186](../../../issues/186-duplicate-method-definitions-are-an-ambiguous-call.md); phase A's call-site-split-with-re-merge option to [196](../196-the-setter-stage-splits-on-a-fact.md).
+
 **Status:** open. Diagnosed 2026-10-08. Nothing is fixed yet.
 
 ## Symptom
@@ -259,7 +261,7 @@ and A and B are deleted.
 
 **Step 1 landed: the arity constraint.** `Sym::dispatch_arity` on a
 formal is enforced in `update_match_map` and ranked in `subsumes_arg`
-([DISPATCH.md](../DISPATCH.md) §12). The match cache keys a lost static
+([DISPATCH.md](../../DISPATCH.md) §12). The match cache keys a lost static
 arity through `dispatch_arity_epoch`. In `tests/ir/dispatch/05_arity_merged.ir`,
 `%g`'s receiver holds a 2-tuple and a 3-tuple, and its send reaches
 `%m2` and `%m3` with one arity each (rc=0, ess=5). Without the
@@ -315,7 +317,7 @@ plus the doom codegen fix below. Outcome changes:
 | --- | --- | --- |
 | sunfish | compile timeout | compiles, stdout matches CPython |
 | dijkstra2 | run timeout | runs, stdout matches CPython |
-| othello3 | compile timeout (124) | compile fails (1): the ifa/057 within-pass stall guard now stops it first. The guard was itself broken; see [186](186-FA-pass-one-confluence-through-shared-builtins.md) |
+| othello3 | compile timeout (124) | compile fails (1): the ifa/057 within-pass stall guard now stops it first. The guard was itself broken; see [186](../186-FA-pass-one-confluence-through-shared-builtins.md) |
 
 Contours: EntrySets 31,376 -> 30,238 (-3.6%) and CreationSets
 118,006 -> 113,919 (-3.5%) over 75 programs, down in nearly every

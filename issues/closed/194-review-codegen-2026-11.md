@@ -1,5 +1,7 @@
 # 194 — review of `ifa/codegen/`: one backend carries the safety nets, codegen traps stand in for refusals, and representation has three owners
 
+**CLOSED 2026-11-03: distributed.** A1, A3, A5, D2, D3 → [200](../200-llvm-backend-parity.md); A2 → [102](../102-codegen-detected-conditions-are-refusals-or-demands.md); A4, C1, C2, C3 → [201](../201-representation-oracle.md); A6 → [118](../118-union-field-representation-and-polymorphic-field-offset.md) (unchanged); B1, B2, B3 → [199](../199-emitted-code-performance.md); D1, D4, D5 → [202](../202-health-docs-levers-probes-tests-and-ci.md). The review itself is the record.
+
 **Status: open. Umbrella / audit**, like [146](146-remove-all-arbitrary-splitting.md).
 Written 2026-11-03 against `8f0d334`. Static reading plus counts over the
 sources, fixtures and sweep records; the compiler could not be built in
@@ -17,7 +19,7 @@ LLVM backend carries almost none of them. The reference docs an agent
 reads first describe an intermediate representation deleted in June.
 Underneath both, eleven codegen-detected type mismatches still become
 run-time traps in the default mode, the shape
-[102](102-corpus-programs-compile-then-abort-at-runtime.md) named as the
+[102](../102-codegen-detected-conditions-are-refusals-or-demands.md) named as the
 defect and fixed for one case.
 
 ## State

@@ -1,6 +1,6 @@
 # 128 — CreationSet identity over-discriminates 16× against the element type it stands for
 
-> **CLOSED 2026-09-28 (fixed).** Its measurement (95 list CSs for 6 element types on chess) motivated start-merged identity, and `PYC_CSDCPA1=2` is the default. chess is now 53 container CSs, ess 426 (was 1591). The negative results below remain binding: mint-time reuse keying cannot work, and `dcpa1`'s `tuple` exclusion stays. The plan's remainder is [129](../129-plan-demand-driven-creation-set-splitting.md).
+> **CLOSED 2026-09-28 (fixed).** Its measurement (95 list CSs for 6 element types on chess) motivated start-merged identity, and `PYC_CSDCPA1=2` is the default. chess is now 53 container CSs, ess 426 (was 1591). The negative results below remain binding: mint-time reuse keying cannot work, and `dcpa1`'s `tuple` exclusion stays. The plan's remainder is [129](129-plan-demand-driven-creation-set-splitting.md).
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
@@ -9,7 +9,7 @@
 (CreationSet reuse at mint time) is dead — see "Where reuse fits". **Not the
 active direction** — see the closing section: reducing the container
 CreationSet count pulls against what the flag flip actually needs
-([146](../146-remove-all-arbitrary-splitting.md) E), so this is not a
+([146](146-remove-all-arbitrary-splitting.md) E), so this is not a
 dependency of [133](133-split-a-container-on-its-element-type.md).
 
 **Area:** `ifa/analysis/fa.cc`, CreationSet identity and the ES splitting it
@@ -224,7 +224,7 @@ one the flip needs.**
 
 ## The plan lives in 129
 
-[129](../129-plan-demand-driven-creation-set-splitting.md) is the single
+[129](129-plan-demand-driven-creation-set-splitting.md) is the single
 integrated plan; this issue owns no step of it. What this issue contributes
 is the **measurement** that motivates step 1 (coarse identity) and the
 **negative results** above, which are what keep the plan from re-entering

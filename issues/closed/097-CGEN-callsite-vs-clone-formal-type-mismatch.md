@@ -82,7 +82,7 @@ edge established," albeit for container-element flow, not function
 parameters; worth reading first if picking this up, both for the
 mechanism (monotonic `AType` growth, clones reused across passes) and
 for how large a fully-traced fix in this family turned out to be.
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md) — the general
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) — the general
 polymorphic-dispatch-target-selection mechanism; NOT obviously the
 same bug (that's about choosing among *multiple candidate Funs*; here
 there is exactly one resolved target, `get_target_fun_core` presumably

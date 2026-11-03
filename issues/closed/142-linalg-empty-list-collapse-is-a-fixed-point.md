@@ -124,7 +124,7 @@ programs whose merges were widest — i.e. wherever it was most needed.
 Corpus effect of the removal: programs whose verdict differs from the
 default drop from **11 to 4** (`plcfrs`, `rdb`, `bh`, `kanoodle`), with
 `bh`/`kanoodle` unrelated to the cap. See
-[146](../146-remove-all-arbitrary-splitting.md)'s removal table for the lever
+[146](146-remove-all-arbitrary-splitting.md)'s removal table for the lever
 itself (133's blow-by-blow of the cap was compacted away 2026-09-12).
 
 ## What is NOT the cause

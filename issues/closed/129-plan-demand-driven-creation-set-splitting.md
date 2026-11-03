@@ -1,14 +1,16 @@
 # 129 — THE PLAN: demand-driven CreationSet splitting
 
+**CLOSED 2026-11-03: the plan landed.** Every piece in "Landed" is default-on, and no corpus program is attributed to the residual family (one creation point whose element takes two types). The residual, its regression table and the "do not restart from these" list moved to [196](../196-the-setter-stage-splits-on-a-fact.md)'s watch list. The "Settled" section below is still the rule and AGENTS.md states it; this file is the record.
+
 **Status: open, on one residual family (below). The plan has landed.**
 Condensed 2026-10-15; the full record, including the shared-writer
 investigation now in 178, is in git:
-`git show e92568f3:ifa/issues/129-plan-demand-driven-creation-set-splitting.md`.
-It carries [133](closed/133-split-a-container-on-its-element-type.md);
-[128](closed/128-cs-identity-over-discriminates-vs-element-type.md),
-[131](closed/131-demand-driven-constant-splitting.md),
-[143](closed/143-shared-container-method-contours-refuse-cs-splits.md) and
-[144](closed/144-route-4-fans-per-creation-point-instead-of-partitioning.md)
+`git show e92568f3:ifa/issues/closed/129-plan-demand-driven-creation-set-splitting.md`.
+It carries [133](133-split-a-container-on-its-element-type.md);
+[128](128-cs-identity-over-discriminates-vs-element-type.md),
+[131](131-demand-driven-constant-splitting.md),
+[143](143-shared-container-method-contours-refuse-cs-splits.md) and
+[144](144-route-4-fans-per-creation-point-instead-of-partitioning.md)
 are closed into it. If another issue seems to carry a competing plan, this
 file wins.
 
@@ -35,7 +37,7 @@ creation point this is) may be as fine as it likes, and **compatibility**
 | piece | issue | what it does |
 | --- | --- | --- |
 | `PYC_CSDCPA1=2` | 128/129 | start merged |
-| arity in CS identity | [132](closed/132-arity-is-representation-not-provenance.md) | a representation property is not provenance |
+| arity in CS identity | [132](132-arity-is-representation-not-provenance.md) | a representation property is not provenance |
 | `CS_DEF_PARTITION` (route 4), uncapped | 133, 142 | partition `cs->defs` by assign-set signature, as the last rung, on a demand only (146) |
 | `PYC_CSCONTENT=1` | 133/154 | build the flow graph over the channel that holds the content (element, or positional slots) |
 | `PYC_CSBACKTRACK=1` | 152 | walk a `defs=1` demand back to the merged CS upstream |
@@ -93,18 +95,18 @@ that look like this family and are not:
 
 | was | now |
 | --- | --- |
-| A. the shared-writer decline ("1 group") and the ES demand link | [178](178-FA-route4-declines-records-built-through-one-constructor.md): no known witness; `PYC_RETDEMAND` deleted ([157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md) item 3) |
-| C. stage 5's fan and the lower rungs | [146](146-remove-all-arbitrary-splitting.md) (inventory empty), [157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md) |
-| D. constants | [134](134-remove-the-frontend-forced-split-opt-in.md): 9 forced-split annotations |
-| E. performance | [111](closed/111-FA-selective-invalidation-per-pass.md), not a precondition |
-| taking decisions back | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) |
+| A. the shared-writer decline ("1 group") and the ES demand link | [178](178-FA-route4-declines-records-built-through-one-constructor.md): no known witness; `PYC_RETDEMAND` deleted ([157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) item 3) |
+| C. stage 5's fan and the lower rungs | [146](146-remove-all-arbitrary-splitting.md) (inventory empty), [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) |
+| D. constants | [134](../134-remove-the-frontend-forced-split-opt-in.md): 9 forced-split annotations |
+| E. performance | [111](111-FA-selective-invalidation-per-pass.md), not a precondition |
+| taking decisions back | [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md) |
 
 ## Settled — do not re-litigate
 
 - **A merge can be taken back.** `analyze_to_convergence` resets before
   every pass; only the DECISIONS persist (`av->cs_map` for CreationSets;
   EntrySets and `AEdge::to` for function contours; the split ledger --
-  [111](closed/111-FA-selective-invalidation-per-pass.md)). Wholesale
+  [111](111-FA-selective-invalidation-per-pass.md)). Wholesale
   re-deriving costs precision, never correctness.
 - **Mint-time reuse keying cannot work.** The key is read when the element
   is unfilled by construction (402 of 795 such mints never acquire a
@@ -133,4 +135,4 @@ backflow walk answers must-reach where route 4 asks may-reach), `PYC_CSPEEL2`,
 Six CI gates on both backends; same-binary `./corpus_sweep.sh -m check`
 A/B, compared per program; `ess`/`css` down, not up. Prefer an env-toggled A/B
 from one binary
-([147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md), closed: two builds of one tree now agree).
+([147](147-analysis-result-depends-on-the-binary-not-the-inputs.md), closed: two builds of one tree now agree).

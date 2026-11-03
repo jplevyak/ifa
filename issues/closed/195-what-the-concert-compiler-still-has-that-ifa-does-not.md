@@ -1,5 +1,7 @@
 # 195 — what the Concert compiler (1992–96) still has that ifa does not
 
+**CLOSED 2026-11-03: distributed.** C1 and C2 → [198](../198-decision-snapshot-across-compiles.md) (which carries the design section below); C3 → [203](../203-shrink-the-graph-fa-walks.md); C4 → [050](../050-FA-general-constant-propagation-unreachable-code.md); C5 → [204](../204-optimize-pass-fixes.md); C6 → [205](../205-ai-centric-interface.md); the recursion level → [196](../196-the-setter-stage-splits-on-a-fact.md); the switch threshold → [199](../199-emitted-code-performance.md). "What NOT to take" stays here as the record.
+
 **Status: open. Umbrella**, like [146](146-remove-all-arbitrary-splitting.md).
 Written 2026-11-03 from a reading of the Illinois Concert compiler's
 Lisp sources (84 files, 49k lines; `flow-analysis.lisp`, `concert-db.lisp`,
@@ -21,7 +23,7 @@ graph, the "remainder stays" rule in `split-caller`, the pass cap
 them are the things three reviews already asked for
 ([192](192-review-analysis-and-issues-2026-11.md) D2 and D4,
 [193](193-review-optimize-against-analysis-2026-11.md) C1 and C2), one
-answers [050](050-FA-general-constant-propagation-unreachable-code.md),
+answers [050](../050-FA-general-constant-propagation-unreachable-code.md),
 one extends closed/123, and one is a cheap analysis mode.
 
 ## What NOT to take
@@ -35,7 +37,7 @@ one extends closed/123, and one is a cheap analysis mode.
   rows below are independent of it.
 - **`clear-constraints`** clears only the type variables transitively
   reachable from the split entry sets: the selective invalidation
-  [closed/111](closed/111-FA-selective-invalidation-per-pass.md) measured and
+  [closed/111](111-FA-selective-invalidation-per-pass.md) measured and
   closed as not needed.
 - The concurrency machinery (`touch.lisp`, `extend-region.lisp`, mega-locks,
   locality splitting, `structure-transformation.lisp`) is the distributed
@@ -48,7 +50,7 @@ one extends closed/123, and one is a cheap analysis mode.
 
 | # | Concert mechanism | what it buys ifa | feeds |
 | --- | --- | --- | --- |
-| C1 | **concert-db: a decision snapshot across compiles.** `write-ti-info` serialises, per method, the equivalence classes of entry sets (after `calculate-clones #'equiv-es-write-ti`) with their edges and creation-set ids, and per class the creation sets with their creation points. `find-es-from-db` / `find-cs-from-db` consult it on **pass 1 only**, before the split ladder runs. Two details improve on 192 D2's sketch. **Edit-stable ids** (`program-point-id`, `id-program-points`): a call site is `selector%nargs%depth`, a loop is named by its controlling variable, collisions broken by source character position; nothing depends on allocation order, so a snapshot survives an edit elsewhere. closed/147 made ids deterministic across *builds*; this makes them stable across *edits*, which an edit-compile loop needs. **It stores equivalence classes, not raw contours**, so it re-seeds the coarsest partition the program needed and the next run splits further only on a demand; raw contours would re-seed the ones [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) says were minted on transient types. ifa's keys are already close: `AEdge` on `(fun, pnode, from)`, `SplitDecision` on `(fun, stage, pos, partition)`; what is missing is a stable name for a PNode and for a partition's CreationSet. | warm start; most of a large program's convergence | 192 D2, [notes/001](../notes/001-compilation-database.md) |
+| C1 | **concert-db: a decision snapshot across compiles.** `write-ti-info` serialises, per method, the equivalence classes of entry sets (after `calculate-clones #'equiv-es-write-ti`) with their edges and creation-set ids, and per class the creation sets with their creation points. `find-es-from-db` / `find-cs-from-db` consult it on **pass 1 only**, before the split ladder runs. Two details improve on 192 D2's sketch. **Edit-stable ids** (`program-point-id`, `id-program-points`): a call site is `selector%nargs%depth`, a loop is named by its controlling variable, collisions broken by source character position; nothing depends on allocation order, so a snapshot survives an edit elsewhere. closed/147 made ids deterministic across *builds*; this makes them stable across *edits*, which an edit-compile loop needs. **It stores equivalence classes, not raw contours**, so it re-seeds the coarsest partition the program needed and the next run splits further only on a demand; raw contours would re-seed the ones [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md) says were minted on transient types. ifa's keys are already close: `AEdge` on `(fun, pnode, from)`, `SplitDecision` on `(fun, stage, pos, partition)`; what is missing is a stable name for a PNode and for a partition's CreationSet. | warm start; most of a large program's convergence | 192 D2, [notes/001](../../notes/001-compilation-database.md) |
 | C2 | **Profile channel.** The same file writes `PCE` (per-method) and `PL` (per-loop) counts from the generated program and reads them back onto `:prof-count`. In the snapshot nothing consumes them, but the plumbing is the thing `frequency_estimation` stands in for. | a consumer for frequencies, or their deletion | 193 B1 |
 | C3 | **`remove-excess-moves-and-phys` before FA and after inlining.** `short-out-phys` substitutes a phy's source for every lval use; `remove-dead-phys`; then `move-eliminator` (`through-move`, copy propagation) and `remove-dead-phis` (a phi whose operands are one value becomes a move) iterate to a fixed point (`cleanup-program-graph.lisp:196–300`). Two guards in `through-move` are the ones ifa needs: do not propagate through a copy whose type differs from its source by more than `nullclass` (the narrowing case, the one place a copy carries information), and never short-circuit a phi through another phi on the same conditional. Concert placed phys everywhere and deleted the ones nothing needed; 193 C1 proposed placing them on demand. Same invariant: a branch rename survives only where a type can differ across it. | fewer Vars per contour per pass | 193 C1, C2 |
 | C4 | **Write-once globals** (`write-once`, `distribute-write-once-globals`, `read-local-write-once-globals`). A global whose every `set_global` edge is sourced inside the initialisation entry sets is write-once; every read outside those entry sets is rewritten from a send to a direct load. `tests/global_slot_call_graph_precision.py` (050) is this shape. ifa has the hook (`provably_constant_load`) and the call-graph facts; it lacks the classification. `ip-constant-node` also turns a global read whose only reaching definitions are one numeric constant into a move. | 050 stages 2–3 for the common case | 050 |

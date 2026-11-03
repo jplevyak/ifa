@@ -1,6 +1,6 @@
 # 101 — the residual non-convergence is *first-time-forever* splitting, not re-derivation
 
-> **CLOSED 2026-09-28 (superseded).** `PYC_HARDREUSE=5` landed. The rest (per-site CS identity, `PYC_CSELEM`) is superseded by start-merged identity (`PYC_CSDCPA1=2`) and [074](074-FA-cross-pass-oscillation-plan.md)'s resolution; linalg and plcfrs now converge and match CPython. The remaining lever (`PYC_CSELEM`) is on [146](../146-remove-all-arbitrary-splitting.md)'s delete list.
+> **CLOSED 2026-09-28 (superseded).** `PYC_HARDREUSE=5` landed. The rest (per-site CS identity, `PYC_CSELEM`) is superseded by start-merged identity (`PYC_CSDCPA1=2`) and [074](074-FA-cross-pass-oscillation-plan.md)'s resolution; linalg and plcfrs now converge and match CPython. The remaining lever (`PYC_CSELEM`) is on [146](146-remove-all-arbitrary-splitting.md)'s delete list.
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
@@ -418,7 +418,7 @@ benign.
 At default guards all four programs terminate. What they actually do is
 **fail to compile**, and all three of the genuine set fail in the *same*
 family — [018](../../../issues/closed/018-dict-mixed-key-types-boxing-failure.md) /
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md), a union with no
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md), a union with no
 codegen representation:
 
 | program | failure |
@@ -1028,7 +1028,7 @@ measurement above that involves them — notably `rdb`'s 693 326 → 693 764
 bytes in the `PYC_CSMOLD` table — is no longer reproducible.
 
 This is not a regression: all three were already in
-[102](../102-corpus-programs-compile-then-abort-at-runtime.md)'s
+[102](../102-codegen-detected-conditions-are-refusals-or-demands.md)'s
 compile-then-crash list, so the failure moved from runtime to compile
 time, which is 102's goal. But it does mean the corpus baseline for
 FA-level comparisons is now 74 programs, not 77, and a re-run is needed

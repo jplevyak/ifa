@@ -1,10 +1,12 @@
 # 079 — the single-candidate dispatch fast path casts without checking the union's other members
 
+**CLOSED 2026-11-03: merged into [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)** as its safeguard row: the single-candidate fast path records its cast with `cg_note_blind_cast` and fails the compile on a member the candidate does not accept. The permissive remedy moved to [025](../025-FA-intra-function-union-narrowing.md) on 2026-10-16 and stays there.
+
 **Status:** open, CLEANUP, not attempted. **Shrunk 2026-10-16** to the
 codegen safeguard alone: the crash it was filed for can no longer reach
 codegen (below), and the correlated-branch half belongs to
-[025](025-FA-intra-function-union-narrowing.md). History in git:
-`git show 3f36072b:ifa/issues/079-DISPATCH-single-candidate-dispatch-unchecked-cast.md`
+[025](../025-FA-intra-function-union-narrowing.md). History in git:
+`git show 3f36072b:ifa/issues/closed/079-DISPATCH-single-candidate-dispatch-unchecked-cast.md`
 (the full original), and `git show e3b44e2c:` this path (the 2026-09-28
 rewrite).
 
@@ -17,14 +19,14 @@ with `b` cast to `Body *`, and segfaulted on a `Cell`.
 That shape is now refused in every mode, `--strict` included, with
 `illegal call argument type expression illegal: B`. A union member with no
 candidate for the method is a type violation, and since
-[closed/158](closed/158-FA-every-type-violation-is-fatal.md) every violation is fatal.
+[closed/158](158-FA-every-type-violation-is-fatal.md) every violation is fatal.
 That was the original issue's "in FA" half. Re-verified 2026-10-16 on
 `c7b54d6a`, both with a reachable `B` (`x = A() if c else B(); x.m()`)
 and with the call guarded by a correlated `if c:`.
 
 The correlated case is a valid CPython program (it prints `done`) that pyc
 now REFUSES. That is not this issue: it is
-[025](025-FA-intra-function-union-narrowing.md), branch correlation over a
+[025](../025-FA-intra-function-union-narrowing.md), branch correlation over a
 class union. The original "permissive raises `AttributeError`" remedy needs
 025's narrowing first, and moves there with it.
 

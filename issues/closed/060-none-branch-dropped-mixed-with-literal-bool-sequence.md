@@ -24,7 +24,7 @@ with every pattern kind.
 (mechanism 2).
 **Related:** [059](059-narrowing-peel-wrapper-boolean-collapse-gap.md)
 (found while testing that fix, but unrelated — reproduces identically
-with `IFA_NARROW=0`); [030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md)
+with `IFA_NARROW=0`); [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)
 (raw-layout / classtag-less types, directly implicated in mechanism
 2); [closed/011](011-setter-codegen-vs-analyzer-mismatch.md)
 docs the *first* occurrence of mechanism 1, for except-clauses, and
@@ -147,7 +147,7 @@ contains both), the runtime check is emitted as a disjunction over
 the checked class's classtag-bearing implementors
 (`*(_CG_TypeObject**)opnd == &_CG_type_X`). `int` (like `bool`,
 `float`, and any other raw-layout type per
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s tagging exclusion)
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s tagging exclusion)
 has **no classtag**, so the implementors list is empty and codegen
 hard-codes the check to `= 0` — always false, regardless of the
 operand's real runtime type. Confirmed this does *not* happen for two

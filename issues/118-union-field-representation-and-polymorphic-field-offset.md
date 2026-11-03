@@ -1,6 +1,8 @@
 # 118 — `{bool, None}` has no representation
 
-**Status:** open, narrow. Rewritten 2026-09-28. The original title ("the
+**Status:** open, narrow. The representation callback it asks for is a
+row of [201](201-representation-oracle.md); this issue owns the `{None,
+bool}` encoding and its fixture. Rewritten 2026-09-28. The original title ("the
 last two corpus compile failures: union-field width, and polymorphic
 field offsets") is obsolete. `go`'s offset half was an inference
 imprecision, fixed by 124's splitter fix. chess stopped producing the

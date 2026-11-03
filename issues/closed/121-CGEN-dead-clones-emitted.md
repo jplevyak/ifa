@@ -6,7 +6,7 @@ choice (clone equivalence) or calls the clone the site chose; and the one
 remaining unprovable shape is warned, and refused under `--strict`. See
 the two 2026-10-14 sections at the end. The residual (five call sites
 where an ARGUMENT's type chooses the clone) is the one-class-two-clones
-population of [190](../190-CODEGEN-run-time-dispatch-census.md).
+population of [190](190-CODEGEN-run-time-dispatch-census.md).
 
 **Status at the time (kept as the record):** the C backend was fixed
 2026-09-01. Rewritten 2026-09-28; history in git:

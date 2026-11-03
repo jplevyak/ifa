@@ -1,186 +1,171 @@
 # ifa/issues
 
-Open work items for the IFA library. Each file documents one issue: the
-symptom, the root cause as far as it has been traced, the principled fix
-(or the options), the dead ends already measured, and how to verify.
+Open work items for the IFA library. Each file is one item: the symptom
+with a repro, the mechanism as far as measured, the plan with a stop
+condition, the dead ends with the measurement that killed each, and how to
+verify. They are checked-in documents that travel with the code, so the
+next investigator starts from the trail instead of re-deriving it.
 
-These are not GitHub issues. They are checked-in documents that travel
-with the code, so the next investigator starts from the trail instead of
-re-deriving it.
-
-*Consolidated 2026-09-28: 61 open → 29. Resolved issues were archived,
-overlapping ones merged, and every open issue was rewritten to its
-current state. The previous README, with the 2026-08 triage and
-convergence-session history, is in git:
-`git show 3f36072b:ifa/issues/README.md`.*
+*Reorganised 2026-11-03: 29 open → 22, every open file rewritten to its
+current state and made an action item; sixteen closed into survivors or
+distributed; ten new action issues (196–205) take the rows of the four
+November reviews. Consolidated before that on 2026-09-28 (61 → 29). The
+previous README, with the 2026-09-28 closure table, is in git:
+`git show 123ac81:ifa/issues/README.md`.*
 
 ## Read first: how splitting work is judged here
 
 IFA is a simultaneous data and control flow analysis over a type-value
 lattice. It starts from the MINIMUM contours and splits only on demand
-(AGENTS.md). Every splitting issue below is held to these rules. Each
-one is a lesson this directory paid for.
+(AGENTS.md). Every splitting issue is held to these rules. Each one is a
+lesson this directory paid for.
 
 1. **A demand is something observing a distinction and being unable to
    proceed**: a violation, an irrepresentable union, a dispatch that
    cannot resolve. "This is a union", "this CS has several creation
-   points" and "these came from different places" are facts, not
-   demands. ([146](146-remove-all-arbitrary-splitting.md))
-2. **The two-question test:** would the split happen without the
-   demand (then it is arbitrary)? Does the demand decide WHETHER and the
-   handle only WHICH (then it is a mechanism)? Partition size is what the
-   demand distinguishes, never a count of callers, creation points or
-   receivers.
-3. **Non-monotone means arbitrary.** A lever that makes results worse as
-   it splits more is not earning its keep. **Delete it, don't default it
-   off.**
+   points" and "these came from different places" are facts, not demands.
+   ([closed/146](closed/146-remove-all-arbitrary-splitting.md))
+2. **The two-question test:** would the split happen without the demand
+   (then it is arbitrary)? Does the demand decide WHETHER and the handle
+   only WHICH (then it is a mechanism)? Partition size is what the demand
+   distinguishes, never a count of callers, creation points or receivers.
+3. **Non-monotone means arbitrary.** A lever that makes results worse as it
+   splits more is not earning its keep. **Delete it, don't default it off.**
 4. **Types are already converged when the split stages run.** "When" is
-   not the defect. The cascade-priority gate is (it starves every lower
-   stage). ([157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md))
+   not the defect. ([closed/157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md))
 5. **The confluence is a CONTOUR, and the demand is observed where the
-   union is USED**, usually far from the merge. Backtrack it. Do not act
-   at the symptom. (AGENTS.md; closed/152)
-6. **A merge can be taken back.** Every pass re-derives types from
-   bottom, and only DECISIONS persist. So a decision taken on transient
-   types should be revisited at convergence, not protected.
+   union is USED**, usually far from the merge. Backtrack it. Do not act at
+   the symptom. (AGENTS.md; [closed/152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md))
+6. **A merge can be taken back.** Every pass re-derives types from bottom,
+   and only DECISIONS persist. A decision taken on transient types is
+   revisited at convergence, not protected.
    ([170](170-FA-contours-minted-on-transient-types-are-never-remerged.md))
-7. **Never identity by provenance or by name.** Types and CS
-   partitioning are identity. Arity and other representation properties
-   are legitimate (behind `IFACallbacks`). Allocation site, call site and
-   depth are handles at most. ([130](closed/130-FA-identity-keyed-on-sym-name.md),
-   [132](closed/132-arity-is-representation-not-provenance.md))
-8. **Measure on the corpus, same binary, env toggled.** The suite is
-   blind to most of this area. Two builds of one tree that differ only in
-   dead code now give identical sweeps, but a one-binary A/B is still the
-   cleanest attribution. ([147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md))
-9. **Check for a missing builtin before blaming FA.** `list.copy`,
-   `dict.copy` and `str.rstrip` were each the first error of a corpus
-   program whose failure was being read as a splitting problem.
-   ([086](closed/086-list-and-dict-have-no-copy-method.md),
-   [124](124-FA-refuse-imprecise-inference.md))
+7. **Never identity by provenance or by name.** Types and CS partitioning
+   are identity; representation properties (arity, width, nil-ability) are
+   legitimate but belong behind `IFACallbacks`
+   ([201](201-representation-oracle.md)); allocation site, call site and
+   depth are handles at most. ([closed/130](closed/130-FA-identity-keyed-on-sym-name.md),
+   [closed/132](closed/132-arity-is-representation-not-provenance.md))
+8. **Measure on the corpus, same binary, env toggled.** The suite is blind
+   to most of this area. ([closed/147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md))
+9. **Check for a missing builtin before blaming FA.**
+   ([closed/086](closed/086-list-and-dict-have-no-copy-method.md))
+10. **A condition the compiler detects is a refusal or a demand, never a
+    run-time trap.** ([102](102-codegen-detected-conditions-are-refusals-or-demands.md))
+
+## The plan
+
+Ordered by value against effort, with what each unblocks. Items in one
+row are independent of each other.
+
+| order | do | why first | unblocks |
+| --- | --- | --- | --- |
+| 1 | the small defects: [197](197-tuple-arity-dispatch-leftovers.md) item 1, [039](039-FA-uninitialized-local-reads-silent.md) item 2, [204](204-optimize-pass-fixes.md) rows 1–3, [200](200-llvm-backend-parity.md) A1 and A5 | each is a day, and two are silent deviations on the default path | the contract (AGENTS.md) holds on both backends |
+| 2 | [102](102-codegen-detected-conditions-are-refusals-or-demands.md): the eleven traps, one at a time | turns miscompiles into refusals and surfaces the demands FA never saw | [201](201-representation-oracle.md) has its witnesses |
+| 3 | [196](196-the-setter-stage-splits-on-a-fact.md): the counterfactual setter demand | the one open design question in the splitter | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3, `go`'s one layout, voronoi's one `list[int64]` |
+| 4 | [205](205-ai-centric-interface.md) D1: structured diagnostics with the backtrack attached | the walks exist; an agent or a person can then act on temporal unions by editing the program | every refusal classified; the corpus edit policy becomes mechanical |
+| 5 | [203](203-shrink-the-graph-fa-walks.md): measure, then demand-placed renames and copy propagation | FA cost is Vars × contours × passes; this is the Vars | [186](186-FA-pass-one-confluence-through-shared-builtins.md) direction 3 |
+| 6 | [198](198-decision-snapshot-across-compiles.md) | most of a large program's convergence, on every recompile | the edit-compile loop |
+| 7 | [186](186-FA-pass-one-confluence-through-shared-builtins.md) directions 1–2: deferred connection, a wide-union AType | the structural cost of start-minimal on pass 1 | othello3 under the cap |
+| 8 | [201](201-representation-oracle.md), then [199](199-emitted-code-performance.md) item 1 (a benchmark mode) | one owner for representation; a number for emitted code | 054's header, 030's tables, the LLVM contract's width table |
+| 9 | [202](202-health-docs-levers-probes-tests-and-ci.md): docs, levers, probes, dead code, the corpus sweep in CI | the docs an agent reads first state deleted architecture; the real gate runs by hand | everything above is reviewable |
+| 10 | the precision items that each need their own mechanism: [050](050-FA-general-constant-propagation-unreachable-code.md) 1b, [191](191-FA-an-always-overwritten-initial-value-stays-in-the-field-type.md) row 5, [072](072-FA-empty-container-notype-current-mechanism-and-plan.md), [025](025-FA-intra-function-union-narrowing.md), [119](119-sccp-as-an-outer-fixed-point-over-fa.md), [134](134-remove-the-frontend-forced-split-opt-in.md) | each closes a `.known_issue` or an annotation | strict-mode parity with CPython on the suite |
 
 ## Open issues
 
-### Demand-driven splitting: principles and plan
+### CPython contract: silent wrong answers and refusals of valid programs
 
 | issue | what |
 | --- | --- |
-| [129](129-plan-demand-driven-creation-set-splitting.md) | **the plan**: start-merged CreationSets, demand-driven separation, a ledger. Landed; open only on the one-creation-point family (no current corpus case); the shared-writer decline moved to 178. What is settled. |
-| [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (no default-path violation is known as of 2026-10-13), and a verdict for every off-by-default splitting lever. Every DELETE and MEASURE lever was deleted 2026-10-15, then SLOTARITY, TYPEMOVE and RETDEMAND; the inventory is empty. |
-| [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
-| [134](134-remove-the-frontend-forced-split-opt-in.md) | constants: 9 `__pyc_clone_constants__` annotations remain, each with a named replacement. |
-| [190](190-CODEGEN-run-time-dispatch-census.md) | **zero run-time dispatch**: census of the corpus's dynamic calls, 272 → 95. Nullable receivers are null tests (177). Of the 95: 71 class hierarchies (legitimate), 4 clones of one class (each a merge no contour split can separate), 7 exception printer, 13 builtin shapes; none unrelated. |
-| [192](192-review-analysis-and-issues-2026-11.md) | **the 2026-11 review** of `ifa/analysis/` and this directory: three unflagged semantic deviations on the default path, the counterfactual setter demand that blocks 124/170/178/185, pass-1 width, and what an AI-centric loop needs (structured diagnostics, a decision snapshot across compiles, re-entrancy, a time budget). A prioritised plan with stop conditions. |
+| [039](039-FA-uninitialized-local-reads-silent.md) | possibly-unbound locals: analysis and `--safe` fill done; the runtime check is not, so `f(0)` prints `42` with no warning. Do item 2. |
+| [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that arrives: the check exits instead of raising a catchable `TypeError`; primitive argument positions other than `strcat` unchecked. |
+| [197](197-tuple-arity-dispatch-leftovers.md) | a `no_static_arity` flip on the final pass leaves a stale dispatch that aborts at run time; same-arity tuples with different element types in one list are refused. |
+| [102](102-codegen-detected-conditions-are-refusals-or-demands.md) | eleven codegen-detected type mismatches become `assert(!"runtime error")` under the default mode; `convert_NOTYPE_to_void`; the single-candidate cast safeguard. Refuse or demand, one at a time. |
+| [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}` has no representation; a tri-state sentinel, chosen through [201](201-representation-oracle.md). |
+| [025](025-FA-intra-function-union-narrowing.md) | narrowing: branch correlation over a class union (tail duplication, or the permissive `AttributeError`), and composed predicates (`is not None and isinstance`). |
+| [072](072-FA-empty-container-notype-current-mechanism-and-plan.md) | a never-written container's bottom element reaching live code: derive "zero-trip" and "raises" from it. |
+| [191](191-FA-an-always-overwritten-initial-value-stays-in-the-field-type.md) | fields fixed by `overwrite.cc`; open: `[None] * n` with scalar elements (loop coverage). |
+| [050](050-FA-general-constant-propagation-unreachable-code.md) | a global slot is flow-insensitive: write-once globals first (1b), then a mod-set and a per-ES summary. |
+| [119](119-sccp-as-an-outer-fixed-point-over-fa.md) | SCCP as an outer fixed point; stage 1 lands in 203. |
+| [134](134-remove-the-frontend-forced-split-opt-in.md) | 9 `__pyc_clone_constants__` annotations remain, each with a named blocker; the `PER_CS_RECEIVER` stage goes with them. |
 
-### FA: typing and precision
+Frontend-side items from the same work are in the top-level `issues/`:
+[185](../../issues/185-list-eq-tuple-is-true.md) (`[1, 2] == (1, 2)` is True),
+[186](../../issues/186-duplicate-method-definitions-are-an-ambiguous-call.md)
+(duplicate defs), [172](../../issues/172-generator-send-channel-and-stopiteration-value.md)
+(the global exception slot).
 
-| issue | what |
-| --- | --- |
-| [191](191-FA-an-always-overwritten-initial-value-stays-in-the-field-type.md) | partial: a `None` never read before its overwrite no longer stays in the field's type (direction 2, `overwrite.cc`, 2026-10-17; fixed 191's rows 2-4 and three issues/048 tests). Open: `[None] * n` with scalar elements (row 5). |
-| [072](072-FA-empty-container-notype-current-mechanism-and-plan.md) | a never-written container's bottom element reaching live code. Derive "zero-trip" and "raises" from it. |
-| [178](178-FA-route4-declines-records-built-through-one-constructor.md) | route 4 cannot separate two creation points of a class built through one constructor; also the general writer split (moved from 129). No known program needs either (2026-10-15). |
-| [025](025-FA-intra-function-union-narrowing.md) | branch correlation over a class union: now refused. Tail duplication, or a permissive runtime check. |
-| [050](050-FA-general-constant-propagation-unreachable-code.md) | a global slot's value is not call-graph precise. Stages 2-3 (mod-set, per-ES summary). |
-| [119](119-sccp-as-an-outer-fixed-point-over-fa.md) | SCCP: explicit executability, dead edges as a between-pass decision, fact providers. |
-| [039](039-FA-uninitialized-local-reads-silent.md) | unbound locals: analysis done, `--safe` fill done. Open: the runtime check, DEFINITELY-unbound on by default. |
-| [124](124-FA-refuse-imprecise-inference.md) | `--refuse-imprecise`: its false positive was a C naming gap (a list/tuple type clone named `_CG_any`), fixed 2026-10-17. `go` has 6 sites left to classify. |
-| [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that does arrive at an operation reads as zero. Permissive runtime check, strict refusal. |
-| [185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) | performance: sunfish compiles in 537 s. A tuple receiver merged across every arity keeps all 64 steps of the unrolled tuple methods live for ~13 passes; capping the unroll at 8 gives 48 s. |
-| [186](186-FA-pass-one-confluence-through-shared-builtins.md) | performance: othello3 never finishes pass 1. Shared builtin contours (`__list_iter__.__next__`, `len`, `__eq__`) carry a ~2,039-CS whole-program union, rebuilt one CS at a time at tens of thousands of AVars. |
-
-### Codegen, dispatch, representation
+### Splitting and precision
 
 | issue | what |
 | --- | --- |
-| [102](102-corpus-programs-compile-then-abort-at-runtime.md) | an unresolved call becomes a silent runtime stub. Make it an FA violation. Also the untyped-value work list. |
-| [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | cleanup: the single-candidate fast path casts with no blind-cast record and no no-match guard. The crash it was filed for is refused by FA since closed/158; the correlated-branch case is 025. |
-| [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
-| [093](093-CGEN-int-float-union-move-not-coerced.md) | LLVM: an int MOVE into a float64 slot stores raw bits (missing `sitofp`). |
-| [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) | performance: high fan-out dispatch has no table. |
-| [054](054-CGEN-remove-unconditional-tuple-list-header.md) | performance: every tuple carries a 16-byte list header. |
+| [196](196-the-setter-stage-splits-on-a-fact.md) | **the design question**: SETTER nominates on a fact; the demand it needs is a counterfactual over converged writers. Blocks 170 step 3. Carries the watch list and the do-not-rebuild list. |
+| [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | re-derive at convergence: EntrySet merge landed; step 2 (routing on an empty contour) small; step 3 (CreationSet merge) blocked on 196. |
 
-### Tooling / cleanup
+### Analysis cost
 
 | issue | what |
 | --- | --- |
-| [094](094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md) | an ASAN build crashes intermittently on `hello_world.py`. |
-| [010](010-CLEANUP-vec-set-api-cleanup.md) | split `Vec`'s array and set roles into two types. |
-| [193](193-review-optimize-against-analysis-2026-11.md) | **the 2026-11 review of `ifa/optimize/`** against the analysis: `check_invariants` compiled out by default, a two-hop store-liveness probe, a by-name exception fold, frequency estimation with no consumer, and the IR simplifications that shrink the graph FA walks (demand-placed phy, copy propagation before FA, dead arms as a decision table). A prioritised plan with stop conditions. |
-| [194](194-review-codegen-2026-11.md) | **the 2026-11 review of `ifa/codegen/`**: the LLVM backend has no layout contract and no slot elision; eleven codegen-detected type mismatches become run-time traps in the default mode (102's shape); four decisions implemented twice; layout widths and the imprecision scan keyed on C type strings; the reference docs describe the deleted v2 architecture. Proposes one representation oracle for FA, clone and both emitters. A prioritised plan with stop conditions. |
-| [195](195-what-the-concert-compiler-still-has-that-ifa-does-not.md) | **the Concert compiler, read against ifa**: five mechanisms not in the tree. concert-db (a decision snapshot with edit-stable program-point ids, seeded on pass 1 from clone equivalence classes: 192 D2), its profile channel, phy and move cleanup before FA and after inlining (193 C1/C2), write-once globals (050), dead-object pruning, and a fast no-split mode (192 D4). What not to take: its contour identity. |
+| [186](186-FA-pass-one-confluence-through-shared-builtins.md) | othello3: pass 1 carries a ~2,000-CS union through the shared builtins; deferred connection and a wide-union AType are the directions. |
+| [203](203-shrink-the-graph-fa-walks.md) | demand-placed phy renames, copy propagation before FA, dead arms as a decision table, what mid-FA inlining is, liveness fed forward. Measure first. |
+| [198](198-decision-snapshot-across-compiles.md) | warm start: clone equivalence classes and the ledger, keyed on edit-stable program-point names, read on pass 1. |
 
-## Closed on 2026-09-28, and where their residuals went
+### Codegen and representation
+
+| issue | what |
+| --- | --- |
+| [200](200-llvm-backend-parity.md) | the LLVM backend has no layout contract (A1), stores int bits into float slots (A5), duplicates four decisions, has no IR fixture or determinism check. |
+| [201](201-representation-oracle.md) | representation has three owners (clone, codegen, FA's four predicates) and is keyed on C type strings; one oracle, read by all; slot elision into liveness and clone. |
+| [199](199-emitted-code-performance.md) | no run-time baseline exists; a benchmark mode first, then dispatch tables (030), the tuple header (054), the builtin shapes (190). |
+
+### Interface, tooling, health
+
+| issue | what |
+| --- | --- |
+| [205](205-ai-centric-interface.md) | structured diagnostics with the backtrack attached, a type query by position, a time budget with a partial-result contract, server mode. |
+| [204](204-optimize-pass-fixes.md) | `check_invariants` compiled out by default, an unasserted splice, the two-hop store probe, the node universe, `exc_check_fold` by name; frequency estimation with no consumer, O(n²) IF liveness, dead-object pruning. |
+| [202](202-health-docs-levers-probes-tests-and-ci.md) | the checklist: stale reference docs, inline levers, unindexed probes, dead slots and `#if 0`, the corpus sweep in CI, asserts, ASAN, Vec/Set. |
+
+## Closed on 2026-11-03, and where their residuals went
 
 | closed | why | residual now in |
 | --- | --- | --- |
-| [007](closed/007-FA-mark-type-stage-coverage.md) | mark stages being deleted | 146 D, 157 |
-| [048](closed/048-FA-deepcopy-flow-divergence-genetic2.md) | genetic2 no longer diverges | 165 / issues/048 |
-| [061](closed/061-CGEN-multi-tuple-list-null-element-type.md) | fixed | — |
-| [066](closed/066-FA-cs-split-decision-keyed-per-pass-not-per-creation-site.md) | `PYC_CSKEY=3` landed | 170 |
-| [068](closed/068-FA-derive-structural-ops-record-field-fold.md) | landed via `inject_tuple_methods` | — |
-| [071](closed/071-FA-chess-accumulated-union-notype-cascade.md) | chess matches CPython | — |
-| [075](closed/075-FA-element-cs-method-split-idempotent-plan.md) | rejected: receiver-keyed method identity is structural | 146 (`PYC_CSM`) |
-| [095](closed/095-LLVM-str-or-none-union-wrong-value.md) | fixed | — |
-| [097](closed/097-CGEN-callsite-vs-clone-formal-type-mismatch.md) | merged | 170 |
-| [099](closed/099-FA-pending-backedge-avoid-veto-forces-period-2.md) | fixed; relocated churn gone with 074 | — |
-| [101](closed/101-FA-first-time-forever-splitting.md) | superseded by start-merged identity | 146 (`PYC_CSELEM`) |
-| [105](closed/105-type-degeneration-in-shared-generic-methods.md) | plcfrs matches CPython | — |
-| [113](closed/113-FA-setter-equivalence-is-a-global-batch-partition.md) | merged | 111 |
-| [123](closed/123-CGEN-union-receiver-field-access-has-no-discrimination.md) | layout contract, prefix layout, elision all landed | 124 |
-| [125](closed/125-sunfish-degenerate-dict-setitem-clones.md) | symptom gone | 102 |
-| [126](closed/126-assess-residual-method-slot-reads.md), [127](closed/127-audit-zero-means-unknown-and-a-real-answer.md) | assessments complete | — |
-| [128](closed/128-cs-identity-over-discriminates-vs-element-type.md) | `PYC_CSDCPA1=2` is the default | 129 |
-| [130](closed/130-FA-identity-keyed-on-sym-name.md) | C3 MRO resolution, class tags per family, name-pointer member lookup | 146 (`PYC_CSELEM`) |
-| [131](closed/131-demand-driven-constant-splitting.md) | premise falsified | 134 |
-| [133](closed/133-split-a-container-on-its-element-type.md) | separator landed | 129 |
-| [135](closed/135-empty-sibling-contour-wins-the-clone-merge.md) | fixed 2026-09-06 | — |
-| [136](closed/136-creation-point-identity-is-es-x-call-site.md) | absorbed into AGENTS.md | 146 (`PYC_CSCALLSITE`) |
-| [137](closed/137-scalar-receiver-resolves-to-container-method.md) | pystone runs | — |
-| [142](closed/142-linalg-empty-list-collapse-is-a-fixed-point.md) | linalg matches CPython | — |
-| [143](closed/143-shared-container-method-contours-refuse-cs-splits.md) | blockers fixed at the default | 146 (`VIOLCS`, `CSMEMBER`) |
-| [144](closed/144-route-4-fans-per-creation-point-instead-of-partitioning.md) | partition landed, fan removed | 170, 156 |
-| [145](closed/145-numeric-coercion-is-not-gated-on-permissive-mode.md) | piece 1 landed | 156 |
-| [148](closed/148-stage-5-starvation-root-caused.md) | merged | 157 |
-| [149](closed/149-the-largest-diagnostic-class-reports-nothing.md) | diagnostic fixes landed | 102 |
-| [150](closed/150-is-not-none-never-folds.md) | fixed | 134 |
-| [151](closed/151-split-an-entryset-on-a-constant-argument-on-demand.md) | CONST_DEMAND landed | 134 |
-| [156](closed/156-FA-split-int-from-float-coerce-last.md) | split side complete: every remaining mix is a genuine flow or temporal merge | 189 |
-| [157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md) | the gate renamed (cascade, not quiescence); RETDEMAND and TYPEMOVE inert, deleted; the stage census found no starved demand | 134 (PER_CS_RECEIVER) |
-| [188](closed/188-FA-field-and-method-of-one-name-on-two-classes.md) | a number and an object in one value had no BOXING check (silent miscompile); now refused | — |
-| [189](closed/189-FA-coercion-warns-per-expression-not-per-origin.md) | one coercion warning per origin, naming its source lines and reach | — |
-| [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
-| [177](closed/177-FA-narrowing-does-not-reach-a-module-global.md) | fixed: a guard's load is reused in its true branch | — |
-| [147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md) | two builds differing only in dead code give identical sweeps (all 77 rows) and byte-identical C; repeat compiles are identical under ASLR | — (oracle recorded in the issue) |
-| [111](closed/111-FA-selective-invalidation-per-pass.md) | premise false: per-pass work falls and stays flat; the "grows 48x" figures were a running-total counter (PYC_DBG_WORK, fixed). FA time is early-pass call matching | 185, 186 (matching cost), 170 (type-duplicate EntrySets) |
-| [132](closed/132-arity-is-representation-not-provenance.md) | arity in CS identity landed; a two-arity slot is sound (`PYC_SLOTARITY` deleted); quameon runs. Closed with quameon as the witness: a small program splits upstream on `{None}` before the demand is reached | 178 (synthetic test) |
-| [179](closed/179-LLVM-quameon-computes-nan.md) | fixed by 180 (`**` had no LLVM emitter) | — |
-| [120](closed/120-union-types-are-never-interned.md) | value unions interned; the audit found no post-handout write but codegen's C name, and the segfault no longer reproduces | — |
-| [121](closed/121-CGEN-dead-clones-emitted.md) | dead clones fixed before codegen; every narrowing to one clone is proven or calls the site's clone; the argument-chosen residual is warned (190) | 190 |
+| [010](closed/010-CLEANUP-vec-set-api-cleanup.md) | merged | 202 (Vec/Set) |
+| [030](closed/030-DISPATCH-polymorphic-dispatch-fat-pointers.md) | merged | 199 (tables), 200 (the two divergences) |
+| [054](closed/054-CGEN-remove-unconditional-tuple-list-header.md) | merged | 199 (cost), 201 (the flag) |
+| [079](closed/079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | merged | 102 (safeguard), 025 (permissive remedy) |
+| [093](closed/093-CGEN-int-float-union-move-not-coerced.md) | merged | 200 A5 |
+| [094](closed/094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md) | merged | 202 (ASAN) |
+| [124](closed/124-FA-refuse-imprecise-inference.md) | residual 1 fixed; the rest moved | 196 (go's six sites), 201 (FA types, not strings) |
+| [129](closed/129-plan-demand-driven-creation-set-splitting.md) | the plan landed | 196 (watch list, do-not-rebuild list) |
+| [146](closed/146-remove-all-arbitrary-splitting.md) | the audit is complete; inventory empty since 2026-10-15 | 196 (the one open violation); rules 1–3 above |
+| [178](closed/178-FA-route4-declines-records-built-through-one-constructor.md) | repro passes; no witness for the rest | 196 (watch list) |
+| [185](closed/185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) | sunfish fixed (136 s, matches) | 197, issues/185, issues/186, 196 |
+| [190](closed/190-CODEGEN-run-time-dispatch-census.md) | census complete; nothing separable remains | 199, issues/172 |
+| [192](closed/192-review-analysis-and-issues-2026-11.md), [193](closed/193-review-optimize-against-analysis-2026-11.md), [194](closed/194-review-codegen-2026-11.md), [195](closed/195-what-the-concert-compiler-still-has-that-ifa-does-not.md) | the November reviews, distributed | 196–205, 102, 170, 186, 050, 025, 039, 119, 165; each closure note has the row-by-row map |
 
 Each archived file starts with a dated closure note. The body below it
 is the historical record and is not maintained.
 
 ## Conventions
 
-- Filenames: `NNN-CAT-short-slug.md`, NNN zero-padded and never reused.
-  CAT is one of **FA** (flow analysis, splitter, convergence), **DISPATCH**,
-  **CGEN** (C backend), **LLVM**, **CLEANUP**. Recent files often omit
-  the tag; that is fine.
+- Filenames: `NNN-short-slug.md`, NNN zero-padded and never reused. A
+  category tag (`FA`, `DISPATCH`, `CGEN`, `LLVM`, `CLEANUP`) is optional.
+  A number is cited from code comments and sweeps, so a renamed slug keeps
+  its number.
 - One issue per file. Cross-link with relative paths. `make test-links`
   checks every link.
-- Status line at the top: `open`, `partial`, or `closed` with a date or
-  commit. Closed issues move to [`closed/`](closed/) (a flat archive,
-  never deleted) with a closure note saying why and where any residual
-  went.
+- Status line at the top: `open`, `partial`, or `closed` with a date.
+  Closed issues move to [`closed/`](closed/) (a flat archive, never
+  deleted) with a closure note saying why and where any residual went.
 - **Keep an open issue current, not chronological.** When a finding
-  supersedes an earlier section, rewrite the section. Put the old text
-  in git (`git show <commit>:<path>`) and cite it. Do not append
-  "CORRECTION" after "CORRECTION". A reader should be able to act on the
-  file as it stands.
-- Every issue carries: the symptom with a runnable repro, the mechanism
-  as far as measured, the principled fix, the dead ends with the
-  measurement that killed each, a stop condition written before the
-  next measurement, and verification.
+  supersedes an earlier section, rewrite the section and cite the old text
+  in git (`git show <commit>:<path>`). A reader should be able to act on
+  the file as it stands. Dead ends are kept only as "do not rebuild" rows
+  with the measurement that killed them.
+- Every issue carries: the symptom with a runnable repro, the mechanism as
+  far as measured, the plan, the dead ends, a stop condition written
+  before the next measurement, and verification.
 - When one issue's remaining scope is covered by another, close it into
   the survivor and say so in both.
 - A `.known_issue` sidecar (in `tests/` or `ifa/tests/`) names the issue
@@ -189,8 +174,8 @@ is the historical record and is not maintained.
 ## When to file an issue here vs fix it now
 
 File an issue when the fix is more than about an hour and does not block
-the current task, needs a design decision, touches a subsystem the
-current task is not auditing, or is a real but rare bug with a clean
-workaround. Fix it now when it blocks the current task, when it is a
-one-line fix whose test you are already writing, or when the current
-change is its natural home.
+the current task, needs a design decision, touches a subsystem the current
+task is not auditing, or is a real but rare bug with a clean workaround.
+Fix it now when it blocks the current task, when it is a one-line fix whose
+test you are already writing, or when the current change is its natural
+home.

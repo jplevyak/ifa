@@ -1,5 +1,7 @@
 # 190 — CODEGEN: run-time dispatch census, toward zero
 
+**CLOSED 2026-11-03: the census is complete and the directive is met as far as splitting can meet it.** Of 95 dynamic calls, 71 are class hierarchies (legitimate polymorphism, hoisted not split), 4 are one class with two clones chosen by argument (warned, refused under `--strict`), 0 of 92 are separable by any contour split (the soft-demand inventory below). Residuals: the exception printer's 3 sites need the pending exception threaded along the propagation path ([issues/172](../../../issues/172-generator-send-channel-and-stopiteration-value.md)); the 13 builtin shapes and table dispatch for the 71 are [199](../199-emitted-code-performance.md).
+
 **Status:** open. Nullable receivers fixed, both tagged and untagged
 (2026-10-13). What remains is classified below.
 
@@ -80,7 +82,7 @@ comparing clones directly reported `Chrome(Material)` as unrelated to
 | **71** | **distinct classes with a common user ancestor**: polymorphism, which is legitimate. shedskin emits these as virtual calls; hoist, do not split (AGENTS.md) | pygasus 39 (`_exec` over `AddrMode`, `Instruction`, `MMCread/Write/Load`), quameon 11 (`sto_base`, `base_jastrow`), pygmy 7, bh 7 (`Node`), yopyra 3, tarsalzp 2, richards 1 (`Task`), path_tracing 1 (`Material`) |
 | **4** | **one class, two clones** at one call site: each is a value merge no contour split can separate (see below) | quameon 2 (`coulomb_pot.compute_en_value` / `compute_nn_value`), fysphun 1 (`Link.applyme`), softrender 1 (`Vector4.add`) |
 | **7** | `__pyc_unhandled_exception__`: `e.__str__()` over the exception classes a program raises, plus None | one per program; 4 removed 2026-10-14 (item 3) |
-| **13** | builtin receivers: tuple shapes (`__eq__` / `__str__`, amaze 8, 4 of them with None), `{bytes, bytearray}.__getitem__` (softrender 4: on the C backend these were `matching function not found` STUBS, not dispatches; gone since 2026-10-14, when `len` of a constant began to fold, see [102](102-corpus-programs-compile-then-abort-at-runtime.md)), tuple `__eq__` (sunfish 1) | |
+| **13** | builtin receivers: tuple shapes (`__eq__` / `__str__`, amaze 8, 4 of them with None), `{bytes, bytearray}.__getitem__` (softrender 4: on the C backend these were `matching function not found` STUBS, not dispatches; gone since 2026-10-14, when `len` of a constant began to fold, see [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)), tuple `__eq__` (sunfish 1) | |
 
 **No dynamic call has receivers of unrelated user classes.** Every
 user-class dispatch in the corpus is either a hierarchy or clones of one
@@ -139,7 +141,7 @@ class.
      model (threading the pending exception along the propagation path
      instead of through one flow-insensitive global), not to splitting.
      It is the same confluence as
-     [issues/172](../../issues/172-generator-send-channel-and-stopiteration-value.md).
+     [issues/172](../../../issues/172-generator-send-channel-and-stopiteration-value.md).
    - Corpus check -R `check__default__c3ea9eb3+3c8fdc66` against
      `check__default__4697b7c4+a77008dd`: every verdict and warning count
      identical on all 77; CreationSets -3 on every program (-228), and one
@@ -148,7 +150,7 @@ class.
 
 ### Can a split remove any of them? The soft-demand inventory (2026-10-14)
 
-The next step after [102](102-corpus-programs-compile-then-abort-at-runtime.md)'s
+The next step after [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)'s
 refusal work was a SOFT dispatch demand: treat every dispatch that has a
 plan as a demand, so the splitter tries to make the site monomorphic.
 Stop condition, set before measuring: if no dispatching send's receiver

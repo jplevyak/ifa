@@ -1,5 +1,7 @@
 # 192 — review of `ifa/analysis/` and `ifa/issues/`: gaps, errors, efficiency, and readiness for an AI-centric development loop
 
+**CLOSED 2026-11-03: distributed.** Every row went to an action issue: A1 → [197](../197-tuple-arity-dispatch-leftovers.md); A2 → [039](../039-FA-uninitialized-local-reads-silent.md); A3 → [issues/185](../../../issues/185-list-eq-tuple-is-true.md); A4 → [issues/186](../../../issues/186-duplicate-method-definitions-are-an-ambiguous-call.md); A5 → [165](../165-none-reaching-an-operation-is-silently-accepted.md); A6 and the trap principle → [102](../102-codegen-detected-conditions-are-refusals-or-demands.md); A7 → [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md); A8, A9, E1-E5 → [202](../202-health-docs-levers-probes-tests-and-ci.md); B1 → [196](../196-the-setter-stage-splits-on-a-fact.md); B2 → [050](../050-FA-general-constant-propagation-unreachable-code.md); B3 → [025](../025-FA-intra-function-union-narrowing.md); B4 → [119](../119-sccp-as-an-outer-fixed-point-over-fa.md); B5, D1, D3, D4 → [205](../205-ai-centric-interface.md); C1, C2 → [186](../186-FA-pass-one-confluence-through-shared-builtins.md); C3 and D2 → [198](../198-decision-snapshot-across-compiles.md); C4 → [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md); C5 → [205](../205-ai-centric-interface.md). The review itself is the record.
+
 **Status: open. Umbrella / audit**, like [146](146-remove-all-arbitrary-splitting.md).
 Written 2026-11-02 against `829f43d`. It takes no new measurements: every
 number is from a checked-in sweep, an open issue, or a count over the
@@ -40,7 +42,7 @@ matches CPython), so the committed sweep is one tree behind the issues.
   [146](146-remove-all-arbitrary-splitting.md) emptied the off-by-default
   lever inventory on 2026-10-15 with a same-binary corpus A/B per removal.
 - **Determinism is closed**
-  ([147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md)):
+  ([147](147-analysis-result-depends-on-the-binary-not-the-inputs.md)):
   two differently-built binaries give identical sweeps and byte-identical C.
   That is the prerequisite for any cache, warm start or bisection.
 - **The issues are an engineering record**: symptom with repro, measured
@@ -79,7 +81,7 @@ The contract (AGENTS.md): CPython semantics or a compile error under
 
 **One design question underlies four open issues.**
 [124](124-FA-refuse-imprecise-inference.md) residual 2,
-[170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3,
+[170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3,
 [178](178-FA-route4-declines-records-built-through-one-constructor.md) and
 [185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) phase A
 all end at the same wall: the `SETTER` stage nominates a confluence whenever
@@ -114,7 +116,7 @@ demand was misread; find it, add no hysteresis.
 | --- | --- | --- |
 | C1 | **Pass 1 is maximally merged by design, so its cost is union width × program size.** Every shared builtin carries every caller's values on pass 1; othello3 builds a ~2,039-CS union and rebuilds tens of thousands of AVars once per member, ~850 s FA against a 400 s cap. 186's four fixes each cut a constant; none changes the shape. 186 itself concludes shedskin's deferred-connection limit (`CPA_LIMIT`) and incremental connection are scheduling, not identity, and allowed. Neither has been tried. | 186 |
 | C2 | **`AType` representation.** A sorted `Vec` with hash-consing and four per-instance memo maps (`union_map`, `intersection_map`, `diff_map`, `coerce_map`, never cleared); a wide union allocates a new canonical AType per added member and memoises every pair. `type_diff`'s inner `subsumed_by` loop over abstract members is O(\|a\|·\|b\|). A bitset over CS ids above a width threshold makes union, diff and subset O(width/64). | 186 |
-| C3 | **Nothing is carried between compiles.** Every pass re-derives from bottom (right, per 111), but a 13-pass othello3 pays 90–250 s per pass and an edit-compile loop pays it all again. The decisions that persist (`av->cs_map`, `AEdge::to`, the ledger keyed on interned `(fun, stage, pos, partition)`) are what the deleted compilation database would store ([notes/001](../notes/001-compilation-database.md)); its prerequisite, deterministic ids, is met by 147. See D2. | new |
+| C3 | **Nothing is carried between compiles.** Every pass re-derives from bottom (right, per 111), but a 13-pass othello3 pays 90–250 s per pass and an edit-compile loop pays it all again. The decisions that persist (`av->cs_map`, `AEdge::to`, the ledger keyed on interned `(fun, stage, pos, partition)`) are what the deleted compilation database would store ([notes/001](../../notes/001-compilation-database.md)); its prerequisite, deterministic ids, is met by 147. See D2. | new |
 | C4 | **Equal CreationSets cannot be merged** (`PYC_CSMERGE` built, measured, off): voronoi has two `list[int64]` CSs to shedskin's one. The ES half bought −2.7 % contours and −7 % compile time; the CS half is worth at least as much, since every extra CS multiplies clone pairs in `determine_basic_clones`. Blocked on B1. | 170 step 3 |
 | C5 | **Convergence is bounded by heuristics, not a budget**: `IFA_PASS_LIMIT`, dup-aware `IFA_STALL_LIMIT`, `IFA_NONIMPROVE_LIMIT`, a zero-violation stall counter. fa.h calls the stall guard a mitigation for order-dependent split choices. The verdict is "non-convergent" with no partial result marked as such, and `pass_limit_hit` is not surfaced to the user. See D4. | new |
 | C6 | minor, profile first: 17 in-place `qsort_by_id` sites and the copying `sorted_view` (010); `tuple.__eq__` still `0..max_arity`; 150 `getenv` sites in fa.cc, the hot ones cached by hand. | 010, 185 |
@@ -128,7 +130,7 @@ demand was misread; find it, add no hysteresis.
 | type query | `type_info`, `call_info`, `constant_info` (fa.h); `fa_dump_types` under `-v` | keyed on `IFAAST *`, not source position; no "type of every expression" export |
 | warm start | decisions persist across passes | never across compiles (C3) |
 | bounded time | pass cap and stall heuristics | no wall-clock budget; no partial-result contract (C5) |
-| re-entrancy | `FA` owns its state; `ifa_reset()` for sequential use | globals `fa`, `pdb`, `if1`, `analysis_pass`, `fruntime_errors`; one analysis per process ([notes/005](../notes/005-singleton-fa-and-pdb.md)) |
+| re-entrancy | `FA` owns its state; `ifa_reset()` for sequential use | globals `fa`, `pdb`, `if1`, `analysis_pass`, `fruntime_errors`; one analysis per process ([notes/005](../../notes/005-singleton-fa-and-pdb.md)) |
 | determinism | closed (147) | none |
 | agent memory | AGENTS.md, this directory, the sweep cache | reference docs drift (E3); probes unindexed (E5) |
 

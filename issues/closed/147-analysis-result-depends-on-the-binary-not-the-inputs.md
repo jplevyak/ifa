@@ -3,7 +3,7 @@
 **Status:** CLOSED 2026-10-16. Both verification criteria hold on
 `e05f62b5`, and the symptom no longer reproduces; see "Closed" at the end.
 Rewritten 2026-09-28. It also carried the reproducibility half of
-[010](../010-CLEANUP-vec-set-api-cleanup.md) (and, through it, closed
+[010](010-CLEANUP-vec-set-api-cleanup.md) (and, through it, closed
 issues/021).
 
 ## Symptom

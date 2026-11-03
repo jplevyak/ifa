@@ -1,8 +1,11 @@
 # 039 — a local read on a path that never assigned it: analysis done, enforcement not
 
 **Status:** open. The analysis and the `--safe` fill are done; the runtime
-check for "possibly unbound" is not. Rewritten 2026-09-28; the full design
-record is in git:
+check for "possibly unbound" is not, so on the default path `f(0)` prints
+`42` where CPython raises, with no warning: an unflagged deviation from the
+contract (AGENTS.md, every accommodation flagged and non-strict). Item 2
+below is the one to do first. Rewritten 2026-09-28; the full design record
+is in git:
 `git show 3f36072b:ifa/issues/039-FA-uninitialized-local-reads-silent.md`.
 
 ## Symptom
