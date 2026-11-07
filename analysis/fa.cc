@@ -13849,6 +13849,7 @@ static void analyze_to_convergence() {
   // the world), and clearing there would drop the seeded globals.
   bool first_pass = true;
   bool loop_again = false;  // ifa/issues/055
+  bool arity_flipped = false;  // ifa/197
   do {
     // ifa/issues/111 M3: clear only the closure the last pass
     // invalidated, when that is armed and enabled. Falls back to the
@@ -13865,8 +13866,18 @@ static void analyze_to_convergence() {
     // split that should have given `False` landed, and the stale `bool`
     // still kept an `if isinstance(x, bool):` arm live in a contour where
     // x is a str -- its narrowed `x` then reported "has no type".
+    // ifa/197 item 1: a CreationSet losing its static arity (make_kind,
+    // prim_make) changes no AType, so the sends this pass already
+    // dispatched on the old arity are not re-enqueued and keep a stale
+    // target. On the last pass that reached codegen and aborted at run time
+    // ("arity dispatch: no branch matched"). A pass whose epoch moved is
+    // therefore never the last, and the next one starts from a full reset,
+    // so every send dispatches with the flag already set (the match cache
+    // keys on the epoch, pattern.cc).
+    if (arity_flipped) fa_selective_armed = false;
     if ((!first_pass || analysis_pass > 0) && !clear_results_selective()) clear_results();
     first_pass = false;
+    int arity_epoch_at_start = dispatch_arity_epoch;
     compute_es_can_raise();
     initialize_pass();
     // The top edge is enqueued even under selective invalidation, and
@@ -13914,6 +13925,7 @@ static void analyze_to_convergence() {
     }
     fa->defer_flow = false;
     complete_pass();
+    arity_flipped = dispatch_arity_epoch != arity_epoch_at_start;
     bool raise_grew = compute_es_can_raise();  // on the converged graph; see its comment
     dbg_dump_contours(analysis_pass);  // ifa/issues/055
     // The pass cap bounds the WHOLE loop, including passes kept
@@ -13994,9 +14006,9 @@ static void analyze_to_convergence() {
       if (!ext && !rea && !fil && !ret) ow = decide_overwritten_stores();
       fa->last_pass_reanalyze = (rea != 0);
       if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d viol=%d\n",
-                analysis_pass, ext, rea, fil, ret, fa->type_violations.set_count());
-      loop_again = (ext || rea || fil || ret || ow || raise_grew);
+        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d arity=%d viol=%d\n",
+                analysis_pass, ext, rea, fil, ret, arity_flipped ? 1 : 0, fa->type_violations.set_count());
+      loop_again = (ext || rea || fil || ret || ow || raise_grew || arity_flipped);
     }
   } while (loop_again && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))
