@@ -1,6 +1,6 @@
 # 039 — a local read on a path that never assigned it: analysis done, enforcement not
 
-**Status:** open. The analysis and the `--safe` fill are done; the runtime
+**Status:** open. Item 1 (DEFINITELY on by default) done 2026-11-06. The analysis and the `--safe` fill are done; the runtime
 check for "possibly unbound" is not, so on the default path `f(0)` prints
 `42` where CPython raises, with no warning: an unflagged deviation from the
 contract (AGENTS.md, every accommodation flagged and non-strict). Item 2
@@ -42,7 +42,7 @@ not a Python compiler:** what a check raises and what `--safe` fills with
 are frontend decisions behind `IFACallbacks`. Nothing in ifa may name
 `UnboundLocalError`.
 
-## Landed (default off: `IFA_UNBOUND=1`, or implied by `--safe`)
+## Landed (DEFINITELY on by default; POSSIBLY needs `IFA_UNBOUND=1`, or `--safe`)
 
 - `find_maybe_unbound` (`optimize/ssu.cc`): both meets, one sweep, in
   REVERSE POSTORDER (collection order does not converge). Facts live on
@@ -62,8 +62,28 @@ are frontend decisions behind `IFACallbacks`. Nothing in ifa may name
 
 ## Open
 
-1. **Turn DEFINITELY on by default.** It has no false positives (no path
-   assigns). Measure the suite and corpus with only DEFINITELY enabled.
+1. **Turn DEFINITELY on by default.** Done 2026-11-06.
+   `find_maybe_unbound` always runs; POSSIBLY is recorded only under
+   `IFA_UNBOUND=1` or `--safe`. The claim "no false positives" did NOT hold
+   as written, and measuring found two analysis gaps, both fixed:
+   - a function-local class is a TYPE sym read as its own value and bound
+     by no PNode, so `tests/local_class_capture.py` and
+     `local_class_reads_enclosing_local.py` reported `'I' is used before
+     assignment on every path`. Reads of type syms are excluded.
+   - formals were seeded from `f->sym->has[i]->var` only. The V frontend's
+     `operator` functions bind their formals by PATTERN, so the bound names
+     are the pattern's sub-symbols, and every formal in ifa's `test_llvm.v`
+     was reported. `add_formal_vars` walks patterns to their leaves.
+
+   It changes no verdict that measured: every definitely-unbound read the
+   suite or a repro reaches is bottom-typed, so it was already a fatal
+   `'y' has no type`, and the new message appears beside it. What it adds
+   is the diagnostic that names the cause. `def f(c): if c: print(y)` then
+   `y = 1`, called with a false `c`, is a VALID CPython program, and it is
+   refused, but by the pre-existing `has no type`, with or without this
+   change. That refusal is its own bug: a read on a path that may never
+   run is not a reason to refuse. It belongs with item 2's sentinel, since
+   both need the unassigned path to carry a value instead of bottom.
 2. **The runtime check for POSSIBLY.** A shadow flag per flagged Sym, set
    at each write and tested at each read, calling
    `IFACallbacks::unbound_read_handler()` (the hook exists, with no
@@ -72,6 +92,13 @@ are frontend decisions behind `IFACallbacks`. Nothing in ifa may name
    operand has to contribute a value the check can see, the same shape as
    the `--safe` fill, but a sentinel instead of a zero.
 3. **The frontend fill hook** for non-numeric types under `--safe`.
+
+**Sweep, 2026-11-06** (A5, A1, 204 rows 1–2, 039 item 1, 197 item 1 together,
+against `eb635d2a`): `check` mode identical per program in every column,
+contour counts included (`sweeps/check__default__eb635d2a.tsv` vs
+`check__default__eb635d2a+23d143af.tsv`); `-b` compile mode identical,
+with no program refused by the LLVM layout check
+(`compile__PYC_LLVM_1__eb635d2a.tsv` vs `…+4653f5e1.tsv`).
 
 ## Verification
 
