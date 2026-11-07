@@ -932,6 +932,10 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   if (field_idx < 0) {
     return false;
   }
+  // ifa/200 A1: the same blind-cast obligation the C backend records at
+  // its field read (cg.cc), checked by cg_check_layout_contract at the end
+  // of cg_emit_llvm.
+  cg_note_blind_cast(obj_sym, pn->rvals.v[1]->type, field_idx);
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
   int slot_idx = llvm_fld(obj_sym, field_idx);
@@ -1000,6 +1004,7 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
     }
   }
   if (field_idx < 0) return false;
+  cg_note_blind_cast(obj_sym, pn->rvals.v[1]->type, field_idx);  // ifa/200 A1, as at the read
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
   int slot_idx = llvm_fld(obj_sym, field_idx);
@@ -3891,6 +3896,10 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           Builder->SetInsertPoint(next_bb);
           continue;
         }
+        // ifa/200 A1: the receiver is read through classes[ci]'s layout at
+        // the method slot -- the obligation cg.cc records at its tag arm.
+        if (class_recv_ridx[ci] >= 0 && class_recv_ridx[ci] < pn->rvals.n && pn->rvals[class_recv_ridx[ci]])
+          cg_note_blind_cast(classes[ci], pn->rvals[class_recv_ridx[ci]]->type, slots[ci]);
         llvm::StructType *st = sym_to_llvm_struct(classes[ci]);
         llvm::Value *slot_gep = Builder->CreateStructGEP(st, recv, llvm_fld(classes[ci], slots[ci]));
         llvm::Value *fnptr = Builder->CreateLoad(ptr_ty, slot_gep, "methodptr");
@@ -5272,5 +5281,8 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
       break;
     }
   }
+  // ifa/200 A1: every blind cast the field and dispatch arms recorded is
+  // checked once, fatally, as c_codegen_print_c does for C (ifa/122).
+  cg_check_layout_contract();
   return true;
 }

@@ -1,37 +1,42 @@
 # 200 — LLVM backend parity: the safety nets only the C backend has
 
-**Status: open.** Filed 2026-11-03 from
+**Status: open; A1 and A5 done 2026-11-06.** Filed 2026-11-03 from
 [closed/194](closed/194-review-codegen-2026-11.md) A1, A3, A5, D2, D3 and
 [closed/093](closed/093-CGEN-int-float-union-move-not-coerced.md). Both
 backends pass the full e2e suite; the gaps are in what each refuses and
 checks, not in what they print.
 
-## A1. The LLVM backend has no layout contract (defect)
+## A1. The LLVM backend has no layout contract (done 2026-11-06)
 
-`cg_note_blind_cast`, its dedup set and `cg_check_layout_contract` are
-static in `cg.cc`, called from the C field read, store and dispatch arms
-and checked in `c_codegen_print_c`'s epilogue. `cg_emit_llvm.cc` records
-no obligation and runs no check, although its `resolve_union_receiver`
-performs the same blind casts. The bug class closed/122 and closed/123 made
-fatal on the C side (reading one class's field through another's layout,
-go's crash, bh's heap corruption) is unguarded under `-b`.
+`cg_note_blind_cast`, its dedup set, `cg_layout_mismatch`,
+`cg_member_ctype`, `cg_ctype_width` and `cg_check_layout_contract` moved
+from `cg.cc` to `codegen_common.cc`. `cg_emit_llvm.cc` records the same
+obligation at its field read (`emit_send_getter`), field store
+(`emit_send_setter`) and class-tag dispatch arm (the slot GEP, receiver
+from `class_recv_ridx`), and calls the check at the end of `cg_emit_llvm`.
+The width table is still C-string keyed ([201](201-representation-oracle.md)).
+`make test` is green on both backends, and the LLVM check refuses nothing
+the C check accepts in the suite.
 
-**Do:** move the three functions and their state to `codegen_common`;
-record at the LLVM field read, store and dispatch arms; check at the end
-of `cg_emit_llvm`. The width table they use is C-string keyed; that is
-[201](201-representation-oracle.md)'s row, and this can land first with
-the table as is. Stop condition: `make test` green on both backends and
-the corpus `-b` compile set unchanged; a program the LLVM check refuses
-and the C check accepts names a divergence, which is the finding.
+The contract itself has a hole that both backends now share: it compares
+widths only, so an `int64` read through a `float64` slot passes. That is
+[206](206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md).
 
-## A5. An int MOVE into a float64 slot stores raw bits (closed/093)
+## A5. An int MOVE into a float64 slot stores raw bits (done 2026-11-06)
 
-`emit_move` coerces int↔int (`SExtOrTrunc`) and treats pointer↔pointer as
-a no-op; there is no `sitofp` path, so a `{int, float}` MOVE prints
-`5e-324` where the C backend prints `1.0`. **Do:** at a scalar MOVE whose
-source `num_kind` is integer and destination is float, `CreateSIToFP`
-(closed/062 added the same in `emit_send_binop`). Fixture with a
-runtime-varying condition; LLVM prints what C prints.
+`put_result`'s alloca and global stores, and `emit_move`'s global store,
+converted int↔int and ptr↔int but not int↔float, so a `{int, float}` MOVE
+stored the i64's bits into the double slot (`5` printed as `2.5e-323`).
+One `slot_store_cast` now does every scalar conversion C's assignment does
+(`sitofp`, `uitofp` for `i1`, `fptosi`, `fpcast`, ptr↔int), and
+`coerce_slot_value` uses it for int↔float instead of a `BitCast`.
+Fixture: `tests/int_into_float_slot.py` (a local and a global, with a
+runtime-varying condition, printed through `==` and `+ 0.5` so the output
+is CPython's). It fails under `-b` without the fix.
+
+A field read through a union receiver of an int and a float contour is a
+different bug and is on both backends:
+[206](206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md).
 
 ## A3. Four decisions are implemented twice, one on purpose
 
@@ -71,6 +76,13 @@ what keeps them from drifting again.
 which blocks whole-module DCE. With the runtime now LTO-linked, measure
 `InternalLinkage` for non-`main` functions under
 [199](199-emitted-code-performance.md)'s benchmark.
+
+**Sweep, 2026-11-06** (A5, A1, 204 rows 1–2, 039 item 1, 197 item 1 together,
+against `eb635d2a`): `check` mode identical per program in every column,
+contour counts included (`sweeps/check__default__eb635d2a.tsv` vs
+`check__default__eb635d2a+23d143af.tsv`); `-b` compile mode identical,
+with no program refused by the LLVM layout check
+(`compile__PYC_LLVM_1__eb635d2a.tsv` vs `…+4653f5e1.tsv`).
 
 ## Verification
 

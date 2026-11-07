@@ -82,6 +82,22 @@ int cg_isinstance_tag_targets(PNode *pn, Sym *cls_type, Vec<Sym *> &concrete);
 // polymorphic-slot discovery in cg_build_new_to_val_map.
 int cg_field_live(Sym *s, int i);
 
+// ifa/122 Phase 0, shared by both backends since ifa/200 A1: the
+// blind-cast layout contract. An emitter that reads or writes a field of
+// `actual` through `cast_to`'s layout records the obligation; the check,
+// run once at the end of emission, fails the build if any recorded cast
+// reads through a layout that disagrees with the object's own.
+void cg_note_blind_cast_1(Sym *cast_to, Sym *actual, int slot);
+void cg_note_blind_cast(Sym *cast_to, Sym *actual, int slot);
+void cg_check_layout_contract();
+// The C type of record `s`'s emitted member `i`, as the struct emitter
+// writes it (nullptr: not emitted), and a C type's width in bytes.
+cchar *cg_member_ctype(Sym *s, int i);
+int cg_ctype_width(cchar *t);
+// Why reading `b` through `a`'s layout at `slot` is unsound (nullptr if
+// sound); `*at` is the first disagreeing member.
+cchar *cg_layout_mismatch(Sym *a, Sym *b, int slot, int *at);
+
 // ifa/issues/124: `--refuse-imprecise`. Declared here, not in cg.cc, so
 // the LLVM backend can run the same check -- it shares the cg
 // type-string tables (assign_type_cg_strings_pass1/2), which is all the

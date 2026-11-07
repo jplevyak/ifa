@@ -248,68 +248,9 @@ static Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
   return obj;
 }
 
-// -------------------------------------------------------------
-// ifa/issues/122 Phase 0 -- the blind-cast layout contract
-//
-// Field access in the emitted C is by member NAME (`->eN` at the `has`
-// index), so a correctly typed access does not care about offsets. But a
-// method shared between a base and its subclasses is emitted ONCE, takes
-// a generic receiver and blind-casts it to one class's layout -- and C
-// computes the offset from the CAST-TO struct. That is sound only while
-// the two layouts agree on everything up to the accessed slot.
-//
-// Nothing stated that rule and nothing checked it. It held by the
-// accident of dense layout (every class emits a member per has-index),
-// which is why ifa/110 was able to append an override slot and shift
-// every later field, and why ifa/121's per-class field elision printed
-// wrong answers instead of failing to build.
-//
-// The check is deliberately SYNTACTIC: agreement on the emitted
-// `(index -> C type)` prefix, plus the classtag header, is sufficient
-// for offset agreement and needs no size model. Recorded BY the
-// emitters, so it cannot drift from the casts they actually write.
-// -------------------------------------------------------------
-
-static Vec<Sym *> cg_bc_to, cg_bc_actual;
-static Vec<int> cg_bc_slot;
-// An obligation is a function of (cast_to, actual, slot) alone, so each is
-// recorded once. othello3 emits a cast per member of an 830-class union at
-// thousands of sites, and recording every one ran the heap out (ifa/186).
-static std::set<std::tuple<int, int, int>> cg_bc_seen;
-
-static void cg_note_blind_cast_1(Sym *cast_to, Sym *actual, int slot) {
-  if (!cast_to || !actual || slot < 0 || cast_to == actual) return;
-  if (!cg_bc_seen.insert({cast_to->id, actual->id, slot}).second) return;
-  cg_bc_to.add(cast_to);
-  cg_bc_actual.add(actual);
-  cg_bc_slot.add(slot);
-}
-
-// `actual` is often a union: the cast has to be sound for every member
-// the receiver can ACTUALLY hold at this access. A member that does not
-// even have the field being read is not one of them -- webserver reaches
-// a `{str, dict}` receiver where `resolve_union_receiver` picks `dict`,
-// and `str` has no such field, so the access never happens on a `str`
-// (and would be a type violation reported elsewhere if it did). Without
-// this filter that program alone reported 23 false violations.
-static void cg_note_blind_cast(Sym *cast_to, Sym *actual, int slot) {
-  if (!actual || !cast_to) return;
-  if (actual->type_kind == Type_SUM) {
-    cchar *fname = (slot >= 0 && slot < cast_to->has.n && cast_to->has[slot]) ? cast_to->has[slot]->name : nullptr;
-    for (Sym *m : actual->has) {
-      if (!m || m == sym_nil_type) continue;
-      if (fname) {
-        bool has_it = false;
-        for (Sym *f : m->has)
-          if (f && f->name == fname) { has_it = true; break; }
-        if (!has_it) continue;
-      }
-      cg_note_blind_cast_1(cast_to, m, slot);
-    }
-    return;
-  }
-  cg_note_blind_cast_1(cast_to, actual, slot);
-}
+// ifa/122 / ifa/200 A1: the blind-cast layout contract (cg_note_blind_cast,
+// cg_check_layout_contract) lives in codegen_common.cc, shared with the
+// LLVM backend.
 
 // issues/048: a union CONTAINING nil -- `{None, int64}` -- is represented
 // as its scalar member and round-trips bit-for-bit. Where such a value
@@ -410,94 +351,6 @@ static bool cg_needs_nil_union_cast(cchar *dst_t, Var *src) {
       !strcmp(dst_t, "_CG_any") || !strcmp(dst_t, "_CG_void") || !strcmp(dst_t, "_CG_nil_type");
   cchar *src_t = c_type(src);
   return dst_voidish && src_t && strcmp(dst_t, src_t);
-}
-
-// The C type of `s`'s emitted member `i` -- exactly what the struct
-// emitter writes. nullptr means the member is not emitted at all.
-static cchar *cg_member_ctype(Sym *s, int i) {
-  if (!s || i < 0 || i >= s->has.n || !s->has[i]) return nullptr;
-  if (!s->has[i]->type) return "<placeholder>";  // char eN[0], zero width
-  return c_type(s->has[i]);
-}
-
-// Offsets depend on a member's WIDTH, not on its typedef's spelling.
-// `plane.e12` is `_CG_pf60` and `sphere.e12` is `_CG_pf64` -- two
-// function-pointer typedefs; `_CG_float64` and `_CG_ps15822` are a
-// double and a pointer. All four are 8 bytes, so everything after them
-// sits at the same offset and none of it is a layout problem. Comparing
-// spellings reported 81 false violations on pygmy alone.
-//
-// Mirrors pyc_c_runtime.h:353-384. An unrecognised spelling returns -1
-// and falls back to comparing names, which over-reports rather than
-// under-reports.
-static int cg_ctype_width(cchar *t) {
-  if (!t) return -2;  // member absent
-  if (!strcmp(t, "<placeholder>")) return 0;
-  if (strchr(t, '*')) return 8;
-  if (!strncmp(t, "_CG_pf", 6) || !strncmp(t, "_CG_ps", 6)) return 8;
-  struct { cchar *n; int w; } kW[] = {
-      {"_CG_void", 8},   {"_CG_void_type", 8}, {"_CG_any", 8},    {"_CG_list", 8},
-      {"_CG_string", 8}, {"_CG_bytes", 8},     {"_CG_function", 8}, {"_CG_nil_type", 8},
-      {"_CG_tuple", 8},  {"_CG_vector", 8},  // void * in both runtimes (ifa/124: list-layout clones now name them)
-      {"_CG_int64", 8},  {"_CG_uint64", 8},    {"_CG_float64", 8},
-      {"_CG_int32", 4},  {"_CG_uint32", 4},    {"_CG_float32", 4}, {"_CG_int", 4},
-      {"_CG_int16", 2},  {"_CG_uint16", 2},
-      {"_CG_int8", 1},   {"_CG_uint8", 1},     {"_CG_bool", 1},    {nullptr, 0}};
-  for (int i = 0; kW[i].n; i++)
-    if (!strcmp(t, kW[i].n)) return kW[i].w;
-  return -1;  // unknown
-}
-
-// Why reading `b` through `a`'s layout at `slot` is unsound, or nullptr if
-// it is sound; `*at` is the first disagreeing member.
-static cchar *cg_layout_mismatch(Sym *a, Sym *b, int slot, int *at) {
-  *at = -1;
-  if (cg_has_classtag(a) != cg_has_classtag(b)) return "classtag header present in one and not the other";
-  for (int i = 0; i <= slot; i++) {
-    cchar *ta = cg_member_ctype(a, i), *tb = cg_member_ctype(b, i);
-    int wa = cg_ctype_width(ta), wb = cg_ctype_width(tb);
-    *at = i;
-    if (wa == -2 || wb == -2) return "member absent";
-    if (wa == -1 || wb == -1) {
-      if (strcmp(ta, tb)) return "member type differs (width unknown)";
-    } else if (wa != wb)
-      return "member width differs";
-  }
-  *at = -1;
-  return nullptr;
-}
-
-static void cg_check_layout_contract() {
-  int violations = 0;
-  bool verbose = getenv("IFA_DBG_LAYOUT") != nullptr;
-  for (int k = 0; k < cg_bc_to.n; k++) {
-    Sym *a = cg_bc_to.v[k], *b = cg_bc_actual.v[k];
-    int slot = cg_bc_slot.v[k];
-    int at = -1;
-    cchar *why = cg_layout_mismatch(a, b, slot, &at);
-    if (!why) continue;
-    violations++;
-    char detail[160] = "";
-    if (at >= 0)
-      snprintf(detail, sizeof(detail), " at e%d (%s vs %s)", at,
-               cg_member_ctype(a, at) ? cg_member_ctype(a, at) : "<absent>",
-               cg_member_ctype(b, at) ? cg_member_ctype(b, at) : "<absent>");
-    fprintf(stderr, "error: object layout: '%s' is blind-cast to '%s' and read at e%d, but %s%s\n",
-            b->name ? b->name : "?", a->name ? a->name : "?", slot, why, detail);
-  }
-  if (verbose)
-    fprintf(stderr, "LAYOUT obligations=%d violations=%d\n", cg_bc_to.n, violations);
-  // FATAL, in every mode -- deliberately not gated on `fruntime_errors`
-  // like a type violation is. A type violation under `--permissive` has a
-  // defined meaning: the program is accepted and a runtime check fires.
-  // This has none. The emitted code reads one class's field through
-  // another's layout, and what happens next is a wrong value or a
-  // segfault with no diagnostic -- ifa/issues/123 traced `go`'s crash to
-  // exactly that, `UCTNode::select` reading `e26` as a list where a
-  // `Square` keeps an integer. There is nothing to be permissive about:
-  // the alternative to failing here is emitting a program that lies.
-  if (violations)
-    fail("object layout contract violated at %d blind cast(s) -- see ifa/issues/123", violations);
 }
 
 // cg_has_classtag / cg_field_live moved to codegen_common.{h,cc}
