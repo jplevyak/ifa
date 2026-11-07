@@ -1,10 +1,11 @@
 # 200 — LLVM backend parity: the safety nets only the C backend has
 
-**Status: open; A1 and A5 done 2026-11-06.** Filed 2026-11-03 from
+**Status: open; A1 and A5 done 2026-11-06, A6 2026-11-07.** Filed 2026-11-03 from
 [closed/194](closed/194-review-codegen-2026-11.md) A1, A3, A5, D2, D3 and
 [closed/093](closed/093-CGEN-int-float-union-move-not-coerced.md). Both
 backends pass the full e2e suite. The gaps are in what each refuses and
-checks, and, since A6 was found, in at least one program's output.
+checks. A6 was a gap in output too, which the suite and the compile-only
+`-b` sweep could not see.
 
 ## A1. The LLVM backend has no layout contract (done 2026-11-06)
 
@@ -38,22 +39,55 @@ A field read through a union receiver of an int and a float contour is a
 different bug and is on both backends:
 [206](closed/206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md).
 
-## A6. `softrender` renders nothing under `-b` (found 2026-11-07)
+## A6. `softrender` rendered nothing under `-b` (done 2026-11-07)
 
-A silent wrong answer on the LLVM backend, and it predates 206 (measured
-on `10c5f2f6`). `softrender`'s own `__main__` renders into a 0×0 target
-and prints nothing, and the `-b` corpus sweep is compile-only, so neither
-the sweep nor the suite sees it. The repro is a driver: `softrender.py`
-with its `__main__` replaced by one that renders `monkey0.obj` into
-`RenderContext(96, 72)` with a 4×4 `bytearray` texture, at
-`Transform(Vector4(0.3, 0.1, z))` for `z` in 3.0, 1.2 and 0.6, three
-frames each, printing `sum(components)` and a hash. CPython and the C
-backend print `287935`, `275084`, …. Under `-b` every frame prints `108`.
-**Do:** reduce it (the rasteriser, `Edge`/`Gradients`, is the first
-suspect, since a near-empty frame means no scanline was filled), then give
-softrender a check driver (`softrender_check.py`, under
-shedskin_examples/PYC_CHANGES.md's policy) so the `check` sweep, run with
-`-e PYC_LLVM=1` as well, compares a frame and not an empty stdout. Stop condition: the driver prints the same on both backends.
+A silent wrong answer on the LLVM backend, older than 206 (measured on
+`10c5f2f6`). `softrender`'s own `__main__` renders into a 0×0 target and
+prints nothing, and the `-b` corpus sweeps had been compile-only, so
+neither the sweep nor the suite saw it. The repro was a driver:
+`softrender.py` with its `__main__` replaced by one that renders
+`monkey0.obj` into `RenderContext(96, 72)` with a 4×4 `bytearray` texture,
+three distances, three frames each, printing `sum(components)` and a
+hash. CPython and the C backend agreed; under `-b` every frame printed
+`108`.
+
+There were three defects, all in `emit_send_index_load` /
+`emit_send_index_store`, and each now has a fixture:
+
+- **An int stored into a float list element kept its bits.** The list
+  store GEP'd and stored at the VALUE's LLVM type, so `m[3][2] = 1` wrote
+  i64 1 into a double slot, which reads back as 5e-324. Every
+  `Matrix4.init_*` writes int constants, so the MVP matrix was all zeros
+  and every vertex was `nan`. The fix: store and load at the list's
+  element type (`t->element->type`, as cg.cc does), converting by value
+  with A5's `slot_store_cast`. Fixture: `tests/int_into_float_list_element.py`.
+- **A `@vector` class's elements overlaid its own fields.** C declares the
+  elements as a trailing `v[0]` member, and `_CG_prim_clone_vector`
+  allocates `sizeof(struct) + n`. The LLVM index paths GEP'd from the
+  object's first byte, so a bytearray's `length` showed up as its bytes
+  88–90, and that `108` is 27648 = 0x6C00's high byte. A 27648-byte
+  framebuffer also overran its allocation, which segfaulted once the next
+  defect was fixed. The fix: `vector_data_ptr`, at the struct's alloc size.
+- **A uint8 element was sign-extended.** `bytearray.__getitem__` is
+  `coerce(int, index_object(..))`, and `emit_send_coerce` widened every
+  integer except i1 with SExt, so byte 188 read as -68. LLVM integer types
+  carry no sign, so the fix reads it from the source Sym (`num_kind ==
+  IF1_NUM_KIND_UINT`: ZExt, and UIToFP to a float).
+  Fixture: `tests/bytearray_elements_after_fields.py` (this and the
+  previous defect).
+
+After all three, the driver prints CPython's output on both backends.
+
+**Sweep.** `check__PYC_LLVM_1__966472ad+e55772bf` is the first `check`
+sweep under `-b`. Its compile columns are identical to the `-b` compile
+sweep `compile__PYC_LLVM_1__10c5f2f6+fcd91a5f`. Against the C backend's
+`check__default__10c5f2f6+d9550405`, the output verdicts agree on every
+program both could verify. Four programs are listed as `-b` run failures:
+`bh`, `chaos`, `path_tracing`, `rubik2`. All four are rc=124 at the 120 s
+cap, programs CPython also times out on. Run alone they finish: 69, 110,
+107 and 104 s. HEAD's `-b` takes 76 s for `bh` and 114 s for `chaos`.
+That is contention near the cap, not a regression. `doom` is refused
+under `-b`, as before.
 
 ## A3. Four decisions are implemented twice, one on purpose
 

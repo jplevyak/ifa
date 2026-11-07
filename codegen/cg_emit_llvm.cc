@@ -1596,6 +1596,26 @@ static llvm::Value *emit_norm_idx_const_len(llvm::Value *idx64, int64_t len) {
 
 static llvm::Value *record_field_gep(Sym *t, llvm::Value *obj, llvm::Value *idx, llvm::Type **field_ty);
 static llvm::Value *coerce_slot_value(llvm::Value *v, llvm::Type *to);
+// The LLVM type a list's elements are stored at: its element Sym's, as the
+// C backend's `t->element->type`; `fallback` when the list has none.
+static llvm::Type *list_elem_llvm_type(Sym *t, llvm::Type *fallback) {
+  Sym *e = t && t->element ? t->element->type : nullptr;
+  llvm::Type *et = e ? sym_to_llvm_type(e) : nullptr;
+  if (!et || et->isVoidTy()) return fallback;
+  return et;
+}
+// ifa/200 A6: a @vector class's elements follow its struct, as the C
+// backend's trailing `v[0]` member does; _CG_prim_clone_vector allocates
+// sizeof(struct) + n. Indexing from the object's first byte, as this
+// emitter did, read and wrote the class's own fields: a bytearray's
+// `length` showed up as its bytes 88-90, and a 27648-byte framebuffer
+// overran its 100-byte allocation.
+static llvm::Value *vector_data_ptr(Sym *t, llvm::Value *obj) {
+  llvm::StructType *st = sym_to_llvm_struct(t);
+  if (!st || st->isOpaque()) return obj;
+  uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(st);
+  return Builder->CreateConstGEP1_64(llvm::Type::getInt8Ty(*TheContext), obj, sz, "vdata");
+}
 bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_index_object)
     return false;
@@ -1657,10 +1677,15 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (t && !t->is_vector && t->type_kind != Type_RECORD) {
     llvm::Value *data = load_list_data_ptr(obj);
     llvm::Value *idx_normed = emit_norm_idx(obj, idx, /*is_string=*/false);
-    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx_normed);
+    // ifa/200 A6: the element's storage type is the LIST's element type
+    // (cg.cc reads `t->element->type`), converted to the destination by
+    // value, not the destination's type: those differ when a permissive
+    // widening made one of them float.
+    llvm::Type *store_ty = list_elem_llvm_type(t, elem_ty);
+    llvm::Value *gep = Builder->CreateGEP(store_ty, data, idx_normed);
     llvm::Value *loaded = Builder->CreateLoad(
-        elem_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
-    put_result(ctx, dst_v, loaded);
+        store_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
+    put_result(ctx, dst_v, slot_store_cast(loaded, elem_ty));
     return true;
   }
 
@@ -1677,6 +1702,13 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (llvm::Value *fgep = record_field_gep(t, obj, idx_use, &field_ty)) {
     llvm::Value *loaded = coerce_slot_value(Builder->CreateLoad(field_ty, fgep), elem_ty);
     put_result(ctx, dst_v, loaded);
+    return true;
+  }
+  if (t && t->is_vector) {
+    llvm::Type *store_ty = list_elem_llvm_type(t, elem_ty);
+    llvm::Value *gep = Builder->CreateGEP(store_ty, vector_data_ptr(t, obj), idx_use);
+    llvm::Value *loaded = Builder->CreateLoad(store_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
+    put_result(ctx, dst_v, slot_store_cast(loaded, elem_ty));
     return true;
   }
   llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx_use);
@@ -1754,8 +1786,13 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
       !(sym_string && sym_string->specializers.set_in(t))) {
     llvm::Value *data = load_list_data_ptr(obj);
     llvm::Value *idx_normed = emit_norm_idx(obj, idx, /*is_string=*/false);
-    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx_normed);
-    Builder->CreateStore(val, gep);
+    // ifa/200 A6: store at the LIST's element type, converting the value
+    // as C's `= (ety)val` does. Storing at the value's own type wrote an
+    // int's bits into a float list (`m[3][3] = 1` read back as 5e-324,
+    // which zeroed every softrender matrix).
+    llvm::Type *store_ty = list_elem_llvm_type(t, elem_ty);
+    llvm::Value *gep = Builder->CreateGEP(store_ty, data, idx_normed);
+    Builder->CreateStore(slot_store_cast(val, store_ty), gep);
     return true;
   }
 
@@ -1766,6 +1803,12 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
   llvm::Type *field_ty = nullptr;
   if (llvm::Value *fgep = record_field_gep(t, obj, idx_use, &field_ty)) {
     Builder->CreateStore(coerce_slot_value(val, field_ty), fgep);
+    return true;
+  }
+  if (t && t->is_vector) {
+    llvm::Type *store_ty = list_elem_llvm_type(t, elem_ty);
+    llvm::Value *gep = Builder->CreateGEP(store_ty, vector_data_ptr(t, obj), idx_use);
+    Builder->CreateStore(slot_store_cast(val, store_ty), gep);
     return true;
   }
   llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx_use);
@@ -1824,6 +1867,8 @@ static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
   }
 
   llvm::Type *src_ty = src->getType();
+  Sym *src_sym = src_var->type ? unalias_type(src_var->type) : nullptr;
+  bool src_unsigned = src_sym && src_sym->num_kind == IF1_NUM_KIND_UINT;
   llvm::Value *res = src;
   if (src_ty != dst_ty) {
     if (src_ty->isIntegerTy() && dst_ty->isIntegerTy()) {
@@ -1832,18 +1877,20 @@ static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
       if (dst_ty->isIntegerTy(1)) {
         res = Builder->CreateICmpNE(src,
             llvm::ConstantInt::get(src_ty, 0));
-      } else if (src_ty->isIntegerTy(1)) {
+      } else if (src_ty->isIntegerTy(1) || src_unsigned) {
         // Widening FROM i1 (bool) must ZERO-extend: bool is an
         // unsigned 0/1 value, so sign-extending True (i1 1) would
         // yield all-ones = -1 (`int(True) == -1` on the LLVM backend).
-        // i1 is only ever bool in this codegen; every other integer
-        // source is signed and keeps SExt below.
+        // ifa/200 A6: so must an unsigned SOURCE Sym. LLVM's integer
+        // types carry no sign, so the Sym is what says it: a bytearray
+        // element is a uint8 (`__pyc_char__`), and SExt read byte 188
+        // back as -68, which is how softrender's texels went wrong.
         res = Builder->CreateZExtOrTrunc(src, dst_ty);
       } else {
         res = Builder->CreateSExtOrTrunc(src, dst_ty);
       }
     } else if (src_ty->isIntegerTy() && dst_ty->isFloatingPointTy()) {
-      res = Builder->CreateSIToFP(src, dst_ty);
+      res = src_unsigned ? Builder->CreateUIToFP(src, dst_ty) : Builder->CreateSIToFP(src, dst_ty);
     } else if (src_ty->isFloatingPointTy() && dst_ty->isIntegerTy()) {
       res = Builder->CreateFPToSI(src, dst_ty);
     } else if (src_ty->isFloatingPointTy() && dst_ty->isFloatingPointTy()) {

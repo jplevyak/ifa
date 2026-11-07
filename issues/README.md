@@ -60,7 +60,7 @@ row are independent of each other.
 
 | order | do | why first | unblocks |
 | --- | --- | --- | --- |
-| 1 | the small defects. Done 2026-11-06: [200](200-llvm-backend-parity.md) A1 and A5, [204](204-optimize-pass-fixes.md) rows 1–2, [039](039-FA-uninitialized-local-reads-silent.md) item 1, [197](197-tuple-arity-dispatch-leftovers.md) item 1 (no fixture yet). [206](closed/206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md) (closed 2026-11-07: refused, then satisfied by a class-tag test at the read; `softrender` unchanged). Left: [200](200-llvm-backend-parity.md) A6 (`softrender` renders nothing under `-b`, older than 206), 204 row 3 (tried; not a day), 039 item 2 (needs a sentinel, not a day) | silent deviations on the default path | the contract (AGENTS.md) holds on both backends |
+| 1 | the small defects. Done 2026-11-06: [200](200-llvm-backend-parity.md) A1 and A5, [204](204-optimize-pass-fixes.md) rows 1–2, [039](039-FA-uninitialized-local-reads-silent.md) item 1, [197](197-tuple-arity-dispatch-leftovers.md) item 1 (no fixture yet). [206](closed/206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md) (closed 2026-11-07: refused, then satisfied by a class-tag test at the read; `softrender` unchanged). [200](200-llvm-backend-parity.md) A6 (done 2026-11-07: three `-b` index-path defects behind `softrender` rendering nothing). Left: 204 row 3 (tried; not a day), 039 item 2 (needs a sentinel, not a day) | silent deviations on the default path | the contract (AGENTS.md) holds on both backends |
 | 2 | [102](102-codegen-detected-conditions-are-refusals-or-demands.md): the eleven traps, one at a time | turns miscompiles into refusals and surfaces the demands FA never saw | [201](201-representation-oracle.md) has its witnesses |
 | 3 | [196](196-the-setter-stage-splits-on-a-fact.md): the counterfactual setter demand | the one open design question in the splitter | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3, `go`'s one layout, voronoi's one `list[int64]` |
 | 4 | [205](205-ai-centric-interface.md) D1: structured diagnostics with the backtrack attached | the walks exist; an agent or a person can then act on temporal unions by editing the program | every refusal classified; the corpus edit policy becomes mechanical |
@@ -114,7 +114,7 @@ Frontend-side items from the same work are in the top-level `issues/`:
 
 | issue | what |
 | --- | --- |
-| [200](200-llvm-backend-parity.md) | A1 (layout contract) and A5 (int bits in float slots) done; the LLVM backend still duplicates four decisions and has no IR fixture or determinism check. |
+| [200](200-llvm-backend-parity.md) | A1 (layout contract), A5 (int bits in float slots) and A6 (three index-path wrong answers) done; the LLVM backend still duplicates four decisions and has no IR fixture or determinism check. |
 | [201](201-representation-oracle.md) | representation has three owners (clone, codegen, FA's four predicates) and is keyed on C type strings; one oracle, read by all; slot elision into liveness and clone. |
 | [199](199-emitted-code-performance.md) | no run-time baseline exists; a benchmark mode first, then dispatch tables (030), the tuple header (054), the builtin shapes (190). |
 
