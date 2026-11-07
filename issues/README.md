@@ -60,7 +60,7 @@ row are independent of each other.
 
 | order | do | why first | unblocks |
 | --- | --- | --- | --- |
-| 1 | the small defects: [197](197-tuple-arity-dispatch-leftovers.md) item 1, [039](039-FA-uninitialized-local-reads-silent.md) item 2, [204](204-optimize-pass-fixes.md) rows 1–3, [200](200-llvm-backend-parity.md) A1 and A5 | each is a day, and two are silent deviations on the default path | the contract (AGENTS.md) holds on both backends |
+| 1 | the small defects. Done 2026-11-06: [200](200-llvm-backend-parity.md) A1 and A5, [204](204-optimize-pass-fixes.md) rows 1–2, [039](039-FA-uninitialized-local-reads-silent.md) item 1, [197](197-tuple-arity-dispatch-leftovers.md) item 1 (no fixture yet). Left: [206](206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md) (a silent wrong answer on both backends), 204 row 3 (tried; not a day), 039 item 2 (needs a sentinel, not a day) | silent deviations on the default path | the contract (AGENTS.md) holds on both backends |
 | 2 | [102](102-codegen-detected-conditions-are-refusals-or-demands.md): the eleven traps, one at a time | turns miscompiles into refusals and surfaces the demands FA never saw | [201](201-representation-oracle.md) has its witnesses |
 | 3 | [196](196-the-setter-stage-splits-on-a-fact.md): the counterfactual setter demand | the one open design question in the splitter | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3, `go`'s one layout, voronoi's one `list[int64]` |
 | 4 | [205](205-ai-centric-interface.md) D1: structured diagnostics with the backtrack attached | the walks exist; an agent or a person can then act on temporal unions by editing the program | every refusal classified; the corpus edit policy becomes mechanical |
@@ -77,9 +77,10 @@ row are independent of each other.
 
 | issue | what |
 | --- | --- |
-| [039](039-FA-uninitialized-local-reads-silent.md) | possibly-unbound locals: analysis and `--safe` fill done; the runtime check is not, so `f(0)` prints `42` with no warning. Do item 2. |
+| [039](039-FA-uninitialized-local-reads-silent.md) | possibly-unbound locals: analysis, `--safe` fill and DEFINITELY-by-default done; the runtime check is not, so `f(0)` prints `42` with no warning. Item 2 needs a sentinel on the unassigned path. |
 | [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that arrives: the check exits instead of raising a catchable `TypeError`; primitive argument positions other than `strcat` unchecked. |
 | [197](197-tuple-arity-dispatch-leftovers.md) | a `no_static_arity` flip on the final pass leaves a stale dispatch that aborts at run time; same-arity tuples with different element types in one list are refused. |
+| [206](206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md) | a field read through a `{R(int), R(float)}` receiver reads the int's bits as a double (`3` prints `1.5e-323`) on both backends; the layout contract compares widths only, and tightening it alone refuses a sound slot-dispatched method. |
 | [102](102-codegen-detected-conditions-are-refusals-or-demands.md) | eleven codegen-detected type mismatches become `assert(!"runtime error")` under the default mode; `convert_NOTYPE_to_void`; the single-candidate cast safeguard. Refuse or demand, one at a time. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}` has no representation; a tri-state sentinel, chosen through [201](201-representation-oracle.md). |
 | [025](025-FA-intra-function-union-narrowing.md) | narrowing: branch correlation over a class union (tail duplication, or the permissive `AttributeError`), and composed predicates (`is not None and isinstance`). |
@@ -114,7 +115,7 @@ Frontend-side items from the same work are in the top-level `issues/`:
 
 | issue | what |
 | --- | --- |
-| [200](200-llvm-backend-parity.md) | the LLVM backend has no layout contract (A1), stores int bits into float slots (A5), duplicates four decisions, has no IR fixture or determinism check. |
+| [200](200-llvm-backend-parity.md) | A1 (layout contract) and A5 (int bits in float slots) done; the LLVM backend still duplicates four decisions and has no IR fixture or determinism check. |
 | [201](201-representation-oracle.md) | representation has three owners (clone, codegen, FA's four predicates) and is keyed on C type strings; one oracle, read by all; slot elision into liveness and clone. |
 | [199](199-emitted-code-performance.md) | no run-time baseline exists; a benchmark mode first, then dispatch tables (030), the tuple header (054), the builtin shapes (190). |
 
@@ -123,7 +124,7 @@ Frontend-side items from the same work are in the top-level `issues/`:
 | issue | what |
 | --- | --- |
 | [205](205-ai-centric-interface.md) | structured diagnostics with the backtrack attached, a type query by position, a time budget with a partial-result contract, server mode. |
-| [204](204-optimize-pass-fixes.md) | `check_invariants` compiled out by default, an unasserted splice, the two-hop store probe, the node universe, `exc_check_fold` by name; frequency estimation with no consumer, O(n²) IF liveness, dead-object pruning. |
+| [204](204-optimize-pass-fixes.md) | (rows 1–2 done) the two-hop store probe, the node universe, `exc_check_fold` by name; frequency estimation with no consumer, O(n²) IF liveness, dead-object pruning. |
 | [202](202-health-docs-levers-probes-tests-and-ci.md) | the checklist: stale reference docs, inline levers, unindexed probes, dead slots and `#if 0`, the corpus sweep in CI, asserts, ASAN, Vec/Set. |
 
 ## Closed on 2026-11-03, and where their residuals went
