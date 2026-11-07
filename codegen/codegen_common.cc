@@ -1,5 +1,6 @@
 #include <time.h>
 #include <map>
+#include <vector>
 #include <set>
 #include <tuple>
 #include <string>
@@ -111,11 +112,30 @@ Sym *cg_tag_family(Sym *t) {
   return t;
 }
 
+// ifa/206 step 2: family -> its concrete types, for a family whose clones
+// carry their own tags (cg_plan_concrete_tags).
+static Map<Sym *, Vec<Sym *> *> cg_split_tag_families;
+
 cchar *cg_tag_name(Sym *t) {
   Sym *f = cg_tag_family(t);
   char buf[256];
-  snprintf(buf, sizeof(buf), "_CG_type_%s_%d", t && t->name ? t->name : "anon", f ? f->id : 0);
+  if (f && cg_split_tag_families.get(f))
+    snprintf(buf, sizeof(buf), "_CG_type_%s_%d_%d", t && t->name ? t->name : "anon", f->id, t ? t->id : 0);
+  else
+    snprintf(buf, sizeof(buf), "_CG_type_%s_%d", t && t->name ? t->name : "anon", f ? f->id : 0);
   return dupstr(buf);
+}
+
+bool cg_tag_is_concrete(Sym *t) { return t && cg_has_classtag(t) && cg_split_tag_families.get(cg_tag_family(t)); }
+
+void cg_tag_family_members(Sym *t, Vec<Sym *> &out) {
+  Vec<Sym *> *ms = t ? cg_split_tag_families.get(cg_tag_family(t)) : nullptr;
+  if (!ms) {
+    out.add(t);
+    return;
+  }
+  for (Sym *m : *ms) out.add(m);
+  if (!ms->in(t)) out.add(t);  // not stamped anywhere, but named: test it too
 }
 
 bool cg_has_classtag(Sym *s) {
@@ -258,8 +278,16 @@ extern Vec<int> cg_slot_use_rd;
 // (including cloned functions), catching val clones that only
 // appear at monomorphic call sites within specialized callers but
 // participate in vtable dispatch overall.
+// ifa/206: each slot-dispatched method clone's receiver formal, as its
+// call-site position, and the FA the map was built from (both read again by
+// cg_check_layout_contract).
+static Map<Fun *, int> cg_slot_self_rval;
+static FA *cg_slot_fa = nullptr;
+
 void cg_build_new_to_val_map(FA *fa) {
   cg_new_to_val_map.clear();
+  cg_slot_self_rval.clear();
+  cg_slot_fa = fa;
 
   // Pass 1: collect method names that appear at any poly call site.
   poly_names.clear();
@@ -377,6 +405,9 @@ void cg_build_new_to_val_map(FA *fa) {
       }
     }
     static int dbg_slot = getenv("IFA_DBG_POLYSLOT") ? 1 : 0;
+    if (self_cp) {  // ifa/206
+      cg_slot_self_rval.put(fun_val, (int)Position2int(self_cp->pos[0]));
+    }
     if (!self_cp) {
       if (dbg_slot) fprintf(stderr, "[polyslot] %s: NO SELF ARG found (fun %d)\n", method_name, fun_val->id);
       continue;
@@ -504,6 +535,9 @@ void cg_build_new_to_val_map(FA *fa) {
               existing = k;
               break;
             }
+          // ifa/206: whichever clone wins this (constructor, slot), it is
+          // stored into objects of `ct`.
+          if (existing >= 0) (*slots)[existing].classes->set_add(ct);
           if (existing >= 0) {
             if ((*slots)[existing].fun_val == fun_val) continue;  // exact dup
             // ifa/121: two clones compete for one object's slot; the loser
@@ -557,6 +591,8 @@ void cg_build_new_to_val_map(FA *fa) {
           ps.slot = slot;
           ps.fun_val = fun_val;
           ps.specificity = specificity;
+          ps.classes = new Vec<Sym *>();
+          ps.classes->set_add(ct);
           slots->add(ps);
         }
         if (dbg_slot)
@@ -2072,44 +2108,257 @@ void cg_report_slot_use(FA *fa) {
 
 static Vec<Sym *> cg_bc_to, cg_bc_actual;
 static Vec<int> cg_bc_slot;
-// An obligation is a function of (cast_to, actual, slot) alone, so each is
-// recorded once. othello3 emits a cast per member of an 830-class union at
-// thousands of sites, and recording every one ran the heap out (ifa/186).
-static std::set<std::tuple<int, int, int>> cg_bc_seen;
+// ifa/206: parallel to the above. `field` marks a field access (the slot's
+// bits are read as cast_to's member), and `fun` the function whose formal
+// the accessed object is, when it is one.
+static Vec<int> cg_bc_field;
+static Vec<Fun *> cg_bc_fun;
+static Vec<Fun *> cg_bc_where;  // the function of the first access recorded, for the message
+static Vec<int> cg_bc_formal;     // with `fun`: which formal (call-site position) the object is
+// An obligation is a function of (cast_to, actual, slot, field, fun, formal) alone,
+// so each is recorded once. othello3 emits a cast per member of an
+// 830-class union at thousands of sites, and recording every one ran the
+// heap out (ifa/186).
+static std::set<std::tuple<int, int, int, int, int, int>> cg_bc_seen;
 
-void cg_note_blind_cast_1(Sym *cast_to, Sym *actual, int slot) {
-  if (!cast_to || !actual || slot < 0 || cast_to == actual) return;
-  if (!cg_bc_seen.insert({cast_to->id, actual->id, slot}).second) return;
+static void cg_note_obligation(Sym *cast_to, Sym *actual, int slot, int field, Fun *fun, Fun *where = nullptr,
+                               int formal = 0) {
+  if (!cast_to || !actual || slot < 0) return;
+  if (cast_to == actual && !fun) return;
+  if (!cg_bc_seen.insert({cast_to->id, actual->id, slot, field, fun ? fun->id : -1, formal}).second) return;
+  cg_bc_formal.add(formal);
   cg_bc_to.add(cast_to);
   cg_bc_actual.add(actual);
   cg_bc_slot.add(slot);
+  cg_bc_field.add(field);
+  cg_bc_fun.add(fun);
+  cg_bc_where.add(where ? where : fun);
+}
+
+void cg_note_blind_cast_1(Sym *cast_to, Sym *actual, int slot) {
+  if (cast_to == actual) return;
+  cg_note_obligation(cast_to, actual, slot, 0, nullptr);
+}
+
+// The members of `actual` a cast to `cast_to` at `slot` has to be sound
+// for: the type itself, or a union's members that HAVE the field being
+// read. A member that does not even have the field is not one of them --
+// webserver reaches a `{str, dict}` receiver where `resolve_union_receiver`
+// picks `dict`, and `str` has no such field, so the access never happens on
+// a `str` (and would be a type violation reported elsewhere if it did).
+// Without this filter that program alone reported 23 false violations.
+static void cg_cast_members(Sym *cast_to, Sym *actual, int slot, Vec<Sym *> &out) {
+  if (actual->type_kind != Type_SUM) {
+    out.add(actual);
+    return;
+  }
+  cchar *fname = (slot >= 0 && slot < cast_to->has.n && cast_to->has[slot]) ? cast_to->has[slot]->name : nullptr;
+  for (Sym *m : actual->has) {
+    if (!m || m == sym_nil_type) continue;
+    if (fname) {
+      bool has_it = false;
+      for (Sym *f : m->has)
+        if (f && f->name == fname) { has_it = true; break; }
+      if (!has_it) continue;
+    }
+    out.add(m);
+  }
 }
 
 // `actual` is often a union: the cast has to be sound for every member
-// the receiver can ACTUALLY hold at this access. A member that does not
-// even have the field being read is not one of them -- webserver reaches
-// a `{str, dict}` receiver where `resolve_union_receiver` picks `dict`,
-// and `str` has no such field, so the access never happens on a `str`
-// (and would be a type violation reported elsewhere if it did). Without
-// this filter that program alone reported 23 false violations.
+// the receiver can ACTUALLY hold at this access (cg_cast_members).
 void cg_note_blind_cast(Sym *cast_to, Sym *actual, int slot) {
   if (!actual || !cast_to) return;
-  if (actual->type_kind == Type_SUM) {
-    cchar *fname = (slot >= 0 && slot < cast_to->has.n && cast_to->has[slot]) ? cast_to->has[slot]->name : nullptr;
-    for (Sym *m : actual->has) {
-      if (!m || m == sym_nil_type) continue;
-      if (fname) {
-        bool has_it = false;
-        for (Sym *f : m->has)
-          if (f && f->name == fname) { has_it = true; break; }
-        if (!has_it) continue;
-      }
-      cg_note_blind_cast_1(cast_to, m, slot);
-    }
+  Vec<Sym *> members;
+  cg_cast_members(cast_to, actual, slot, members);
+  for (Sym *m : members) cg_note_blind_cast_1(cast_to, m, slot);
+}
+
+// ifa/206: is `v` the Var `target` (a formal), or a copy of it through SSU
+// moves? Compared by identity: a clone's formal Vars are its `args`
+// entries, which do not all carry is_formal.
+static bool cg_is_copy_of(Var *v, Var *target) {
+  for (int k = 0; v && k < 1000; k++) {
+    if (v == target) return true;
+    PNode *d = v->def;
+    if (!d || !d->code || d->code->kind != Code_MOVE || d->rvals.n != 1 || d->lvals.n != 1 || d->lvals[0] != v)
+      return false;
+    v = d->rvals[0];
+  }
+  return false;
+}
+
+// ifa/206: the call-site position (1-based, as Position2int numbers it)
+// of the formal of `f` that `v` is a copy of, or 0.
+static int cg_formal_pos(Fun *f, Var *v) {
+  for (int i = 0; i < f->args.n; i++) {
+    MPosition *cp = f->args.v[i].key;
+    Var *fv = f->args.v[i].value;
+    if (!cp || !fv || cp->pos.n != 1) continue;
+    if (cg_is_copy_of(v, fv)) return (int)Position2int(cp->pos[0]);
+  }
+  return 0;
+}
+
+void cg_note_field_access(Fun *f, Var *recv, Sym *cast_to, int slot) {
+  if (!recv || !recv->type || !cast_to) return;
+  int pos = f ? cg_formal_pos(f, recv) : 0;
+  // Recorded UNEXPANDED when the object is a formal: which members reach
+  // it is only known once every call site has been emitted.
+  if (pos) {
+    cg_note_obligation(cast_to, recv->type, slot, 1, f, f, pos);
     return;
   }
-  cg_note_blind_cast_1(cast_to, actual, slot);
+  Vec<Sym *> members;
+  cg_cast_members(cast_to, recv->type, slot, members);
+  for (Sym *m : members) cg_note_obligation(cast_to, m, slot, 1, nullptr, f);
 }
+
+// ifa/206: dispatch sites emitted as tag/slot dispatch, with the candidates
+// each one calls DIRECTLY.
+static Map<PNode *, Vec<Fun *> *> cg_dispatch_sites;
+
+void cg_note_dispatch_site(PNode *pn, Vec<Fun *> &direct) {
+  Vec<Fun *> *d = cg_dispatch_sites.get(pn);
+  if (!d) {
+    d = new Vec<Fun *>();
+    cg_dispatch_sites.put(pn, d);
+  }
+  for (Fun *f : direct)
+    if (f) d->set_add(f);
+}
+
+// ifa/206: the types that can reach formal `pos` of `f`. Every call edge
+// into `f` (Fun::calls) passes the operand at that position to the formal,
+// so its type is a superset of what arrives -- except the receiver at a
+// site emitted as slot dispatch (cg_note_dispatch_site) that does not call
+// `f` directly: there the object's own method slot chose `f`, so its class
+// is one whose constructor stored `f` (cg_new_to_val_map's registrations).
+// Unknown, and the formal's whole type used, when `f` escapes as a value (a
+// prototype store is what an unregistered constructor's objects inherit,
+// and an indirect call passes anything), when an edge has no operand at the
+// position, or when no edge reaches the formal at all.
+typedef std::pair<Fun *, int> CgFormal;
+static std::map<CgFormal, Vec<Sym *> *> cg_reach;
+static std::set<CgFormal> cg_reach_unknown;
+static Map<Fun *, cchar *> cg_reach_escaped;
+static bool cg_reach_built = false;
+
+static bool cg_reach_add(CgFormal k, Sym *t) {
+  if (!t) return false;
+  Vec<Sym *> *&r = cg_reach[k];
+  if (!r) r = new Vec<Sym *>();
+  bool grew = false;
+  if (t->type_kind == Type_SUM) {
+    for (Sym *m : t->has)
+      if (m && r->set_add(m)) grew = true;
+  } else if (r->set_add(t))
+    grew = true;
+  return grew;
+}
+
+// A formal passed straight on to a callee's formal contributes what reaches
+// IT, not its whole type: lerp(self, ..) calls `dest.sub(self)`, and what
+// reaches sub's `r` there is what reaches lerp's `self`. So the edges are
+// solved as a fixpoint, with unknown propagating along them.
+static void cg_build_reach() {
+  cg_reach_built = true;
+  if (!cg_slot_fa) return;
+  std::map<CgFormal, std::vector<CgFormal>> succ;  // (caller formal) -> (callee formals it is passed to)
+  std::set<CgFormal> reached;                       // has a registration or an edge
+  for (int i = 0; i < cg_new_to_val_map.n; i++) {
+    if (!cg_new_to_val_map.v[i].key || !cg_new_to_val_map.v[i].value) continue;
+    for (PolymorphicSlot &ps : *cg_new_to_val_map.v[i].value) {
+      int sp = cg_slot_self_rval.get(ps.fun_val);
+      if (!sp || !ps.classes) continue;
+      reached.insert({ps.fun_val, sp});
+      for (Sym *c : *ps.classes) cg_reach_add({ps.fun_val, sp}, c);
+    }
+  }
+  for (Fun *g : cg_slot_fa->funs) {
+    if (!g || !g->live) continue;
+    for (int ci = 0; ci < g->calls.n; ci++) {
+      PNode *pn = g->calls[ci].key;
+      Vec<Fun *> *fns = g->calls[ci].value;
+      if (!pn || !fns) continue;
+      Vec<Fun *> *direct = cg_dispatch_sites.get(pn);
+      for (Fun *t : *fns) {
+        if (!t) continue;
+        int self_pos = (direct && !direct->set_in(t)) ? cg_slot_self_rval.get(t) : 0;
+        for (int ai = 0; ai < t->args.n; ai++) {
+          MPosition *cp = t->args.v[ai].key;
+          if (!cp || !t->args.v[ai].value || cp->pos.n != 1) continue;
+          int p = (int)Position2int(cp->pos[0]);
+          if (p == self_pos) continue;  // the slot decided: registrations
+          CgFormal k{t, p};
+          reached.insert(k);
+          Var *rv = (p >= 1 && p <= pn->rvals.n) ? pn->rvals[p - 1] : nullptr;
+          if (!rv || !rv->type) {
+            cg_reach_unknown.insert(k);
+            continue;
+          }
+          if (int q = cg_formal_pos(g, rv))
+            succ[{g, q}].push_back(k);
+          else
+            cg_reach_add(k, rv->type);
+        }
+      }
+    }
+    for (PNode *n : g->fa_all_PNodes) {
+      if (!n || !n->code) continue;
+      int first = n->code->kind == Code_SEND ? 1 : 0;  // a SEND's rvals[0] is its callee
+      for (int i = first; i < n->rvals.n; i++) {
+        Var *v = n->rvals[i];
+        if (v && v->sym && v->sym->is_fun && v->sym->fun) cg_reach_escaped.put(v->sym->fun, "used as a value");
+      }
+    }
+  }
+  // Unknown: explicit, an escaped function's formals, and a formal nothing
+  // reaches; then everything they are passed on to.
+  std::vector<CgFormal> work;
+  for (auto &e : succ)
+    if (cg_reach_escaped.get(e.first.first) || !reached.count(e.first)) cg_reach_unknown.insert(e.first);
+  for (const CgFormal &k : cg_reach_unknown) work.push_back(k);
+  while (!work.empty()) {
+    CgFormal k = work.back();
+    work.pop_back();
+    auto it = succ.find(k);
+    if (it == succ.end()) continue;
+    for (const CgFormal &d : it->second)
+      if (cg_reach_unknown.insert(d).second) work.push_back(d);
+  }
+  // Then the known sets, to a fixpoint (they only grow; the lattice is finite).
+  for (auto &e : succ) work.push_back(e.first);
+  while (!work.empty()) {
+    CgFormal k = work.back();
+    work.pop_back();
+    if (cg_reach_unknown.count(k)) continue;
+    auto rk = cg_reach.find(k);
+    if (rk == cg_reach.end() || !rk->second) continue;
+    for (const CgFormal &d : succ[k]) {
+      if (cg_reach_unknown.count(d)) continue;
+      bool grew = false;
+      for (Sym *c : *rk->second)
+        if (c && cg_reach_add(d, c)) grew = true;
+      if (grew && succ.count(d)) work.push_back(d);
+    }
+  }
+}
+
+static cchar *cg_reaching_types(Fun *f, int pos, Vec<Sym *> *&out) {
+  if (!cg_reach_built) cg_build_reach();
+  if (cchar *w = cg_reach_escaped.get(f)) return w;
+  if (cg_reach_unknown.count({f, pos})) return "a call passes no operand at its position";
+  auto it = cg_reach.find({f, pos});
+  if (it == cg_reach.end()) return "no call edge reaches it";
+  out = it->second;
+  return nullptr;
+}
+
+// ifa/206: at the slot a field access reads or writes, the bits are
+// interpreted as `a`'s member, so equal width is not enough: an int64 read
+// as a float64 is the same 8 bytes and the wrong number.
+static bool cg_float_ctype(cchar *t) { return t && (!strcmp(t, "_CG_float64") || !strcmp(t, "_CG_float32")); }
 
 // The C type of `s`'s emitted member `i` -- exactly what the struct
 // emitter writes. nullptr means the member is not emitted at all.
@@ -2166,14 +2415,155 @@ cchar *cg_layout_mismatch(Sym *a, Sym *b, int slot, int *at) {
   return nullptr;
 }
 
+// ifa/206 step 2. The members of union `recv` that have field `symbol`
+// live, with its index in each.
+static void cg_union_field_members(Sym *recv, cchar *symbol, Vec<Sym *> &members, Vec<int> &slots) {
+  if (!recv || recv->type_kind != Type_SUM || !symbol) return;
+  for (Sym *m : recv->has) {
+    if (!m || m == sym_nil_type || members.in(m)) continue;
+    for (int i = 0; i < m->has.n; i++)
+      if (m->has[i] && m->has[i]->name == symbol && cg_field_live(m, i)) {
+        members.add(m);
+        slots.add(i);
+        break;
+      }
+  }
+}
+
+// Can objects of `b` be read through `a`'s layout at the field?
+static bool cg_field_compatible(Sym *a, int sa, Sym *b, int sb) {
+  int at;
+  if (sa != sb || cg_layout_mismatch(a, b, sa, &at)) return false;
+  return cg_float_ctype(cg_member_ctype(a, sa)) == cg_float_ctype(cg_member_ctype(b, sb));
+}
+
+// Members that can be tag-tested, and that disagree somewhere.
+static bool cg_union_read_disagrees(Vec<Sym *> &members, Vec<int> &slots) {
+  if (members.n < 2) return false;
+  for (Sym *m : members)
+    if (!cg_has_classtag(m)) return false;  // no tag to test: the contract decides
+  for (int k = 1; k < members.n; k++)
+    if (!cg_field_compatible(members[0], slots[0], members[k], slots[k])) return true;
+  return false;
+}
+
+static cchar *cg_period_symbol(PNode *n) {
+  if (n->rvals.n < 4 || !n->rvals[3] || !n->rvals[3]->sym) return nullptr;
+  Vec<Sym *> symbols;
+  symbol_info(n->rvals[3], symbols);
+  if (symbols.n == 1) return symbols[0]->name;
+  if (n->rvals[3]->sym->is_symbol) return n->rvals[3]->sym->name;
+  return nullptr;
+}
+
+void cg_plan_concrete_tags(FA *fa) {
+  cg_split_tag_families.clear();
+  bool dbg = getenv("IFA_DBG_LAYOUT") != nullptr;
+  Vec<Sym *> split;
+  Vec<Sym *> stamped;
+  for (Fun *f : fa->funs) {
+    if (!f || !f->live) continue;
+    for (PNode *n : f->fa_all_PNodes) {
+      if (!n || !n->prim) continue;
+      if (n->prim->index == P_prim_new || n->prim->index == P_prim_clone || n->prim->index == P_prim_copy) {
+        if (n->lvals.n == 1 && n->lvals[0]->type && cg_has_classtag(n->lvals[0]->type))
+          stamped.set_add(n->lvals[0]->type);
+        continue;
+      }
+      if (n->prim->index != P_prim_period || n->rvals.n < 4 || !n->rvals[1] || !n->rvals[1]->type) continue;
+      if (!n->lvals.n || !n->lvals[0]->live) continue;
+      if (n->lvals[0]->type && n->lvals[0]->type->type_kind == Type_FUN && n->creates) continue;  // a closure
+      Vec<Sym *> members;
+      Vec<int> slots;
+      cg_union_field_members(n->rvals[1]->type, cg_period_symbol(n), members, slots);
+      if (!cg_union_read_disagrees(members, slots)) continue;
+      // The demand: two members that disagree and share a family share a
+      // tag, which cannot tell them apart.
+      for (int i = 0; i < members.n; i++)
+        for (int j = i + 1; j < members.n; j++)
+          if (cg_tag_family(members[i]) == cg_tag_family(members[j]) &&
+              !cg_field_compatible(members[i], slots[i], members[j], slots[j])) {
+            Sym *fam = cg_tag_family(members[i]);
+            if (split.set_add(fam) && dbg)
+              fprintf(stderr, "LAYOUT concrete tags for '%s' (family %d): read of '%s' in '%s' (%s:%d)\n",
+                      fam->name ? fam->name : "?", fam->id, cg_period_symbol(n),
+                      f->sym && f->sym->name ? f->sym->name : "?", n->code ? n->code->pathname() : "?",
+                      n->code ? n->code->line() : 0);
+          }
+    }
+  }
+  split.set_to_vec();
+  stamped.set_to_vec();
+  for (Sym *fam : split) {
+    Vec<Sym *> *ms = new Vec<Sym *>;
+    for (Sym *t : stamped)
+      if (cg_tag_family(t) == fam) ms->add(t);
+    cg_split_tag_families.put(fam, ms);
+  }
+}
+
+bool cg_union_read_arms(Fun *f, Sym *recv, cchar *symbol, Vec<Sym *> &members, Vec<int> &slots) {
+  Vec<Sym *> all;
+  Vec<int> all_slots;
+  cg_union_field_members(recv, symbol, all, all_slots);
+  if (!cg_union_read_disagrees(all, all_slots)) return false;
+  // One arm per distinct tag. Two members sharing a tag were compatible
+  // (else their family would be split), so the first serves for both and
+  // the second is recorded as its blind cast by the emitter.
+  Vec<cchar *> tags;
+  for (int k = 0; k < all.n; k++) {
+    cchar *tn = cg_tag_name(all[k]);
+    bool seen = false;
+    for (int a = 0; a < tags.n; a++)
+      if (!strcmp(tags[a], tn)) {
+        seen = true;
+        cg_note_obligation(members[a], all[k], slots[a], 1, nullptr, f);
+        break;
+      }
+    if (seen) continue;
+    tags.add(tn);
+    members.add(all[k]);
+    slots.add(all_slots[k]);
+  }
+  return true;
+}
+
 void cg_check_layout_contract() {
   int violations = 0;
   bool verbose = getenv("IFA_DBG_LAYOUT") != nullptr;
+  // ifa/206: a narrowable obligation was recorded with the receiver's whole
+  // type; expand it now, over the classes that reach, when those are known.
+  int n_obl = cg_bc_to.n;
+  for (int k = 0; k < n_obl; k++) {
+    Fun *f = cg_bc_fun.v[k];
+    if (!f) continue;
+    Sym *a = cg_bc_to.v[k], *t = cg_bc_actual.v[k];
+    Vec<Sym *> members, *reach = nullptr;
+    cg_cast_members(a, t, cg_bc_slot.v[k], members);
+    cchar *unknown = cg_reaching_types(f, cg_bc_formal.v[k], reach);
+    for (Sym *m : members)
+      if (unknown || reach->set_in(m)) cg_note_obligation(a, m, cg_bc_slot.v[k], cg_bc_field.v[k], nullptr, f);
+    if (verbose) {
+      fprintf(stderr, "LAYOUT reach fun=%d %s formal %d: %s", f->id, f->sym && f->sym->name ? f->sym->name : "?",
+              cg_bc_formal.v[k], unknown ? unknown : "narrowed to");
+      if (!unknown)
+        for (Sym *c : *reach)
+          if (c) fprintf(stderr, " %d", c->id);
+      fprintf(stderr, " | members");
+      for (Sym *m : members) fprintf(stderr, " %d:%s", m->id, cg_member_ctype(m, cg_bc_slot.v[k]));
+      fprintf(stderr, " | cast_to %d\n", a->id);
+    }
+  }
   for (int k = 0; k < cg_bc_to.n; k++) {
+    if (cg_bc_fun.v[k]) continue;  // expanded above
     Sym *a = cg_bc_to.v[k], *b = cg_bc_actual.v[k];
     int slot = cg_bc_slot.v[k];
     int at = -1;
-    cchar *why = cg_layout_mismatch(a, b, slot, &at);
+    cchar *why = a == b ? nullptr : cg_layout_mismatch(a, b, slot, &at);
+    if (!why && cg_bc_field.v[k] && cg_float_ctype(cg_member_ctype(a, slot)) != cg_float_ctype(cg_member_ctype(b, slot))) {
+      why = "the accessed member is a float in one and not the other";
+      at = slot;
+    }
     if (!why) continue;
     violations++;
     char detail[160] = "";
@@ -2181,8 +2571,16 @@ void cg_check_layout_contract() {
       snprintf(detail, sizeof(detail), " at e%d (%s vs %s)", at,
                cg_member_ctype(a, at) ? cg_member_ctype(a, at) : "<absent>",
                cg_member_ctype(b, at) ? cg_member_ctype(b, at) : "<absent>");
-    fprintf(stderr, "error: object layout: '%s' is blind-cast to '%s' and read at e%d, but %s%s\n",
-            b->name ? b->name : "?", a->name ? a->name : "?", slot, why, detail);
+    char in_fun[200] = "";
+    if (Fun *w = cg_bc_where.v[k]) {
+      cchar *wn = w->sym && w->sym->name ? w->sym->name : "?";
+      if (w->sym && w->sym->line() > 0)
+        snprintf(in_fun, sizeof(in_fun), ", in '%s' (%s:%d)", wn, w->sym->pathname(), w->sym->line());
+      else
+        snprintf(in_fun, sizeof(in_fun), ", in '%s'", wn);
+    }
+    fprintf(stderr, "error: object layout: '%s' is blind-cast to '%s' and read at e%d, but %s%s%s\n",
+            b->name ? b->name : "?", a->name ? a->name : "?", slot, why, detail, in_fun);
   }
   if (verbose)
     fprintf(stderr, "LAYOUT obligations=%d violations=%d\n", cg_bc_to.n, violations);

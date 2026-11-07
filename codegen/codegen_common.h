@@ -66,6 +66,31 @@ bool cg_has_classtag(Sym *s);
 // named `_CG_type_<name>_<family id>`.
 Sym *cg_tag_family(Sym *t);
 cchar *cg_tag_name(Sym *t);
+// ifa/206 step 2: a class whose clones must be told apart at run time.
+// Clones share their family's tag until a field READ through a union
+// receiver finds two of them disagreeing in layout or representation at the
+// read (a demand: the read cannot proceed through one layout). Then every
+// concrete type of that family gets its own tag (cg_tag_name), the read
+// tests it (cg_union_read_arms), and every test that means "is this
+// class" -- isinstance, a dispatch arm -- tests the family's tags
+// (cg_tag_family_members). Planned once per compile, after the C type
+// strings exist and before any tag is named.
+void cg_plan_concrete_tags(FA *fa);
+// The concrete types whose tags together mean `t`'s class: `t` alone for
+// a family that is not split.
+void cg_tag_family_members(Sym *t, Vec<Sym *> &out);
+// Does `t` carry its own tag? Then an object made by copying a prototype
+// or another object (P_prim_clone, P_prim_copy), whose tag is the
+// source's, is re-stamped with its own.
+bool cg_tag_is_concrete(Sym *t);
+// ifa/206 step 2: a read of field `symbol` from a union `recv` whose
+// members cannot share one layout for it. Fills `members` (the members that
+// have the field live, one per distinct tag) and `slots` (its index in
+// each) and returns true when the read must be tag-dispatched; false
+// means one member's layout serves (the old path). A member that shares
+// its arm's tag is read through the arm's layout, and that cast is recorded
+// as an obligation of the read in `f`.
+bool cg_union_read_arms(Fun *f, Sym *recv, cchar *symbol, Vec<Sym *> &members, Vec<int> &slots);
 // issues/173 #1: decide `isinstance(x, cls)` for a test the analysis did
 // not fold, from the members of x's type. Returns 1 or 0 when every member
 // gives the same answer, else -1 with `concrete` set to the tagged
@@ -90,6 +115,18 @@ int cg_field_live(Sym *s, int i);
 void cg_note_blind_cast_1(Sym *cast_to, Sym *actual, int slot);
 void cg_note_blind_cast(Sym *cast_to, Sym *actual, int slot);
 void cg_check_layout_contract();
+// ifa/206: a field READ or WRITE through `cast_to`'s layout, in function
+// `f`, of the object in `recv`. Unlike a whole-layout cast, the accessed
+// slot's bits are then interpreted as `cast_to`'s member, so the check also
+// requires the representation (float vs non-float) to agree there, for
+// every class that can REACH the access -- see cg_note_dispatch_site.
+void cg_note_field_access(Fun *f, Var *recv, Sym *cast_to, int slot);
+// ifa/206: a polymorphic call site `pn` was emitted as class-tag / slot
+// dispatch, calling the candidates in `direct` directly (nil, carrier,
+// plain, default arms) and every other candidate only through the
+// receiver's method slot. Positive evidence: a call site never recorded
+// here counts as reaching its callees with any receiver.
+void cg_note_dispatch_site(PNode *pn, Vec<Fun *> &direct);
 // The C type of record `s`'s emitted member `i`, as the struct emitter
 // writes it (nullptr: not emitted), and a C type's width in bytes.
 cchar *cg_member_ctype(Sym *s, int i);
@@ -116,6 +153,7 @@ struct PolymorphicSlot {
   int slot;
   Fun *fun_val;
   int specificity;  // lower = more specific (fewer CSes in the ES sorted list)
+  Vec<Sym *> *classes;  // ifa/206: the concrete types whose constructor stores into this slot
 };
 extern Map<Fun *, Vec<PolymorphicSlot> *> cg_new_to_val_map;
 void cg_build_new_to_val_map(FA *fa);

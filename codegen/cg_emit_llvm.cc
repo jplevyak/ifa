@@ -915,6 +915,63 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
     return true;
   }
 
+  // ifa/206 step 2: the union's members disagree about this field's layout
+  // or representation, so no one member's layout reads it. Each arm reads
+  // through the object's own layout, chosen by its tag (mirrors cg.cc).
+  {
+    Vec<Sym *> arms;
+    Vec<int> arm_slots;
+    if (cg_union_read_arms(ctx.fn, pn->rvals.v[1]->type, symbol, arms, arm_slots)) {
+      llvm::Value *obj = value_for_var(ctx, pn->rvals.v[1]);
+      llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
+      if (!obj || !dst_ty || dst_ty->isVoidTy()) return false;
+      llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+      llvm::Function *cur_fn = Builder->GetInsertBlock()->getParent();
+      llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "uread.merge", cur_fn);
+      llvm::Value *tag = Builder->CreateLoad(ptr_ty, obj, "classtag");
+      std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incoming;
+      for (int k = 0; k < arms.n; k++) {
+        llvm::BasicBlock *next_bb = nullptr;
+        if (k < arms.n - 1) {
+          llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "uread.hit", cur_fn);
+          next_bb = llvm::BasicBlock::Create(*TheContext, "uread.next", cur_fn);
+          Builder->CreateCondBr(Builder->CreateICmpEQ(tag, get_classtag_global(arms[k]), "tagcmp"), hit_bb, next_bb);
+          Builder->SetInsertPoint(hit_bb);
+        }
+        llvm::StructType *st = sym_to_llvm_struct(arms[k]);
+        int si = llvm_fld(arms[k], arm_slots[k]);
+        if (!st || si >= (int)st->getNumElements()) return false;
+        llvm::Type *fty = st->getElementType(si);
+        llvm::Value *v = Builder->CreateLoad(fty, Builder->CreateStructGEP(st, obj, si), "uread");
+        if (v->getType() != dst_ty) {
+          if (v->getType()->isIntegerTy() && dst_ty->isFloatingPointTy())
+            v = Builder->CreateSIToFP(v, dst_ty);
+          else if (v->getType()->isFloatingPointTy() && dst_ty->isFloatingPointTy())
+            v = Builder->CreateFPCast(v, dst_ty);
+          else if (v->getType()->isIntegerTy() && dst_ty->isIntegerTy())
+            v = int_width_cast(v, dst_ty);
+          else if (v->getType()->isPointerTy() && dst_ty->isIntegerTy())
+            v = Builder->CreatePtrToInt(v, dst_ty);
+          else if (v->getType()->isIntegerTy() && dst_ty->isPointerTy())
+            v = Builder->CreateIntToPtr(v, dst_ty);
+          else if (!(v->getType()->isPointerTy() && dst_ty->isPointerTy())) {
+            fail("field type mismatch reading a union receiver's '%s' field (ifa/206)", symbol);
+            return false;
+          }
+        }
+        incoming.push_back({v, Builder->GetInsertBlock()});
+        Builder->CreateBr(merge_bb);
+        if (next_bb) Builder->SetInsertPoint(next_bb);
+      }
+      Builder->SetInsertPoint(merge_bb);
+      llvm::PHINode *phi = Builder->CreatePHI(dst_ty, (unsigned)incoming.size(),
+                                              cg_get_string(dst_var) ? cg_get_string(dst_var) : "uread");
+      for (auto &in : incoming) phi->addIncoming(in.first, in.second);
+      put_result(ctx, dst_var, phi);
+      return true;
+    }
+  }
+
   // Struct getter case.  Resolve union → concrete component,
   // find field index by name, GEP + Load.
   Sym *obj_sym = pn->rvals.v[1]->type;
@@ -935,7 +992,7 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   // ifa/200 A1: the same blind-cast obligation the C backend records at
   // its field read (cg.cc), checked by cg_check_layout_contract at the end
   // of cg_emit_llvm.
-  cg_note_blind_cast(obj_sym, pn->rvals.v[1]->type, field_idx);
+  cg_note_field_access(ctx.fn, pn->rvals.v[1], obj_sym, field_idx);
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
   int slot_idx = llvm_fld(obj_sym, field_idx);
@@ -1004,7 +1061,7 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
     }
   }
   if (field_idx < 0) return false;
-  cg_note_blind_cast(obj_sym, pn->rvals.v[1]->type, field_idx);  // ifa/200 A1, as at the read
+  cg_note_field_access(ctx.fn, pn->rvals.v[1], obj_sym, field_idx);  // ifa/200 A1, as at the read
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
   int slot_idx = llvm_fld(obj_sym, field_idx);
@@ -1858,9 +1915,15 @@ static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
     } else {
       llvm::Value *tag = Builder->CreateLoad(ptr_ty, lhs, "classtag");
       res = llvm::ConstantInt::getFalse(*TheContext);
+      Vec<llvm::GlobalVariable *> tested;
       for (Sym *impl : concrete) {
-        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(impl), "isocmp");
-        res = Builder->CreateOr(res, cmp);
+        Vec<Sym *> ms;
+        cg_tag_family_members(impl, ms);  // ifa/206: a split family's every tag
+        for (Sym *m : ms) {
+          llvm::GlobalVariable *g = get_classtag_global(m);
+          if (!tested.set_add(g)) continue;
+          res = Builder->CreateOr(res, Builder->CreateICmpEQ(tag, g, "isocmp"));
+        }
       }
     }
     llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
@@ -2103,6 +2166,10 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
     Builder->CreateCall(memcpy_fn,
         { new_p, src, llvm::ConstantInt::get(i64, copy_sz),
           llvm::ConstantInt::getFalse(*TheContext) });
+    // ifa/206 step 2: a type with its own tag is re-stamped; the copy
+    // carried the source's.
+    if (cg_tag_is_concrete(dst_var->type))
+      Builder->CreateStore(get_classtag_global(dst_var->type), Builder->CreateStructGEP(dst_struct, new_p, 0));
     // ifa/issues/029/030: populate method-pointer slots for
     // polymorphic dispatch (mirrors cg.cc's P_prim_clone
     // polymorphic method-pointer installation logic).
@@ -3756,6 +3823,15 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
                      sel ? sel : "call", scalar_member->name ? scalar_member->name : "scalar");
     }
     if (ok && (classes.n || nil_fn || default_fn) && recv) {
+      {  // ifa/206: what this site calls directly; the rest go through the slot
+        Vec<Fun *> direct;
+        if (nil_fn) direct.add(nil_fn);
+        if (default_fn) direct.add(default_fn);
+        for (int ci = 0; ci < classes.n; ci++)
+          if (slots[ci] == -1) direct.add(class_funs[ci]);
+        for (Fun *fv : plains) direct.add(fv);
+        cg_note_dispatch_site(pn, direct);
+      }
       llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "poly.merge", cur_fn);
       llvm::AllocaInst *res_slot = nullptr;
       if (res_ty) {
@@ -3881,7 +3957,15 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       for (int ci = 0; ci < classes.n; ci++) {
         llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
         llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
-        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]), "tagcmp");
+        llvm::Value *cmp = nullptr;
+        {
+          Vec<Sym *> ms;
+          cg_tag_family_members(classes[ci], ms);  // ifa/206: a split family's every tag
+          for (Sym *m : ms) {
+            llvm::Value *c = Builder->CreateICmpEQ(tag, get_classtag_global(m), "tagcmp");
+            cmp = cmp ? Builder->CreateOr(cmp, c) : c;
+          }
+        }
         Builder->CreateCondBr(cmp, hit_bb, next_bb);
         Builder->SetInsertPoint(hit_bb);
         if (slots[ci] == -1) {
@@ -5202,6 +5286,7 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
   // ifa/issues/029/030: creator-Fun -> method-slot registrations,
   // consumed by emit_send_clone (slot stores) and emit_send_call
   // (classtag dispatch). Shared with the C backend.
+  cg_plan_concrete_tags(fa);  // ifa/206 step 2: before any tag is named
   cg_build_new_to_val_map(fa);
   cg_build_dispatch_arm_plans(fa);  // ifa/121
 

@@ -775,6 +775,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       // An untyped result (NOTYPE survives into codegen under --strict,
       // which skips convert_NOTYPE_to_void) falls through to the field
       // walk and its "getter not resolved" refusal, not a null deref.
+      Vec<Sym *> arms;  // ifa/206 step 2, below
+      Vec<int> arm_slots;
       if (n->lvals[0]->type && n->lvals[0]->type->type_kind == Type_FUN && n->creates) {  // creates a closure
         // ifa/issues/184: a read kept live only for its None check (the
         // closure itself unused -- `f = x.m; f(1)` where f(1) resolved to
@@ -788,6 +790,27 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         } else {
           for (int i = 0; i < n->rvals.n; i++)
             fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i, cg_get_string(n->rvals.v[i]));
+        }
+      } else if (cg_get_string(n->lvals[0]) && cg_union_read_arms(f, n->rvals[1]->type, symbol, arms, arm_slots)) {
+        // ifa/206 step 2: the union's members disagree about this field's
+        // layout or representation, so no one member's layout reads it.
+        // Each arm reads through the object's own layout, chosen by its tag
+        // (cg_plan_concrete_tags gave the clones that disagree their own),
+        // and converts to the destination's type.
+        cchar *rv = cg_get_string(n->rvals[1]);
+        for (int k = 0; k < arms.n; k++) {
+          cchar *fct = c_type(arms[k]->has[arm_slots[k]]);
+          if (float_ct(t) != float_ct(fct) && (!scalar_ct(t) || !scalar_ct(fct))) {
+            warn_no_representation_ct(n, "field", symbol, t, fct);
+            if (!fruntime_errors) fail("field type mismatch reading a '%s' field into a '%s'", fct, t);
+          }
+          cg_note_slot_use(arms[k], arm_slots[k], 1);
+          if (k == arms.n - 1)
+            fputs(k ? "  else\n  " : "  ", fp);
+          else
+            fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &%s)\n  ", k ? "else " : "", rv, cg_tag_name(arms[k]));
+          fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s, ifa/206 */\n", cg_get_string(n->lvals[0]), t,
+                  cg_get_string(arms[k]), rv, arm_slots[k], symbol);
         }
       } else {
         for (int i = 0; i < obj->has.n; i++) {
@@ -829,7 +852,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
                 fail("field type mismatch reading a '%s' field into a '%s'", fct, t);
               fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
             } else
-              cg_note_blind_cast(obj, n->rvals[1]->type, i), cg_note_slot_use(obj, i, 1),
+              cg_note_field_access(f, n->rvals[1], obj, i), cg_note_slot_use(obj, i, 1),
               fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s */\n", cg_get_string(n->lvals[0]), t, cg_get_string(obj),
                       cg_get_string(n->rvals[1]), i, symbol);
             goto Lgetter_found;
@@ -877,7 +900,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
                 fail("field type mismatch storing a '%s' into a '%s' field", vct, fct);
               fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
             } else
-              cg_note_blind_cast(obj, n->rvals[1]->type, i), cg_note_slot_use(obj, i, 0),
+              cg_note_field_access(f, n->rvals[1], obj, i), cg_note_slot_use(obj, i, 0),
               fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n",
                       cg_get_string(obj), cg_get_string(n->rvals[1]),
                       i, c_type(obj->has[i]),
@@ -1327,6 +1350,9 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         fputs(cg_get_string(n->rvals[i]), fp);
       }
       fputs(");\n", fp);
+      if (cg_get_string(n->lvals[0]) && cg_tag_is_concrete(n->lvals[0]->type))
+        fprintf(fp, "  ((%s)%s)->__pyc_tag = &%s;  /* ifa/206 */\n", dst_t, cg_get_string(n->lvals[0]),
+                cg_tag_name(n->lvals[0]->type));
       break;
     }
     case P_prim_clone_vector:
@@ -1350,6 +1376,9 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         fputs(cg_get_string(n->rvals[i]), fp);
       }
       fputs(");\n", fp);
+      if (n->prim->index == P_prim_clone && cg_get_string(n->lvals[0]) && cg_tag_is_concrete(n->lvals[0]->type))
+        fprintf(fp, "  ((%s)%s)->__pyc_tag = &%s;  /* ifa/206 */\n", dst_t, cg_get_string(n->lvals[0]),
+                cg_tag_name(n->lvals[0]->type));
       // After cloning, populate any method pointer slots for polymorphic dispatch.
       if (n->prim->index == P_prim_clone && cg_get_string(n->lvals[0])) {
         Vec<PolymorphicSlot> *pslots = cg_new_to_val_map.get(f);
@@ -1942,8 +1971,16 @@ class CBackendEmitter : public VirtualCGEmitter {
           fputs("0;\n", fp);
         } else {
           fputs("(0", fp);
-          for (Sym *impl : concrete)
-            fprintf(fp, " || (*(_CG_TypeObject**)(void*)%s) == &%s", opnd, cg_tag_name(impl));
+          std::set<std::string> tested;
+          for (Sym *impl : concrete) {
+            Vec<Sym *> ms;
+            cg_tag_family_members(impl, ms);  // ifa/206: a split family's every tag
+            for (Sym *m : ms) {
+              std::string tn = cg_tag_name(m);
+              if (!tested.insert(tn).second) continue;
+              fprintf(fp, " || (*(_CG_TypeObject**)(void*)%s) == &%s", opnd, tn.c_str());
+            }
+          }
           fputs(");\n", fp);
         }
       } else {
@@ -2570,6 +2607,15 @@ class CBackendEmitter : public VirtualCGEmitter {
           class_funs.clear();
         }
         if (ok && recv_str && (classes.n || plains.n || nil_fn)) {
+          {  // ifa/206: what this site calls directly; the rest go through the slot
+            Vec<Fun *> direct;
+            if (nil_fn) direct.add(nil_fn);
+            for (int ci = 0; ci < classes.n; ci++)
+              if (slots[ci] == -1) direct.add(class_funs[ci]);
+            for (Fun *fv : plains) direct.add(fv);
+            if (directs.n) direct.add(directs[0]);
+            cg_note_dispatch_site(pn, direct);
+          }
           cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
           cchar *ret_type_str = (pn->lvals.n && pn->lvals[0]->type) ? c_type(pn->lvals[0]) : "void*";
           // Each branch's callee returns ITS OWN C type (the nil
@@ -2677,8 +2723,14 @@ class CBackendEmitter : public VirtualCGEmitter {
             return;
           }
           for (int ci = 0; ci < classes.n; ci++, nb++) {
-            fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &%s) {\n", nb ? "else " : "", recv_str,
-                    cg_tag_name(classes[ci]));
+            {
+              Vec<Sym *> ms;
+              cg_tag_family_members(classes[ci], ms);  // ifa/206: a split family's every tag
+              fprintf(fp, "  %sif (", nb ? "else " : "");
+              for (int mi = 0; mi < ms.n; mi++)
+                fprintf(fp, "%s(*(_CG_TypeObject**)(void*)%s) == &%s", mi ? " || " : "", recv_str, cg_tag_name(ms[mi]));
+              fputs(") {\n", fp);
+            }
             fputs("    ", fp);
             if (slots[ci] == -1) {
               // ifa/issues/030(a): carrier-dispatched candidate --
@@ -3790,14 +3842,20 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
     }
   }
   if (allsyms.n) fputs("\n/*\n Type Objects\n*/\n\n", fp);
-  // ifa/130 A3: one tag per class FAMILY (cg_tag_name), not per name.
+  // ifa/130 A3: one tag per class FAMILY (cg_tag_name), not per name --
+  // or, for a family ifa/206 step 2 splits, one per concrete type.
+  cg_plan_concrete_tags(fa);
   std::set<std::string> emitted_types;
   for (Sym *s : allsyms) {
     if (s->type_kind == Type_RECORD && !s->is_system_type) {
-      std::string tn = cg_tag_name(s);
-      if (emitted_types.find(tn) == emitted_types.end()) {
-        fprintf(fp, "_CG_TypeObject %s = { PYC_TAG_OBJECT, \"%s\" };\n", tn.c_str(), s->name);
-        emitted_types.insert(tn);
+      Vec<Sym *> ms;
+      cg_tag_family_members(s, ms);
+      for (Sym *m : ms) {
+        std::string tn = cg_tag_name(m);
+        if (emitted_types.find(tn) == emitted_types.end()) {
+          fprintf(fp, "_CG_TypeObject %s = { PYC_TAG_OBJECT, \"%s\" };\n", tn.c_str(), m->name);
+          emitted_types.insert(tn);
+        }
       }
     }
   }

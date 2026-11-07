@@ -3,8 +3,8 @@
 **Status: open; A1 and A5 done 2026-11-06.** Filed 2026-11-03 from
 [closed/194](closed/194-review-codegen-2026-11.md) A1, A3, A5, D2, D3 and
 [closed/093](closed/093-CGEN-int-float-union-move-not-coerced.md). Both
-backends pass the full e2e suite; the gaps are in what each refuses and
-checks, not in what they print.
+backends pass the full e2e suite. The gaps are in what each refuses and
+checks, and, since A6 was found, in at least one program's output.
 
 ## A1. The LLVM backend has no layout contract (done 2026-11-06)
 
@@ -20,7 +20,7 @@ the C check accepts in the suite.
 
 The contract itself has a hole that both backends now share: it compares
 widths only, so an `int64` read through a `float64` slot passes. That is
-[206](206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md).
+[206](closed/206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md).
 
 ## A5. An int MOVE into a float64 slot stores raw bits (done 2026-11-06)
 
@@ -36,7 +36,24 @@ is CPython's). It fails under `-b` without the fix.
 
 A field read through a union receiver of an int and a float contour is a
 different bug and is on both backends:
-[206](206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md).
+[206](closed/206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md).
+
+## A6. `softrender` renders nothing under `-b` (found 2026-11-07)
+
+A silent wrong answer on the LLVM backend, and it predates 206 (measured
+on `10c5f2f6`). `softrender`'s own `__main__` renders into a 0×0 target
+and prints nothing, and the `-b` corpus sweep is compile-only, so neither
+the sweep nor the suite sees it. The repro is a driver: `softrender.py`
+with its `__main__` replaced by one that renders `monkey0.obj` into
+`RenderContext(96, 72)` with a 4×4 `bytearray` texture, at
+`Transform(Vector4(0.3, 0.1, z))` for `z` in 3.0, 1.2 and 0.6, three
+frames each, printing `sum(components)` and a hash. CPython and the C
+backend print `287935`, `275084`, …. Under `-b` every frame prints `108`.
+**Do:** reduce it (the rasteriser, `Edge`/`Gradients`, is the first
+suspect, since a near-empty frame means no scanline was filled), then give
+softrender a check driver (`softrender_check.py`, under
+shedskin_examples/PYC_CHANGES.md's policy) so the `check` sweep, run with
+`-e PYC_LLVM=1` as well, compares a frame and not an empty stdout. Stop condition: the driver prints the same on both backends.
 
 ## A3. Four decisions are implemented twice, one on purpose
 
