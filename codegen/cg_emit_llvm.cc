@@ -332,6 +332,26 @@ static llvm::Value *int_width_cast(llvm::Value *v, llvm::Type *want) {
   return Builder->CreateSExtOrTrunc(v, want);
 }
 
+// A value stored into a slot (an alloca, a global, a record field) whose
+// LLVM type differs from the value's. C converts by assignment; this is
+// the same set of conversions. ifa/200 A5: without the int<->float arms a
+// `{int, float}` MOVE stored an i64's bits into a double slot, so `1`
+// read back as 5e-324 where the C backend prints 1.0.
+static llvm::Value *slot_store_cast(llvm::Value *v, llvm::Type *want) {
+  if (!v || !want) return v;
+  llvm::Type *have = v->getType();
+  if (have == want) return v;
+  if (have->isPointerTy() && want->isPointerTy()) return v;  // opaque pointers
+  if (have->isIntegerTy() && want->isIntegerTy()) return int_width_cast(v, want);
+  if (have->isIntegerTy() && want->isFloatingPointTy())
+    return have->isIntegerTy(1) ? Builder->CreateUIToFP(v, want) : Builder->CreateSIToFP(v, want);
+  if (have->isFloatingPointTy() && want->isIntegerTy()) return Builder->CreateFPToSI(v, want);
+  if (have->isFloatingPointTy() && want->isFloatingPointTy()) return Builder->CreateFPCast(v, want);
+  if (have->isPointerTy() && want->isIntegerTy()) return Builder->CreatePtrToInt(v, want);
+  if (have->isIntegerTy() && want->isPointerTy()) return Builder->CreateIntToPtr(v, want);
+  return v;
+}
+
 static llvm::Value *gen_state_field(EmitCtx &ctx, GenStateField field) {
   return Builder->CreateStructGEP(gen_state_struct_type(), ctx.gen_state, (unsigned)field);
 }
@@ -637,35 +657,14 @@ void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
   if (v == ctx.watch_result) ctx.watch_result_put = true;
   llvm::AllocaInst *slot = ctx.alloca_map.get(v);
   if (slot) {
-    llvm::Type *want = slot->getAllocatedType();
-    if (value->getType() != want) {
-      if (value->getType()->isPointerTy() && want->isPointerTy()) {
-        // opaque-ptr no-op.
-      } else if (value->getType()->isIntegerTy() && want->isIntegerTy()) {
-        value = int_width_cast(value, want);
-      } else if (value->getType()->isPointerTy() && want->isIntegerTy()) {
-        value = Builder->CreatePtrToInt(value, want);
-      } else if (value->getType()->isIntegerTy() && want->isPointerTy()) {
-        value = Builder->CreateIntToPtr(value, want);
-      }
-    }
-    Builder->CreateStore(value, slot);
+    Builder->CreateStore(slot_store_cast(value, slot->getAllocatedType()), slot);
     return;
   }
   // Global Var: always also emit a real store so reads via
   // value_for_var (which loads from the GlobalVariable) see
   // the current value, not the initial null.
   if (llvm::GlobalVariable *gv = g_var_to_global.get(v)) {
-    llvm::Type *gv_ty = sym_to_llvm_type(v->type);
-    llvm::Value *sv = value;
-    if (gv_ty && sv->getType() != gv_ty) {
-      if (sv->getType()->isPointerTy() && gv_ty->isPointerTy()) {
-        // opaque-ptr no-op
-      } else if (sv->getType()->isIntegerTy() && gv_ty->isIntegerTy()) {
-        sv = int_width_cast(sv, gv_ty);
-      }
-    }
-    Builder->CreateStore(sv, gv);
+    Builder->CreateStore(slot_store_cast(value, sym_to_llvm_type(v->type)), gv);
     return;  // value_for_var always loads globals fresh; var_map bind would be dead
   }
   ctx.var_map.put(v, value);
@@ -1659,6 +1658,10 @@ static llvm::Value *coerce_slot_value(llvm::Value *v, llvm::Type *to) {
   if (from->isPointerTy() && to->isIntegerTy()) return Builder->CreatePtrToInt(v, to);
   if (from->isIntegerTy() && to->isPointerTy()) return Builder->CreateIntToPtr(v, to);
   if (from->isFloatingPointTy() && to->isFloatingPointTy()) return Builder->CreateFPCast(v, to);
+  // ifa/200 A5: a value conversion, as C's assignment does, not a bit
+  // reinterpretation (an i64 BitCast to double reads 1 as 5e-324).
+  if (from->isIntegerTy() != to->isIntegerTy() && (from->isFloatingPointTy() || to->isFloatingPointTy()))
+    return slot_store_cast(v, to);
   return Builder->CreateBitCast(v, to);
 }
 
@@ -2472,14 +2475,7 @@ void emit_move(EmitCtx &ctx, PNode *pn) {
     // like `g = expr` are dropped and subsequent loads
     // return null.
     if (llvm::GlobalVariable *gv = g_var_to_global.get(lhs)) {
-      llvm::Type *gv_ty = sym_to_llvm_type(lhs->type);
-      if (gv_ty && src->getType() != gv_ty) {
-        if (src->getType()->isPointerTy() && gv_ty->isPointerTy()) {
-          // opaque-ptr no-op.
-        } else if (src->getType()->isIntegerTy() && gv_ty->isIntegerTy()) {
-          src = Builder->CreateSExtOrTrunc(src, gv_ty);
-        }
-      }
+      src = slot_store_cast(src, sym_to_llvm_type(lhs->type));
       Builder->CreateStore(src, gv);
     }
     put_result(ctx, lhs, src);
