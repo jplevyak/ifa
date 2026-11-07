@@ -245,6 +245,12 @@ static int reaching_var(Var *v, Var *vv) {
 
 static void insert_move_before(Fun *f, PNode *p, Var *rhs, Var *lhs) {
   check_invariants(f);
+  // ifa/204 row 2: the splice below rewires every pred of `p` to the new
+  // MOVE and leaves `p` with exactly one. At a join that would leave `p`'s
+  // phi rvals sized to the old pred count. The callers insert before a SEND,
+  // never before a LABEL join, so state that instead of relying on it.
+  assert(p->cfg_pred.n == 1 || p == f->entry);
+  assert(!p->phi.n);
   PNode *n = new PNode(new Code(Code_MOVE));
   for (PNode *x : p->cfg_pred) x->cfg_succ[x->cfg_succ.index(p)] = n;
   n->cfg_pred.copy(p->cfg_pred);

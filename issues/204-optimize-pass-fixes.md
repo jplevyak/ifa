@@ -4,24 +4,26 @@
 [closed/193](closed/193-review-optimize-against-analysis-2026-11.md) A1–A6
 and B1–B4, and [closed/195](closed/195-what-the-concert-compiler-still-has-that-ifa-does-not.md)
 C5. No known miscompile on the corpus; each row is a condition relied on
-and not checked, or work nothing reads. Rows 1–3 are a day.
+and not checked, or work nothing reads. Rows 1 and 2 are done (2026-11-06); row 3 was tried and is not a day.
 
 ## Correctness
 
-1. [ ] **`check_invariants` is compiled out in the default build.** Its
-       body is under `#ifndef DEBUG`; both Makefiles set `DEBUG=1` and
-       pass `-DDEBUG=1`, so the four calls in `inline.cc` and the one in
-       the `Fun` constructor are empty in every normal build and in CI.
-       Flip to `#ifdef DEBUG`; run the IR phases. Stop condition: a failure
-       is a real splice bug, not a reason to turn the check back off.
-       (`fun.cc:327–342`, `Makefile:9,45`.)
-2. [ ] **The inliner splices with an unasserted precondition.**
-       `insert_move_before` rewires every pred of `p` to the new MOVE and
-       sets `p->cfg_pred` to one node; at a join the phi `rvals` would stay
-       sized to the old pred count. Safe only because joins are `LABEL`
-       PNodes and the inliner inserts before a `SEND`. Assert
+1. [x] **`check_invariants` is compiled out in the default build.**
+       Done 2026-11-06. The guard was `#ifndef DEBUG` in a build that
+       always defines `DEBUG`; flipped to `#ifdef DEBUG`. Enabled, it fired
+       on 7 of 15 `fa-init` fixtures, including straight-line code, and the
+       bug was in the CHECK: both closures were range-for loops over a
+       `Vec` that grows inside the loop, which stop at the end they saw on
+       entry, so the backward walk stopped one hop from exit; the forward
+       walk also walked the wrong set. Both now index the Vec. With the
+       check correct, all 16 IR phases and the suite pass on both backends,
+       so no splice bug was hiding behind it. A violation now names the
+       function and the PNodes on each side before it asserts
+       (`if1/fun.cc`).
+2. [x] **The inliner splices with an unasserted precondition.** Done
+       2026-11-06: `insert_move_before` asserts
        `p->cfg_pred.n == 1 || p == f->entry` and `!p->phi.n`
-       (`inline.cc:246`).
+       (`inline.cc`). The suite and IR phases never trip it.
 3. [ ] **A store's liveness is a two-hop forward probe because its temporary
        has no definition.** `P_prim_setter` / `set_index_object` stay live by
        `forward_live(tvals[0], 2)`; every other producer is kept live through
@@ -31,6 +33,30 @@ and not checked, or work nothing reads. Rows 1–3 are a day.
        `fill_tvals` (`fa.cc:1817`); the setter becomes an ordinary producer
        and `forward_live` is deleted. Add a fixture for a store observed
        through a long chain.
+
+       **Tried 2026-11-06, reverted; not a day.** Setting `def` in
+       `fill_tvals` itself breaks 191 compiles: FA-internal prims own
+       temporaries too (`merge_in`), and a `def` made those nodes live with
+       no run-time form (`_CG_prim_merge_in` undeclared). Setting it only at
+       the two stores (`fa_prims.cc` `set_index_object` and `setter`) left 6
+       failures with `forward_live` deleted:
+       - `deepcopy_tuple_copy_of_copy`, `deepcopy_objects`: a scalar
+         `P_prim_copy` node is live at codegen while its own lval is dead
+         and its only use, the setter, is dead too, so codegen emits a bare
+         `t2;` (`-Wunused-value`). The setter is live after `mark_live_code`
+         and dead by codegen, or a `def` names a node in another clone.
+         Either way, liveness reached through `Var::def` disagrees with
+         liveness reached through lvals. The probe that showed it: at
+         `P_prim_copy`'s scalar arm in `cg.cc`, print the node's `live`, its
+         lval's `live` and each use's `live` when the lval has no C name.
+       - `exception_hierarchy_base`, `open_failure_raises`,
+         `raise_exception_qualified`, `raise_string`: a class-tag test
+         names exception type objects (`_CG_type_IOError_…`) that were never
+         emitted, so a store becoming live widened some receiver without
+         `mark_live_types` seeing the class.
+       Stop condition for the next attempt: explain the copy node (which
+       clone owns the `def` that revived it) before changing anything else.
+       One run of the deepcopy binary segfaulted out of 46; not reproduced.
 4. [ ] **Three passes agree on the node universe by accident.**
        `collect_PNodes` walks backward from exit, `build_dominators` forward
        from entry, `remove_unreachable` prunes only forward-unreachable

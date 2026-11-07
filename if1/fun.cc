@@ -325,18 +325,35 @@ void rebuild_cfg_pred_index(Fun *f) {
 }
 
 void check_invariants(Fun *f) {
-#ifndef DEBUG
+#ifdef DEBUG
+  // ifa/204 row 1. Both closures index the Vec: a range-for over a Vec
+  // that grows inside the loop stops at the end it saw on entry, so the
+  // backward walk used to stop one hop from exit and the check fired on
+  // straight-line code -- unnoticed only because it was compiled out
+  // (`#ifndef DEBUG` in a build that always defines DEBUG).
   if (!f->entry) return;
   Accum<PNode *> nodes;
   nodes.add(f->exit);
-  for (PNode *p : nodes.asvec) for (PNode *n : p->cfg_pred) nodes.add(n);
-  for (PNode *p : nodes.asvec) {
-    for (PNode *n : p->cfg_pred) assert(n->cfg_succ.in(p));
-    for (PNode *n : p->cfg_succ) assert(n->cfg_pred.in(p));
-  }
+  for (int i = 0; i < nodes.asvec.n; i++)
+    for (PNode *n : nodes.asvec[i]->cfg_pred) nodes.add(n);
   Accum<PNode *> forward_nodes;
   forward_nodes.add(f->entry);
-  for (PNode *p : nodes.asvec) for (PNode *n : p->cfg_succ) forward_nodes.add(n);
-  assert(!nodes.asset.some_disjunction(forward_nodes.asset));
+  for (int i = 0; i < forward_nodes.asvec.n; i++)
+    for (PNode *n : forward_nodes.asvec[i]->cfg_succ) forward_nodes.add(n);
+  Accum<PNode *> *walks[2] = {&nodes, &forward_nodes};
+  for (Accum<PNode *> *a : walks)
+    for (PNode *p : a->asvec) {
+      for (PNode *n : p->cfg_pred) assert(n->cfg_succ.in(p));
+      for (PNode *n : p->cfg_succ) assert(n->cfg_pred.in(p));
+    }
+  if (nodes.asset.some_disjunction(forward_nodes.asset)) {
+    fprintf(stderr, "check_invariants: %s: the nodes reachable from entry and the nodes reaching exit differ\n",
+            f->sym && f->sym->name ? f->sym->name : "?");
+    for (PNode *p : nodes.asvec)
+      if (!forward_nodes.asset.set_in(p)) fprintf(stderr, "  reaches exit, unreachable from entry: PNode %d\n", p->id);
+    for (PNode *p : forward_nodes.asvec)
+      if (!nodes.asset.set_in(p)) fprintf(stderr, "  reachable from entry, never reaches exit: PNode %d\n", p->id);
+    assert(!"check_invariants: CFG node universe");
+  }
 #endif
 }
