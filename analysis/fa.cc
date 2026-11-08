@@ -4383,26 +4383,6 @@ static void collect_var_type_violations() {
   }
 }
 
-static void convert_NOTYPE_to_void() {
-  if (!fa->css_set.set_in(fa->type_world.void_type->v[0])) {
-    fa->css_set.set_add(fa->type_world.void_type->v[0]);
-    fa->css.add(fa->type_world.void_type->v[0]);
-  }
-  for (EntrySet *es : fa->ess) {
-    for (Var *v : es->fun->fa_all_Vars) {
-      AVar *av = make_AVar(v, es);
-      if (!av->var->is_internal && av->out == fa->type_world.bottom_type && !is_Sym_OUT(av->var->sym)) av->out = fa->type_world.void_type;
-    }
-  }
-  if (fa->no_unused_instance_variables) {
-    for (CreationSet *cs : fa->css) {
-      for (AVar *av : cs->vars) {
-        if (av->out == fa->type_world.bottom_type) av->out = fa->type_world.void_type;
-      }
-    }
-  }
-}
-
 void initialize_Sym_for_fa(Sym *s) {
   if (s->is_symbol || s->is_fun || s->type_kind) s->abstract_type = make_abstract_type(s);
   if (s->is_fun || s->is_pattern || s->type_kind) for (Sym *ss : s->has) if (!ss->var) ss->var = new Var(ss);
@@ -14080,7 +14060,13 @@ int FA::analyze(Fun *top) {
   if1->callback->report_analysis_errors(type_violations);
   if (show_violation_output) show_violations(fa, stderr);
   if (show_violation_output && fruntime_errors) show_numeric_coercions(fa, stderr);
-  if (fruntime_errors) convert_NOTYPE_to_void();
+  // ifa/102: convert_NOTYPE_to_void, which set every remaining bottom AVar
+  // to void under fruntime_errors, is gone. A live NOTYPE is a fatal
+  // violation (strictviol, ifa/158), so what it touched was only ever dead
+  // text: the 2026-11-07 census found 93,534 such AVars across the 572
+  // compiling corpus and suite programs, all with a dead def and no live
+  // use. Codegen reads a NOTYPE Var as an absent type (c_type's `_CG_void`),
+  // as it always did under --strict, which never ran it.
   // ifa/issues/074: WHICH splitter stages this program actually demanded,
   // in cascade order, once for the whole analysis. Deliberately a SET and
   // not per-pass counts -- the counts move with every FA change, but "did

@@ -1,6 +1,6 @@
 # 102 — a condition codegen detects is a refusal or a demand, never a run-time trap
 
-**Status: open; census and steps 1–2 done 2026-11-07** (below). Rewritten 2026-11-03 to its current scope. The
+**Status: open; census and steps 1, 2, 4 and 6 done 2026-11-07** (below). Rewritten 2026-11-03 to its current scope. The
 unresolved-send half landed 2026-10-14 (`codegen_unresolved_send`, refused
 in every mode) and the softrender, `{list, tuple}` and bytearray cases are
 fixed; that record is in git (`git show 123ac81:ifa/issues/102-corpus-programs-compile-then-abort-at-runtime.md`).
@@ -42,11 +42,9 @@ Each is a comparison of C type strings at the emission site, so it is a
 representation fact FA did not observe. Some print
 `warn_no_representation_ct`; the rest are silent.
 
-Also on this list: **`convert_NOTYPE_to_void`** (`fa.cc:14071`) voids an
-untyped value under `fruntime_errors` at the end of `FA::analyze`, so a
-NOTYPE that is filtered as uninformative produces a `return 0` clone with
-no diagnostic (IFA.md §11.12 calls it an escape hatch). Delete it, or warn
-per site.
+Also on this list was **`convert_NOTYPE_to_void`**, which at the end of
+`FA::analyze` voided every remaining untyped value under `fruntime_errors`.
+It was deleted 2026-11-07; see step 6 below.
 
 ## Plan
 
@@ -194,6 +192,37 @@ matches CPython on both backends (sweeps `check__default__10c5f2f6+d9550405`,
    - `check__PYC_LLVM_1__04baeca8+f4c07c87` is identical to
      `…87924498+01c0f4aa` in every column.
 5. Step 3 for the dispatch else arms.
+6. **Done.** `convert_NOTYPE_to_void` is deleted. The issue text said it
+   produced `return 0` clones with no diagnostic. The census says it never
+   touched anything that runs.
+
+   **Probe.** A temporary `IFA_DBG_NOTYPEVOID` print, since removed, logged
+   every AVar it voided. It recorded whether the AVar was a live argument,
+   whether its def was `fa_live`, and how many of its uses were.
+
+   **Result.** Over the 572 corpus and suite programs that compile, it
+   voided 93,534 AVars in 437 programs. Every one had `live_arg=0`, a dead
+   def and no live use. The only `live_arg=1` hits were in three tests the
+   compiler refuses anyway (`branch_merged_scalar_union`,
+   `cross_type_method`, `classmethod_cls_attribute`), because it ran
+   before the fatal return.
+
+   **Why.** A live NOTYPE is already a fatal violation under strictviol
+   (ifa/158), so only dead text was left for it to touch. With it gone, an
+   untyped Var reaches codegen with no type. Codegen reads that as
+   `_CG_void`, as it always did under `--strict`, which never ran the
+   function.
+
+   **Unresolved-if test.** Both backends' `is_unresolved_condition` keyed
+   on the void placeholder. They now also accept a missing type, so the
+   test is the same in both modes.
+
+   Verification:
+   - `make test` is green.
+   - `check__default__90c9b3d0+f3d1ce25` is identical to
+     `…87924498+01c0f4aa` in every column.
+   - `check__PYC_LLVM_1__90c9b3d0+d892b4c2` is identical to
+     `…04baeca8+f4c07c87` in every column.
 
 ## Why the check lives in codegen (settled 2026-10-14)
 

@@ -680,10 +680,13 @@ true silences the violation but leaves codegen on its own to materialize
 a union representation. Currently only used by frontends that opt in
 explicitly.
 
-### 11.12 NOTYPE → void promotion
-`convert_NOTYPE_to_void()` runs at the very end if `fruntime_errors` is
-set. It silently turns "no type inferred" into `void`, which can mask
-real bugs. Treat this as a debugging escape hatch; don't lean on it.
+### 11.12 NOTYPE reaching codegen
+A live NOTYPE AVar is a fatal violation (ifa/158). What reaches codegen
+untyped is therefore dead text, and codegen reads its Var as having no
+type (`_CG_void`). `convert_NOTYPE_to_void()`, which used to void every
+remaining bottom AVar under `fruntime_errors`, was deleted on 2026-11-07
+(ifa/102): a census found it touched only values with a dead def and no
+live use.
 
 ### 11.13 Tests
 `tests/` in `ifa/` are the V-language regression suite. There is no

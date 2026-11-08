@@ -4370,12 +4370,14 @@ static int const_if_successor(EmitCtx &ctx, PNode *n) {
 // backend's own copy of this check -- kept independent, matching how
 // the two backends already duplicate const_if_successor's Sym-identity
 // checks above rather than sharing them). A Code_IF condition whose
-// Var::type is exactly fa->type_world.void_type's Sym never resolved
-// at all (FA gave up, salvaged to NOTYPE); unlike a provably-dead
+// Var::type is null or fa->type_world.void_type's Sym never resolved
+// at all (FA left it NOTYPE); unlike a provably-dead
 // constant fold (const_if_successor above), this is NOT proven
 // unreachable and must not be branched into/past silently.
 static bool is_unresolved_condition(EmitCtx &ctx, Var *cond) {
-  return cond && cond->type && ctx.fa && ctx.fa->type_world.void_type && ctx.fa->type_world.void_type->n > 0 &&
+  if (!cond) return false;
+  if (!cond->type) return true;  // ifa/102: NOTYPE is no longer voided
+  return ctx.fa && ctx.fa->type_world.void_type && ctx.fa->type_world.void_type->n > 0 &&
          cond->type == ctx.fa->type_world.void_type->v[0]->type;
 }
 

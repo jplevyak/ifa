@@ -772,8 +772,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       Sym *obj = n->rvals[1]->type;
       obj = resolve_union_receiver(obj, symbol);
-      // An untyped result (NOTYPE survives into codegen under --strict,
-      // which skips convert_NOTYPE_to_void) falls through to the field
+      // An untyped result (a NOTYPE Var reaches codegen with no type)
+      // falls through to the field
       // walk and its "getter not resolved" refusal, not a null deref.
       Vec<Sym *> arms;  // ifa/206 step 2, below
       Vec<int> arm_slots;
@@ -2884,10 +2884,9 @@ static void emit_goto_or_trap(FILE *fp, PNode *from, PNode *target, int label_id
 }
 
 // issues/085: a Code_IF whose condition genuinely never resolved (FA
-// gave up, salvaged to NOTYPE -- convert_NOTYPE_to_void's placeholder
-// type; only reachable at all under the default, non-strict
-// runtime_errors mode, since a strict compile aborts on the
-// violation before codegen runs) is NOT proven unreachable, unlike a
+// left it NOTYPE, so clone gives it no type at all -- or the void
+// placeholder, through set_void_lub_types_to_void) is NOT proven
+// unreachable, unlike a
 // provably-dead constant fold (the true_type/false_type identity
 // checks in write_c_pnode's Code_IF case already handle that one).
 // Confirmed empirically (temporary instrumentation, since removed):
@@ -2898,7 +2897,9 @@ static void emit_goto_or_trap(FILE *fp, PNode *from, PNode *target, int label_id
 // resolves to a real, distinct type (`bool`, confirmed via
 // tests/my_bool4.py's test_cond).
 static bool is_unresolved_condition(FA *fa, Var *cond) {
-  return cond && cond->type && fa->type_world.void_type && fa->type_world.void_type->n > 0 &&
+  if (!cond) return false;
+  if (!cond->type) return true;  // ifa/102: NOTYPE is no longer voided
+  return fa->type_world.void_type && fa->type_world.void_type->n > 0 &&
          cond->type == fa->type_world.void_type->v[0]->type;
 }
 
