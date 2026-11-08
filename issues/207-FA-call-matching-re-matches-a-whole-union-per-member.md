@@ -1,6 +1,7 @@
 # 207 — call matching re-matches the whole argument union every time it grows by one member
 
-**Status: open, measured, not started.** Filed 2026-11-08 from
+**Status: open; the measurements are taken (2026-11-08, below), and
+direction 1 is supported.** Filed 2026-11-08 from
 [203](203-shrink-the-graph-fa-walks.md)'s re-scoping. That measurement
 put FA's time in call matching, not flow, on every program where FA takes
 real time. This issue is for the matching algorithm itself
@@ -120,18 +121,102 @@ contours on pass 1, is the same mechanism at its extreme.
 constant factor. Try 1 first if the decomposition holds for everything a
 `Match` carries; otherwise 2, which needs no new invariant.
 
-## Measure next (before choosing)
+## The measurements, 2026-11-08 (tree `24c7d5f1`, temporary probes, since removed)
 
-- **Inside a miss**: `find_visible_functions`, `find_all_matches` and
-  the filters, and `Match` construction. That tells whether a miss is
-  O(*w*) in the matcher or in the type operations.
-- **Growth steps per send**: the number of distinct `AType`s each
-  argument passes through before it settles, against its final width.
-  That confirms the *w*-steps model.
-- **Selectors and width**: the same profile on othello3 and on
-  dijkstra2/pylife. Do the comparison operators always dominate?
-  Builtin `__eq__`/`__lt__` on a wide union is the shared-builtin
-  confluence 186 describes.
+**Probes.** The same `IFA_DBG_MATCHPROF` probe as above, extended:
+- `steady_clock` laps inside `pattern_match`, one per stage;
+- per (send, EntrySet), the number of distinct argument-type tuples
+  dispatched in a pass (the growth steps), against the widest argument
+  width it reached;
+- each pass's wall time, process CPU and thread CPU, next to
+  `pass_timer` and `match_timer`;
+- the dispatch count at every `initialize_pass`.
+
+Each program was compiled alone.
+
+**Where the time goes, in seconds, whole compile:**
+
+| program | matching | hits (lookup) | misses | in a miss: `find_all_matches` | `prune`/`find_best_matches`/`reverify` | `cannonicalize_matches` | lookup, ctor, `find_visible_functions`, keywords | `make_AEdges` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| sunfish | 69.3 | 7.6 | 59.7 | **50.3** | 7.4 | 1.6 | 0.3 | 1.5 |
+| plcfrs | 32.3 | 5.3 | 25.7 | **17.3** | 7.4 | 0.4 | 0.4 | 1.0 |
+| othello3 | 587.5 | **266.2** | 299.5 | 94.7 | **152.4** | 40.6 | 9.8 | 20.7 |
+| dijkstra2 | 0.6 | 0.2 | 0.3 | 0.25 | 0.08 | 0.01 | 0 | 0 |
+| pylife | 0.2 | 0.1 | 0.1 | 0.10 | 0.01 | 0 | 0 | 0 |
+
+**Answers to the three questions:**
+
+- **Inside a miss, the cost is the matcher's per-member loop.** It is not
+  the cache lookup, not the visible-function scan and not the keyword
+  filter, which together are under 2%. `find_arg_matches` iterates over
+  every CreationSet of each argument and, for each, calls
+  `pattern_match_sym(cs->sym, position, candidates)` and
+  `update_match_map`, recursing into the members of a pattern
+  (tuple) formal. That is O(*w* × candidates) a miss. At othello3's
+  width (about 1 000) candidate selection (`find_best_matches`) and
+  canonicalisation overtake it, and so does the hit path. A hit's
+  validation (`get_all_args` and the position-by-position comparison)
+  costs 266 s, as much as the misses. So at that width even a hit is
+  O(*w*).
+- **The *w*-steps model holds, as a fraction of *w*.** Distinct
+  argument-type tuples per (send, contour) per pass, by the widest
+  argument reached:
+
+  | program | width 32–99 | width 100+ |
+  | --- | --- | --- |
+  | sunfish | 10–14 steps at ~50 | 15–25 steps at ~102 |
+  | plcfrs | 11–23 steps at ~63 | 10–22 steps at ~135 |
+  | othello3 | 3–4 steps at ~52 | 27 at ~956 on pass 0; **282–293 at ~903** on later passes |
+
+  Members arrive in batches, so the steps are about *w*/3 to *w*/5, not
+  *w*. The cost is still quadratic. The steps repeat every pass, because
+  each pass re-derives types from bottom and the growth reaches different
+  intermediate `AType`s. That is why sunfish's passes 1–4 still miss
+  about 20 K times each: the cross-pass cache only hits when a growth
+  sequence repeats exactly.
+- **The comparison operators dominate wherever matching does.**
+  - sunfish's and plcfrs's top sends are `__eq__`/`__lt__` at width
+    100–140.
+  - othello3's top four are `__eq__` at width 1 907, 23–31 s each over
+    80–137 calls.
+  - dijkstra2 and pylife (196's witnesses, not 207's) match in under
+    1 s. Matching is not their problem.
+
+**The timer.** Pass 0 is several FA passes. plcfrs runs `initialize_pass`
+six times before `analysis_pass` advances: the frontend's structural
+repair is driven to a fixed point first (055's mode 2, `extend_analysis`
+/ `reanalyze`). Each run restarts `pass_timer` and leaves `match_timer`
+running, so `-v`'s "PASS 1" line holds only the last run's pass time
+against all the runs' matching (plcfrs 0.55 s against 6.9 s, sunfish
+8.8 s against 22.0 s). From pass 1 on, wall time, process CPU, thread CPU
+and `pass_timer` agree to within 0.02 s; Boehm's marker threads do not
+distort them. **Fix before using `-v` as the yardstick:** restart
+`match_timer` (and `extend_timer`) with `pass_timer`, or count the
+sub-passes. The pass counts printed today also omit them.
+
+**What this means for the directions:**
+1. **Incremental matching is the one that removes the quadratic,** and
+   the decomposition it needs is already in the code. Per argument
+   CreationSet, the matcher computes `pattern_match_sym` on `cs->sym`,
+   the position and the current candidate set. Only `update_match_map`
+   and the pattern recursion are per CreationSet. So a growth step can
+   match only its new members, against the candidates the old members
+   left. The open part is still everything `Match` carries:
+   - the per-candidate formal-to-actual map;
+   - the per-edge `filtered_args`;
+   - `find_best_matches`' choice among candidates. That is a function of
+     the whole union, but it is re-taken only when a new member changes
+     which candidates survive.
+2. **Deferred connection** cuts the steps, but not the per-step O(*w*),
+   and at othello3's width a single hit is O(*w*) as well.
+3. **A wide-union `AType`** is the fix for the hit path at othello3's
+   width (`get_all_args`' comparison walk). It is the one place a
+   constant factor is not enough on its own.
+
+**Next:** prototype 1 on sunfish behind a flag, with the match results
+compared against the current matcher on every dispatch. The result must
+be identical, so a mismatch is a bug in the decomposition, not a
+precision trade.
 
 ## Verification
 
