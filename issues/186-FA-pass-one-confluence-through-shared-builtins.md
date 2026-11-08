@@ -39,6 +39,13 @@ carry over.
 
 ## Directions, in order
 
+**2026-11-08:** the mechanism behind these is general, not othello3's.
+[207](207-FA-call-matching-re-matches-a-whole-union-per-member.md)
+measured it on sunfish and plcfrs. Every growth of an argument union is a
+match-cache miss and a full re-match, so the cost is quadratic in union
+width. Directions 1 and 2 are now 207's directions 2 and 3, alongside
+incremental matching. othello3 stays this issue's witness.
+
 1. **Deferred connection.** Do not connect a call whose receiver union is
    wider than a limit until the pass has otherwise settled, then connect
    it once with the settled union. In pyc the union still pours into one

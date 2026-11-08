@@ -9,6 +9,8 @@ C3, without measurements (the reviewing container could not build).
 **The measurement says this is not where FA time goes.** It is a
 code-health issue, and the useful parts are C4 (now "delete it"), C2's
 truthiness wrapper, and C3's second half. The speed problem is
+[207](207-FA-call-matching-re-matches-a-whole-union-per-member.md)'s (the
+matching algorithm), and
 [186](186-FA-pass-one-confluence-through-shared-builtins.md)'s and
 [185](closed/185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md)'s:
 call matching on early-pass unions.
