@@ -227,8 +227,8 @@ static void cg_register_print_cgfns() {
 // Strategy: search the union for a component whose
 // `has` list contains a field named `symbol`.  If none
 // found, fall back to the historical `obj->has[0]` so
-// the existing "getter not resolved" assert path still
-// fires for genuinely-unresolvable cases.
+// the getter's "not a field" refusal still fires for
+// genuinely-unresolvable cases.
 static Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
   if (!obj || obj->type_kind != Type_SUM) return obj;
   if (symbol) {
@@ -774,7 +774,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       obj = resolve_union_receiver(obj, symbol);
       // An untyped result (a NOTYPE Var reaches codegen with no type)
       // falls through to the field
-      // walk and its "getter not resolved" refusal, not a null deref.
+      // walk and its "not a field" refusal, not a null deref.
       Vec<Sym *> arms;  // ifa/206 step 2, below
       Vec<int> arm_slots;
       if (n->lvals[0]->type && n->lvals[0]->type->type_kind == Type_FUN && n->creates) {  // creates a closure
@@ -856,10 +856,20 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             goto Lgetter_found;
           }
         }
-        if (!fruntime_errors)
-          fail("getter not resolved");
-        else
-          fputs(cg_trap_c("  assert(!\"runtime error: getter not resolved\");\n"), fp);
+        // ifa/102: a live read on a receiver that can only be None is
+        // CPython's AttributeError, reported as every None check reports it
+        // (ifa/165). Asked here, where the read is emitted, and not in
+        // nil_period_receiver: that also decides what DCE keeps, and a dead
+        // None-only read is a protocol leftover (`if x:` on a None-only `x`
+        // reads `__pyc_to_bool__`, whose call folds to False).
+        if (n->rvals[1]->type == sym_nil_type) {  // always None: always raises
+          fprintf(fp, "  _CG_none_receiver(\"%s\");\n", symbol);
+          goto Lgetter_found;
+        }
+        // Anything else is a field FA never found on the receiver: refused
+        // in every mode (the 2026-11-07 census reached it only on None).
+        codegen_fail(n, "the attribute '%s' is not a field of the receiver's type '%s' (ifa/102)", symbol,
+                     obj && obj->name ? obj->name : "?");
       Lgetter_found:;
       }
       break;
@@ -2594,6 +2604,20 @@ class CBackendEmitter : public VirtualCGEmitter {
             for (Fun *fv : plains) direct.add(fv);
             if (directs.n) direct.add(directs[0]);
             cg_note_dispatch_site(pn, direct);
+          }
+          {  // ifa/102 step 3: every member of the receiver's union has an arm
+            Var *rv = nullptr;
+            for (int i = 0; i < pn->rvals.n && !rv; i++)
+              if (pn->rvals[i] && cg_get_string(pn->rvals[i]) && !strcmp(cg_get_string(pn->rvals[i]), recv_str))
+                rv = pn->rvals[i];
+            bool nil_unclaimed = false;
+            Vec<Sym *> unclaimed;
+            poly_dispatch_coverage(pn, rv, nil_fn, classes, plains, directs.n ? directs[0] : nullptr, &nil_unclaimed,
+                                   unclaimed);
+            if (unclaimed.n) poly_dispatch_refuse_unclaimed(pn, poly_dispatch_selector(pn, fns), unclaimed);
+            // None has no such method: CPython's AttributeError, raised
+            // before the tag read dereferences it (ifa/165).
+            if (nil_unclaimed) emit_none_check(rv, poly_dispatch_selector(pn, fns));
           }
           cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
           cchar *ret_type_str = (pn->lvals.n && pn->lvals[0]->type) ? c_type(pn->lvals[0]) : "void*";

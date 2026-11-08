@@ -1396,6 +1396,81 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
   }
 }
 
+static void poly_dispatch_members(Sym *t, Vec<Sym *> &out) {
+  if (!t) return;
+  if (t->type_kind == Type_SUM) {
+    for (Sym *m : t->has)
+      if (m) poly_dispatch_members(m, out);
+    return;
+  }
+  out.set_add(t);
+}
+
+void poly_dispatch_coverage(PNode *pn, Var *recv, Fun *nil_fn, Vec<Sym *> &classes, Vec<Fun *> &plains, Fun *direct,
+                            bool *nil_unclaimed, Vec<Sym *> &unclaimed) {
+  *nil_unclaimed = false;
+  if (!recv || !recv->type) return;
+  Vec<Sym *> ms;
+  poly_dispatch_members(recv->type, ms);
+  Vec<Sym *> dms;  // what the direct candidate's receiver formal accepts
+  if (direct)
+    for (MPosition *p : direct->positional_arg_positions) {
+      Var *av = direct->args.get(p);
+      int i = (int)Position2int(p->pos[0]) - 1;
+      if (av && i >= 0 && i < pn->rvals.n && pn->rvals[i] == recv) {
+        poly_dispatch_members(av->type, dms);
+        break;
+      }
+    }
+  Vec<cchar *> tags;
+  for (Sym *c : classes) {
+    Vec<Sym *> fam;
+    cg_tag_family_members(c, fam);
+    for (Sym *x : fam) tags.add(cg_tag_name(x));
+  }
+  for (Sym *m : ms) {
+    if (!m) continue;
+    if (m == sym_nil_type) {
+      if (nil_fn || dms.set_in(m)) continue;
+      *nil_unclaimed = true;
+      continue;
+    }
+    bool claimed = false;
+    if (cg_has_classtag(m)) {
+      cchar *tn = cg_tag_name(m);
+      for (cchar *t : tags)
+        if (!strcmp(t, tn)) { claimed = true; break; }
+    }
+    for (int i = 0; i < plains.n && !claimed; i++)
+      if (plains[i]->sym == m || plains[i]->sym->type == m) claimed = true;
+    if (!claimed && dms.set_in(m)) claimed = true;
+    if (!claimed) unclaimed.add(m);
+  }
+}
+
+cchar *poly_dispatch_selector(PNode *pn, Vec<Fun *> *candidates) {
+  if (pn->rvals.n && pn->rvals[0] && pn->rvals[0]->sym->is_symbol) return pn->rvals[0]->sym->name;
+  if (candidates)
+    for (Fun *c : *candidates)
+      if (c && c->sym && c->sym->name) return c->sym->name;
+  return "?";
+}
+
+void poly_dispatch_refuse_unclaimed(PNode *pn, cchar *selector, Vec<Sym *> &unclaimed) {
+  std::string names;
+  for (Sym *m : unclaimed) {
+    if (names.size()) names += ", ";
+    names += m->name ? m->name : "(anonymous)";
+    names += " (";
+    names += cg_get_string(m) ? cg_get_string(m) : "no C type";
+    names += ")";
+  }
+  codegen_fail(pn,
+               "the dispatch of '%s' has no arm for receiver type(s) %s: no tag compare, None test or direct "
+               "candidate claims them (ifa/102)",
+               selector ? selector : "?", names.c_str());
+}
+
 bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx) {
   if (!candidate || !candidate->sym || !pn) return false;
   MPosition np;
@@ -2002,7 +2077,7 @@ void cg_report_slot_use(FA *fa) {
     // P_prim_period getter and never appears in `poly_names` (built from
     // polymorphic CALL sites) nor in the store registry. Eliminating a
     // slot that is only read this way turns the access into the
-    // "getter not resolved" runtime assert.
+    // getter's "not a field" refusal.
     // Tracked PER CLASS, not per name: a name-global set says `foo` read
     // on ANY class marks `foo` used on EVERY class, which is far too
     // coarse to decide elimination.

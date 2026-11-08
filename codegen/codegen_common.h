@@ -243,6 +243,21 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
 // sym_nil_type? If so, returns true and sets *rval_idx to that
 // formal's call-site operand index.
 bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx);
+// ifa/102 step 3: does a classtag dispatch claim every member of its
+// receiver's union? Each member must be claimed by the None arm
+// (`nil_fn`), a tag compare over `classes` (their tag families), a plain
+// function-identity arm, or the one untagged `direct` candidate, whose
+// receiver formal must accept it. `None` with no None arm is CPython's
+// AttributeError (*nil_unclaimed: the caller emits the None check, as a
+// direct call does, ifa/165); anything else unclaimed is returned in
+// `unclaimed`, and the caller refuses the compile.
+void poly_dispatch_coverage(PNode *pn, Var *recv, Fun *nil_fn, Vec<Sym *> &classes, Vec<Fun *> &plains, Fun *direct,
+                            bool *nil_unclaimed, Vec<Sym *> &unclaimed);
+// The selector the None check reports: the send's selector symbol, or the
+// candidates' method name for a closure-call shape.
+cchar *poly_dispatch_selector(PNode *pn, Vec<Fun *> *candidates);
+// The refusal for an unclaimed member, naming it.
+void poly_dispatch_refuse_unclaimed(PNode *pn, cchar *selector, Vec<Sym *> &unclaimed);
 // ifa/185: a runtime dispatch on tuple ARITY. FA dispatched `pn` per
 // operand arity (Sym::dispatch_arity on the candidates' formals), so
 // several candidates reach a call whose operands are unions of tuples (and

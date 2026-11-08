@@ -3217,16 +3217,25 @@ class LLVMEmitter : public VirtualCGEmitter {
     if (idx == P_prim_setter && pn->rvals.n >= 5 && pn->rvals.v[4] && pn->rvals.v[4]->sym &&
         pn->rvals.v[4]->sym->is_fake)
       return true;
-    // An attribute read the emitter cannot resolve: the C backend's
-    // `assert(!"runtime error: getter not resolved")`. Trap at run time,
-    // as it does, rather than read an unassigned result as zero.
+    // An attribute read the emitter cannot resolve: refused, as cg.cc
+    // does (ifa/102), except on a None-only receiver, which raised.
     if (idx == P_prim_period) {
       // ifa/185 (doom), as in cg.cc: a read kept live only for its None
       // check (already emitted, codegen_common) has a dead result and
       // nothing to load.
       if (pn->lvals.n && pn->lvals.v[0] && !pn->lvals.v[0]->live) return true;
-      emit_salvage_trap(ctx, "getter_not_resolved", pn->lvals.n ? pn->lvals.v[0] : nullptr);
-      return true;
+      // ifa/102, as in cg.cc: a live read on a receiver that can only be
+      // None is CPython's AttributeError. Nothing to load after it, but the
+      // result needs a value for the code after it to emit.
+      if (pn->rvals.n > 3 && pn->rvals.v[1] && pn->rvals.v[1]->type == sym_nil_type && pn->rvals.v[3]->sym->is_symbol) {
+        ::emit_none_check(ctx, pn->rvals.v[1], pn->rvals.v[3]->sym->name);
+        Var *dst = pn->lvals.n ? pn->lvals.v[0] : nullptr;
+        if (dst && dst->type)
+          if (llvm::Type *t = sym_to_llvm_type(dst->type); t && !t->isVoidTy())
+            put_result(ctx, dst, llvm::Constant::getNullValue(t));
+        return true;
+      }
+      codegen_fail(pn, "the attribute read is not a field of the receiver's type (ifa/102)");
     }
     return false;
   }
@@ -3632,8 +3641,10 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     // so the carrier-direct/plains[] branches below have a shared
     // dispatch operand even when no classtag/nil-receiver candidate
     // ever supplies one.
-    if (pn->rvals.n && pn->rvals.v[0] && !pn->rvals.v[0]->sym->is_symbol)
+    if (pn->rvals.n && pn->rvals.v[0] && !pn->rvals.v[0]->sym->is_symbol) {
       recv = value_for_var(ctx, pn->rvals.v[0]);
+      recv_var = pn->rvals.v[0];
+    }
     // issue 026 pre-pass + classtag/nil-receiver resolution: shared
     // with the C backend (codegen_common.{h,cc}) -- previously
     // independently duplicated here and in cg.cc, independently
@@ -3651,8 +3662,10 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       Vec<int> rt_ridxs;
       poly_dispatch_classtag_targets(fun_val, pn, directly_owned, rts, rt_slots, rt_ridxs);
       for (int ri = 0; ri < rts.n; ri++) {
-        if (!recv && rt_ridxs[ri] >= 0 && rt_ridxs[ri] < pn->rvals.n && pn->rvals[rt_ridxs[ri]])
+        if (!recv && rt_ridxs[ri] >= 0 && rt_ridxs[ri] < pn->rvals.n && pn->rvals[rt_ridxs[ri]]) {
           recv = value_for_var(ctx, pn->rvals[rt_ridxs[ri]]);
+          recv_var = pn->rvals[rt_ridxs[ri]];
+        }
       }
       // ifa/issues/030(a), 2026-08-06: merge into classes[] FIRST,
       // whenever rts.n is nonzero -- mirrors cg.cc's `if (rts.n) {
@@ -3736,8 +3749,10 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           break;
         }
         if (carrier_recv && fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
-          if (!recv && carrier_ridx >= 0 && carrier_ridx < pn->rvals.n && pn->rvals[carrier_ridx])
+          if (!recv && carrier_ridx >= 0 && carrier_ridx < pn->rvals.n && pn->rvals[carrier_ridx]) {
             recv = value_for_var(ctx, pn->rvals[carrier_ridx]);
+            recv_var = pn->rvals[carrier_ridx];
+          }
           // All carriers are currently named "__closure__": a SECOND,
           // DISTINCT carrier Sym reaching this same dispatch site
           // would collide on that name and be indistinguishable from
@@ -3873,6 +3888,15 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           if (slots[ci] == -1) direct.add(class_funs[ci]);
         for (Fun *fv : plains) direct.add(fv);
         cg_note_dispatch_site(pn, direct);
+      }
+      {  // ifa/102 step 3: every member of the receiver's union has an arm (as cg.cc)
+        bool nil_unclaimed = false;
+        Vec<Sym *> unclaimed;
+        poly_dispatch_coverage(pn, recv_var, nil_fn, classes, plains, default_fn, &nil_unclaimed, unclaimed);
+        if (unclaimed.n) poly_dispatch_refuse_unclaimed(pn, poly_dispatch_selector(pn, callees), unclaimed);
+        // None has no such method: CPython's AttributeError, raised before
+        // the classtag load below dereferences it (ifa/165).
+        if (nil_unclaimed) ::emit_none_check(ctx, recv_var, poly_dispatch_selector(pn, callees));
       }
       llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "poly.merge", cur_fn);
       llvm::AllocaInst *res_slot = nullptr;
@@ -4101,14 +4125,14 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       // default_fn unconditionally if one was claimed (ifa/issues/088
       // -- see its declaration comment: the only candidate left once
       // nil/classtag/carrier/plains have all had their turn, so
-      // nothing else could be the answer here). Otherwise still the
-      // pre-existing trap-free no-op -- res_slot stays an
-      // uninitialized alloca, not a zeroed one (ifa/issues/030(a)
-      // hardening note): a genuinely unmatched dispatch reads garbage,
-      // not 0. Not fixed as part of this change -- see the
-      // LLVM-backend caveat in ifa/issues/030's doc for the same
-      // pre-existing gap in the "bare callable value" pass below.
-      if (default_fn) emit_direct_call(default_fn);
+      // nothing else could be the answer here).
+      // ifa/102 step 3: with no default candidate, the fall-through is the
+      // C backend's "polymorphic dispatch: no branch matched" trap. The
+      // coverage check above proved every receiver type has an arm.
+      if (default_fn)
+        emit_direct_call(default_fn);
+      else
+        emit_salvage_trap(ctx, "poly_no_branch_matched");
       Builder->CreateBr(merge_bb);
       Builder->SetInsertPoint(merge_bb);
       if (dst_var && res_slot) {

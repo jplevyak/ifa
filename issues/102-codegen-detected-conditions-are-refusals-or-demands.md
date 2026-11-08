@@ -1,6 +1,6 @@
 # 102 — a condition codegen detects is a refusal or a demand, never a run-time trap
 
-**Status: open; census and steps 1, 2, 4 and 6 done 2026-11-07** (below). Rewritten 2026-11-03 to its current scope. The
+**Status: open; census and steps 1–6 done 2026-11-07** (below). Rewritten 2026-11-03 to its current scope. The
 unresolved-send half landed 2026-10-14 (`codegen_unresolved_send`, refused
 in every mode) and the softrender, `{list, tuple}` and bytearray cases are
 fixed; that record is in git (`git show 123ac81:ifa/issues/102-corpus-programs-compile-then-abort-at-runtime.md`).
@@ -155,7 +155,21 @@ matches CPython on both backends (sweeps `check__default__10c5f2f6+d9550405`,
    - `check__PYC_LLVM_1__87924498+01c0f4aa` is identical to
      `…966472ad+e55772bf` except `bh`, which went rc=124 → 0, the
      contention recorded in 200 A6.
-3. Make getter-not-resolved on a None-only receiver raise, with 165.
+3. **Done.** A live attribute read on a receiver that can only be None
+   raises CPython's `AttributeError` with `_CG_none_receiver`, on both
+   backends. That is the report every other None check gives (165). It
+   still exits rather than being catchable, which is 165 residual 1.
+
+   **Where the test lives.** It is in the getter emission, not in
+   `nil_period_receiver`. Widening that function to None-only receivers
+   was tried and broke 19 suite tests, because it also decides what DCE
+   keeps. On a None-only `x`, `if x:` reads `x.__pyc_to_bool__`; the call
+   folds to False, and the dead read was deleted. Keeping it live made
+   legal truth tests of None exit.
+
+   **Every other getter miss is refused**, in every mode: "the attribute
+   … is not a field of the receiver's type". The census reached the getter
+   only on None. `tests/none_only_getter_raises.py`.
 4. **Done.** LLVM's `unreachable` fallbacks were FA-dead code that LLVM
    emitted and C does not. There were two entries into it:
 
@@ -191,7 +205,45 @@ matches CPython on both backends (sweeps `check__default__10c5f2f6+d9550405`,
    - `make test` is green.
    - `check__PYC_LLVM_1__04baeca8+f4c07c87` is identical to
      `…87924498+01c0f4aa` in every column.
-5. Step 3 for the dispatch else arms.
+5. **Done (plan step 3).** `poly_dispatch_coverage` (`codegen_common`)
+   checks, at every classtag dispatch on both backends, that each member
+   of the receiver's union has an arm:
+   - the None arm;
+   - a tag compare over the classes' tag families;
+   - a function-identity arm;
+   - the one untagged direct candidate, whose receiver formal must accept
+     the member.
+
+   **Census.** A temporary probe over the 606 corpus and suite compiles
+   found:
+   - no member the direct candidate fails to accept;
+   - 54 sites in bh, richards, pygasus and yopyra with `None` unclaimed:
+     the receiver can be None, None has no such method, and the dispatch
+     had no None test. C read the classtag, or called through the shared
+     slot, on a null pointer; LLVM likewise;
+   - one test, `method_assigned_across_classes` (issues/180), whose
+     receiver union is two closure types that no arm claims. It
+     segfaulted.
+
+   **Now.** An unclaimed `None` gets the None check a direct call has
+   (CPython's `AttributeError`, 165), before any tag read. Any other
+   unclaimed member is refused, naming it, so issues/180 is a compile
+   refusal instead of a segfault. LLVM's fall-through with no default
+   candidate traps (`poly_no_branch_matched`) as C's does. It used to
+   return a zero result.
+
+   The emitted C changed only at those sites. The plan's "byte-identical"
+   condition assumed every dispatch was already covered, and 54 were not.
+   `tests/poly_dispatch_none_receiver_raises.py`.
+
+   Verification, for items 3 and 5 together:
+   - `make test` is green: 495/0 on both backends.
+   - `check__default__4ab937b3+0205962a` is identical to
+     `…90c9b3d0+f3d1ce25` in every column.
+   - `check__PYC_LLVM_1__4ab937b3+0205962a` is identical to
+     `…90c9b3d0+d892b4c2` in every column.
+
+     No corpus program executes one of the new None checks.
 6. **Done.** `convert_NOTYPE_to_void` is deleted. The issue text said it
    produced `return 0` clones with no diagnostic. The census says it never
    touched anything that runs.
