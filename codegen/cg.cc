@@ -802,7 +802,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           cchar *fct = c_type(arms[k]->has[arm_slots[k]]);
           if (float_ct(t) != float_ct(fct) && (!scalar_ct(t) || !scalar_ct(fct))) {
             warn_no_representation_ct(n, "field", symbol, t, fct);
-            if (!fruntime_errors) fail("field type mismatch reading a '%s' field into a '%s'", fct, t);
+            codegen_fail(n, "field type mismatch reading a '%s' field into a '%s' (ifa/102)", fct, t);
           }
           cg_note_slot_use(arms[k], arm_slots[k], 1);
           if (k == arms.n - 1)
@@ -848,9 +848,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             cchar *fct = c_type(obj->has[i]);
             if (float_ct(t) != float_ct(fct) && (!scalar_ct(t) || !scalar_ct(fct))) {
               warn_no_representation_ct(n, "field", symbol, t, fct);
-              if (!fruntime_errors)
-                fail("field type mismatch reading a '%s' field into a '%s'", fct, t);
-              fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
+              codegen_fail(n, "field type mismatch reading a '%s' field into a '%s' (ifa/102)", fct, t);
             } else
               cg_note_field_access(f, n->rvals[1], obj, i), cg_note_slot_use(obj, i, 1),
               fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s */\n", cg_get_string(n->lvals[0]), t, cg_get_string(obj),
@@ -861,7 +859,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         if (!fruntime_errors)
           fail("getter not resolved");
         else
-          fputs("  assert(!\"runtime error: getter not resolved\");\n", fp);
+          fputs(cg_trap_c("  assert(!\"runtime error: getter not resolved\");\n"), fp);
       Lgetter_found:;
       }
       break;
@@ -896,9 +894,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             cchar *fct = c_type(obj->has[i]), *vct = c_type(n->rvals.v[4]);
             if (float_ct(fct) != float_ct(vct) && (!scalar_ct(fct) || !scalar_ct(vct))) {
               warn_no_representation_ct(n, "field", obj->has[i]->name, fct, vct);
-              if (!fruntime_errors)
-                fail("field type mismatch storing a '%s' into a '%s' field", vct, fct);
-              fputs("  assert(!\"runtime error: field type mismatch\");\n", fp);
+              codegen_fail(n, "field type mismatch storing a '%s' into a '%s' field (ifa/102)", vct, fct);
             } else
               cg_note_field_access(f, n->rvals[1], obj, i), cg_note_slot_use(obj, i, 0),
               fprintf(fp, "  ((%s)%s)->e%d = (%s)%s;\n",
@@ -978,9 +974,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // constant-index record branch below is the one that needs it,
         // because there the field IS read at its own declared type.
         if (index_mismatch) {
-          if (!fruntime_errors)
-            fail("list index is not an integer type");
-          fputs("assert(!\"runtime error: list index type mismatch\");\n", fp);
+          codegen_fail(n, "list index is not an integer type (ifa/102)");
         } else {
           // ifa/issues/055: a DEAD destination drops the `lhs =` prefix
           // but the read is still emitted, leaving a bare expression
@@ -1043,8 +1037,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         }
         }
       } else {
-        if (fruntime_errors && t->type_kind == Type_RECORD && !t->has.n)
-          fputs("assert(!\"runtime error: bad getter\");\n", fp);
+        if (t->type_kind == Type_RECORD && !t->has.n)
+          codegen_fail(n, "a field read on '%s', a record with no fields (ifa/102)", c_type(t));
         else {
           // A record field whose own resolved type has no compile-time
           // size (FA never gave it a value along any live path for
@@ -1114,10 +1108,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             bool field_mismatch =
                 field_type && n->lvals[0]->type && cg_repr_mismatch(field_type, n->lvals[0]->type);
             if (field_mismatch) {
-              if (!fruntime_errors)
-                fail("tuple-list field type mismatch reading a '%s' field into a '%s'", c_type(field_type),
-                     c_type(n->lvals[0]));
-              fputs("assert(!\"runtime error: list element type mismatch\");\n", fp);
+              codegen_fail(n, "tuple-list field type mismatch reading a '%s' field into a '%s' (ifa/102)",
+                           c_type(field_type), c_type(n->lvals[0]));
             } else {
               cchar *dst_ty = c_type(n->lvals[0]);
               fprintf(fp, "%s = (%s)((%s)%s)->e%d;\n", cg_get_string(n->lvals[0]), dst_ty, cg_get_string(t),
@@ -1160,13 +1152,11 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = o + 1; i < n->rvals.n - 1; i++) {
           if (!scalar_ct(c_type(n->rvals[i]))) { index_mismatch = true; break; }
         }
-        if (value_mismatch || index_mismatch) {
-          if (!fruntime_errors)
-            fail("list element or index type mismatch");
-          if (value_mismatch)
-            fputs("assert(!\"runtime error: list element type mismatch\");\n", fp);
-          else
-            fputs("assert(!\"runtime error: list index type mismatch\");\n", fp);
+        if (value_mismatch) {
+          codegen_fail(n, "list element type mismatch storing a '%s' into a '%s' element (ifa/102)", c_type(val_v),
+                       ety);
+        } else if (index_mismatch) {
+          codegen_fail(n, "list index is not an integer type (ifa/102)");
         } else {
           fprintf(fp, "((%s", ety);
           for (int i = o + 1; i < n->rvals.n - 1; i++) fprintf(fp, "*");
@@ -1202,10 +1192,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         Sym *field_ty = (fidx >= 0 && fidx < t->has.n && t->has[fidx]) ? t->has[fidx]->type : nullptr;
         bool field_mismatch = field_ty && val_v2->type && cg_repr_mismatch(field_ty, val_v2->type);
         if (field_mismatch) {
-          if (!fruntime_errors)
-            fail("tuple-list field type mismatch storing a '%s' into a '%s' field", c_type(val_v2),
-                 c_type(field_ty));
-          fputs("assert(!\"runtime error: list element type mismatch\");\n", fp);
+          codegen_fail(n, "tuple-list field type mismatch storing a '%s' into a '%s' field (ifa/102)", c_type(val_v2),
+                       c_type(field_ty));
         } else {
           fprintf(fp, "((%s)%s)->e%d = %s;\n", cg_get_string(t), cg_get_string(n->rvals[o]), fidx,
                   cg_get_string(val_v2));
@@ -1668,7 +1656,7 @@ static void simple_move(FILE *fp, Var *lhs, Var *rhs) {
       // unreachable.
       cchar *lt = c_type(lhs), *rt = c_type(rhs);
       if (!strcmp(rt, "_CG_nil_type") && (!strncmp(lt, "_CG_float", 9) || !strncmp(lt, "_CG_complex", 11)))
-        fprintf(fp, "  assert(!\"runtime error: None coerced to a floating-point value\");\n");
+        codegen_fail(rhs, "None coerced to a floating-point '%s' (ifa/102)", lt);
       else
         fprintf(fp, "  %s = (%s)%s;\n", cg_get_string(lhs), lt, cg_get_string(rhs));
     } else
@@ -2067,9 +2055,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         break;
       }
       if (mismatch) {
-        if (!fruntime_errors) fail("primitive operand type mismatch '_CG_%s'", pn->prim->name);
-        fputs("  assert(!\"runtime error: primitive operand type mismatch\");\n", fp);
-        return true;
+        codegen_fail(pn, "primitive operand type mismatch '_CG_%s' (ifa/102)", pn->prim->name);
       }
     }
     fputs("  ", fp);
@@ -2178,15 +2164,8 @@ class CBackendEmitter : public VirtualCGEmitter {
         break;
       }
       if (arg_mismatch) {
-        if (!fruntime_errors)
-          fail("call argument type mismatch calling '%s'", target->sym->name ? target->sym->name : "?");
-        fputs("  ", fp);
-        if (pn->lvals.n && cg_get_string(pn->lvals[0]))
-          fprintf(fp, "%s = (assert(!\"runtime error: call argument type mismatch\"), (%s)0);\n",
-                  cg_get_string(pn->lvals[0]), c_type(pn->lvals[0]));
-        else
-          fputs("(assert(!\"runtime error: call argument type mismatch\"), 0);\n", fp);
-        return;
+        codegen_fail(pn, "call argument type mismatch calling '%s' (ifa/102)",
+                     target->sym->name ? target->sym->name : "?");
       }
       fputs("  ", fp);
       if (pn->lvals.n && cg_get_string(pn->lvals[0])) {
@@ -2290,7 +2269,7 @@ class CBackendEmitter : public VirtualCGEmitter {
           fputs(");\n  }\n", fp);
         }
         if (arity_cases.last()->tests.n)
-          fputs("  else { assert(!\"runtime error: arity dispatch: no branch matched\"); }\n", fp);
+          fputs(cg_trap_c("  else { assert(!\"runtime error: arity dispatch: no branch matched\"); }\n"), fp);
         return;
       } else if (fns && fns->n > 1 && pn->rvals.n) {
         // ifa/issues/030 dispatch. Candidates are partitioned into
@@ -2841,7 +2820,7 @@ class CBackendEmitter : public VirtualCGEmitter {
             }
             fputs(");\n  }\n", fp);
           } else {
-            fputs("  else { assert(!\"runtime error: polymorphic dispatch: no branch matched\"); }\n", fp);
+            fputs(cg_trap_c("  else { assert(!\"runtime error: polymorphic dispatch: no branch matched\"); }\n"), fp);
           }
           return;
         }
@@ -2869,7 +2848,7 @@ class CBackendEmitter : public VirtualCGEmitter {
       // slot) before dispatch was even tried.
       codegen_unresolved_send(pn, fns, fns && fns->n ? "no dispatch plan can tell the candidates apart at run time"
                                                      : "the analysis found no target");
-      fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
+      fputs(cg_trap_c("  assert(!\"runtime error: matching function not found\");\n"), fp);
     }
   }
 };
@@ -2897,11 +2876,11 @@ static void do_phi_nodes(FILE *fp, PNode *n, int isucc) {
 // rdb/sha/softrender/voronoi2/yopyra). Such a jump is on a dead/salvaged
 // path by construction, so degrade it to a runtime-error trap (the
 // salvage convention, issue 056) instead of emitting the dangling goto.
-static void emit_goto_or_trap(FILE *fp, PNode *target, int label_id) {
+static void emit_goto_or_trap(FILE *fp, PNode *from, PNode *target, int label_id) {
   if (target && target->live && target->fa_live)
     fprintf(fp, "  goto L%d;\n", label_id);
   else
-    fputs("  assert(!\"runtime error: jump to unreachable block\");\n", fp);
+    codegen_fail(from, "a live jump to a block the analysis found unreachable (ifa/102)");
 }
 
 // issues/085: a Code_IF whose condition genuinely never resolved (FA
@@ -2976,59 +2955,47 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
           // the function (C++ undefined behaviour, `-Wreturn-type`).
           bool dead0 = n->code->exc_check && !n->cfg_succ[0]->fa_live;
           bool dead1 = n->code->exc_check && !n->cfg_succ[1]->fa_live;
+          // issues/085: a live IF whose condition FA salvaged to NOTYPE
+          // was never evaluated, not proven dead, so taking either arm
+          // would run code that assumed it held. Trap first. Only a LIVE
+          // IF can be reached: the dead IFs this walk also visits (an
+          // `if False:` body, the untaken arms of an `isinstance(..) or
+          // ..` chain) carry the same void_type and are dead text, which
+          // is where this check used to sit (ifa/102's census: 1,164
+          // emissions, none surviving -O2). The LLVM backend tests the
+          // same thing in emit_block_terminator.
+          bool succ_live = (n->cfg_succ[0]->live && n->cfg_succ[0]->fa_live) ||
+                           (n->cfg_succ.n > 1 && n->cfg_succ[1]->live && n->cfg_succ[1]->fa_live);
+          if (succ_live && is_unresolved_condition(fa, n->rvals[0]))
+            fputs(cg_trap_c("  assert(!\"runtime error: unresolved if condition\");\n"), fp);
           fprintf(fp, "  if (%s) {\n", cg_get_string(n->rvals[0]));
           do_phy_nodes(fp, n, 0);
           do_phi_nodes(fp, n, 0);
           if (dead0)
-            fputs("  assert(!\"runtime error: jump to unreachable block\");\n", fp);
+            fputs(cg_trap_c("  assert(!\"runtime error: jump to unreachable block\");\n"), fp);
           else if (done.set_add(n->cfg_succ[0]))
             write_c_pnode(fp, fa, f, n->cfg_succ[0], done);
           else
-            emit_goto_or_trap(fp, n->cfg_succ[0], n->code->label[0]->id);
+            emit_goto_or_trap(fp, n, n->cfg_succ[0], n->code->label[0]->id);
           fprintf(fp, "  } else {\n");
           do_phy_nodes(fp, n, 1);
           do_phi_nodes(fp, n, 1);
           if (dead1)
-            fputs("  assert(!\"runtime error: jump to unreachable block\");\n", fp);
+            fputs(cg_trap_c("  assert(!\"runtime error: jump to unreachable block\");\n"), fp);
           else if (done.set_add(n->cfg_succ[1]))
             write_c_pnode(fp, fa, f, n->cfg_succ[1], done);
           else
-            emit_goto_or_trap(fp, n->cfg_succ[1], n->code->label[1]->id);
+            emit_goto_or_trap(fp, n, n->cfg_succ[1], n->code->label[1]->id);
           fputs("  }\n", fp);
         }
       } else {
-        // issues/085: falling through here with no check would run
-        // whichever successor's own (unrelated) reachability
-        // happened to mark it live, as if the never-evaluated
-        // condition held. Trap first when that's what's actually
-        // happening -- same salvage convention emit_goto_or_trap
-        // above already uses for the analogous dead-label case.
-        //
-        // The successor-liveness guard is required, not optional:
-        // write_c_pnode's own dispatch visits every PNode reachable
-        // via cfg_succ regardless of that PNode's OWN liveness (so a
-        // Code_IF belonging to genuinely, permanently dead code --
-        // e.g. an `if False:` block whose condition was never typed
-        // at all, simply because nothing ever analyzed it -- gets
-        // visited too, and its condition Var can carry the same
-        // void_type as a truly-attempted-and-failed one). Without
-        // this check the trap fired unconditionally on such dead
-        // code (confirmed: astar.py's entire, never-executed
-        // `if False: AStar(...).findPath(...)` module body, which
-        // this session's own regression sweep against a pre-fix
-        // baseline caught -- astar went from a clean exit to
-        // aborting on the very first line of __main__).
-        bool succ_live = (n->cfg_succ.n > 0 && n->cfg_succ[0] && n->cfg_succ[0]->live && n->cfg_succ[0]->fa_live) ||
-                          (n->cfg_succ.n > 1 && n->cfg_succ[1] && n->cfg_succ[1]->live && n->cfg_succ[1]->fa_live);
-        if (succ_live && is_unresolved_condition(fa, n->rvals[0]))
-          fputs("  assert(!\"runtime error: unresolved if condition\");\n", fp);
         do_phy_nodes(fp, n, 0);
         do_phi_nodes(fp, n, 0);
       }
       break;
     case Code_GOTO:
       do_phi_nodes(fp, n, 0);
-      if (n->live && n->fa_live) emit_goto_or_trap(fp, n->cfg_succ.n ? n->cfg_succ[0] : nullptr, n->code->label[0]->id);
+      if (n->live && n->fa_live) emit_goto_or_trap(fp, n, n->cfg_succ.n ? n->cfg_succ[0] : nullptr, n->code->label[0]->id);
       break;
     case Code_SEND:
       if ((!n->live || !n->fa_live) && n->prim && n->prim->index == P_prim_reply)
@@ -3072,7 +3039,7 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
         else
           fputs("  return;\n", fp);
       } else if (n->fa_live && n->fa_noreturn)
-        fputs("  assert(!\"runtime error: send does not complete\");\n", fp);
+        fputs(cg_trap_c("  assert(!\"runtime error: send does not complete\");\n"), fp);
       break;
     default:
       do_phi_nodes(fp, n, 0);
@@ -3246,6 +3213,7 @@ static void write_c(FILE *fp, FA *fa, Fun *f, Vec<Var *> *globals = 0) {
   rebuild_cfg_pred_index(f);
   Vec<PNode *> done;
   done.set_add(f->entry);
+  cg_census_fun = f;
   write_c_pnode(fp, fa, f, f->entry, done);
   if (f->sym->is_generator) {
     fputs("  });\n", fp);

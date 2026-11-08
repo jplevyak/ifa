@@ -528,4 +528,15 @@ static inline void            cg_set_llvm(Fun *f, llvm::Function *fn) { f->llvm 
 // identical so a single test .check pins both.
 void cg_fail_unrepresentable_container_union(Sym *outer, Sym *fn_sym, cchar *path, int line);
 
+// ifa/102 census: with IFA_DBG_TRAPS set, report each run-time trap an
+// emitter writes into the program (`TRAP <backend> <kind> <fun>`), so the
+// traps a program reaches can be counted before they become refusals.
+// cg_census_fun is the Fun the C backend is writing; cg_trap_c returns its
+// argument (an emitted literal holding `runtime error: <kind>`) after
+// reporting it.
+extern Fun *cg_census_fun;
+void cg_trap_census(cchar *backend, cchar *kind, Fun *f);
+cchar *cg_trap_c_at(cchar *s, int line);
+#define cg_trap_c(s) cg_trap_c_at(s, __LINE__)
+
 #endif  // _codegen_common_H_

@@ -2597,3 +2597,31 @@ void cg_check_layout_contract() {
     fail("object layout contract violated at %d blind cast(s) -- see ifa/issues/123", violations);
 }
 
+
+Fun *cg_census_fun = nullptr;
+
+void cg_trap_census(cchar *backend, cchar *kind, Fun *f) {
+  static int on = -1;
+  if (on < 0) on = getenv("IFA_DBG_TRAPS") != nullptr;
+  if (!on) return;
+  Sym *fs = f ? f->sym : nullptr;
+  fprintf(stderr, "TRAP %s %s %s:%d\n", backend, kind, fs && fs->name ? fs->name : "?", fs ? fs->id : -1);
+}
+
+cchar *cg_trap_c_at(cchar *s, int line) {
+  cchar *k = strstr(s, "runtime error: ");
+  if (!k) return s;
+  k += strlen("runtime error: ");
+  cchar *e = k;
+  while (*e && *e != '"' && *e != '\\') e++;
+  char buf[128];
+  int n = (int)(e - k) < 127 ? (int)(e - k) : 127;
+  memcpy(buf, k, n);
+  buf[n] = 0;
+  for (char *c = buf; *c; c++)
+    if (*c == ' ') *c = '_';
+  char kind[160];
+  snprintf(kind, sizeof(kind), "%s@cg.cc:%d", buf, line);
+  cg_trap_census("c", kind, cg_census_fun);
+  return s;
+}

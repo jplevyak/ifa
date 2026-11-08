@@ -1,6 +1,6 @@
 # 102 — a condition codegen detects is a refusal or a demand, never a run-time trap
 
-**Status: open.** Rewritten 2026-11-03 to its current scope. The
+**Status: open; census and steps 1–2 done 2026-11-07** (below). Rewritten 2026-11-03 to its current scope. The
 unresolved-send half landed 2026-10-14 (`codegen_unresolved_send`, refused
 in every mode) and the softrender, `{list, tuple}` and bytearray cases are
 fixed; that record is in git (`git show 123ac81:ifa/issues/102-corpus-programs-compile-then-abort-at-runtime.md`).
@@ -71,6 +71,95 @@ One trap at a time, each with a same-binary corpus `check` sweep:
 
 Stop condition: no program that matched CPython stops compiling without an
 issue naming the demand.
+
+## Census, 2026-11-07 (tree `87924498` + the probe)
+
+**Probe.** `IFA_DBG_TRAPS=1` prints `TRAP <backend> <kind> <fun>:<id>` for
+every trap an emitter writes:
+
+- On the C backend, every `runtime error:` literal in `cg.cc` goes
+  through `cg_trap_c`, which tags it with its line.
+- On the LLVM backend, each `emit_salvage_trap` call, `emit_abort_trap`,
+  the arity-dispatch trap, and every `CreateUnreachable` fallback in
+  `emit_block_terminator` and on an unterminated block are probed.
+
+**Method.** All 77 corpus programs and all 529 `tests/*.py` were compiled
+on both backends with the probe on. A C trap counts as *surviving* when
+its literal is still in the `-O2` binary (`strings`), which means clang
+could not delete it as dead.
+
+**Never reached anywhere (suite and corpus, both backends):**
+
+- field type mismatch, on read and on store (cg.cc 853, 901);
+- list index type mismatch (983, 1169), and LLVM's index load and store;
+- list element type mismatch (1120, 1167, 1208);
+- primitive operand type mismatch (2071), and LLVM's binop operand
+  mismatch;
+- call argument type mismatch (2185/2188, and LLVM's);
+- bad getter (1047);
+- None coerced to a floating-point value (1671);
+- `emit_goto_or_trap`'s jump to a dead label (2904). The other dead-arm
+  site, 2992, is the same ifa/049 exc_check trap as 2983 and is kept with
+  it.
+
+These are plan step 1 with nothing behind it. Each becomes a refusal in
+every mode, and that is the end of it.
+
+**Reached:**
+
+| trap | C emitted (corpus / suite) | survives `-O2` | LLVM (corpus / suite) | reading |
+| --- | --- | --- | --- | --- |
+| unresolved if condition (3024) | 521 / 643, in every program | **0 binaries** | 15 / 23 (astar, dijkstra2, sudoku1, voronoi2; 20 suite tests) | C: the IF is not live, only a successor is (the `isinstance(x, int) or …` chains in numeric `__ne__`/`__eq__`), so the trap is dead text. C and LLVM guard it differently (C tests successor liveness only; LLVM is inside `closer->live && fa_live`), which is [200](200-llvm-backend-parity.md) A3's duplicated `is_unresolved_condition`. The LLVM hits are on live IFs and need a look |
+| getter not resolved (864) | 6 / 2: genetic2 (2), msp_ss (1), mwmatching (3), all in `__pyc_getslice__`; `genetic2_idioms`, `none_receiver_dead_path` | genetic2, msp_ss, mwmatching | same 6 / 2 | a read on a None-only receiver on a path FA cannot prove dead. CPython raises a catchable `AttributeError`/`TypeError` there, so this is [165](165-none-reaching-an-operation-is-silently-accepted.md)'s raise, not a refusal. All three programs match CPython |
+| jump to unreachable block (2983) | 278 / 14 | bh, msp_ss, othello2, rdb, voronoi2 | — | ifa/049's dead arm after a call that can only raise. FA proved it dead, so it is correct as a trap, like `send does not complete` |
+| send does not complete (3075) | 7 / 5 | pylife | — | `fa_noreturn`, correct as a trap |
+| polymorphic / arity dispatch: no branch matched (2844, 2293) | 63 + 12 / 29 + 68 | 14 binaries | arity 12 / 68 | the else arm of a dispatch FA proved exhaustive. This is step 3's territory (the guard the single-candidate path lacks), not a mismatch |
+| LLVM `unreachable` fallback (no successor block) | — | — | msp_ss `main` 41 + 5 elsewhere; suite: `evaluate` ×2 | an LLVM optimizer licence (UB if reached), not a trap. C has no matching emission (its dead-label trap is never reached), so this is an LLVM-only shape to explain |
+
+No `unterminated_block` fallback fired. Every program that reaches a trap
+matches CPython on both backends (sweeps `check__default__10c5f2f6+d9550405`,
+`check__PYC_LLVM_1__966472ad+e55772bf`).
+
+**What follows, in order:**
+
+1. **Done.** The nine never-reached kinds are refused in every mode by
+   `codegen_fail` with the site, the types and `(ifa/102)`:
+   - in `cg.cc`: field read and store, list index, the list element (both
+     tuple-list branches and the general store), bad getter, None into a
+     float, primitive operand, call argument, `emit_goto_or_trap`;
+   - in `cg_emit_llvm.cc`: binary operand, index load and store, and
+     `__pyc_c_call__` argument.
+
+   206's own union-read arm check, which in permissive mode fell through
+   to the cast, is refused the same way.
+2. **Done.** The C unresolved-if trap moved from the dead-IF branch to
+   the live one, before `if (cond)`, gated on a live successor. It is
+   therefore the same test LLVM makes, and no longer one that only
+   fires on dead text. The C census after it:
+
+   - corpus: unresolved-if 521 → 0;
+   - suite: unresolved-if 643 → 0;
+   - every other count is unchanged.
+
+   No live IF in the suite or the corpus has an unresolved condition on
+   the C backend.
+
+   LLVM's 15 corpus hits are dead too. In astar they are the `if False:`
+   body, behind `br i1 false` or in blocks with no predecessors. The
+   reason is that LLVM treats those IFs as live where C does not walk
+   them, which is a liveness divergence for 200 A3, not a trap that
+   runs.
+
+   Verification:
+   - `make test` is green: 58/0, and 493/0 on both backends.
+   - `check__default__87924498+01c0f4aa` is identical to
+     `…10c5f2f6+d9550405` in every column.
+   - `check__PYC_LLVM_1__87924498+01c0f4aa` is identical to
+     `…966472ad+e55772bf` except `bh`, which went rc=124 → 0, the
+     contention recorded in 200 A6.
+3. Make getter-not-resolved on a None-only receiver raise, with 165.
+4. Explain msp_ss's 41 LLVM `unreachable` terminators in `main`.
+5. Step 3 for the dispatch else arms.
 
 ## Why the check lives in codegen (settled 2026-10-14)
 

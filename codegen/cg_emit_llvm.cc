@@ -1235,7 +1235,8 @@ static bool is_binop_family(int idx) {
   }
 }
 
-static void emit_salvage_trap(EmitCtx &ctx, Var *dst_v = nullptr) {
+static void emit_salvage_trap(EmitCtx &ctx, cchar *kind, Var *dst_v = nullptr) {
+  cg_trap_census("llvm", kind, ctx.fn);
   llvm::Function *trap_fn = get_intrinsic_decl(llvm::Intrinsic::trap);
   Builder->CreateCall(trap_fn);
   if (dst_v && dst_v->type) {
@@ -1330,8 +1331,7 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   }
 
   if (lhs->getType() != rhs->getType()) {
-    emit_salvage_trap(ctx, dst_v);
-    return true;
+    codegen_fail(pn, "binary operand type mismatch (ifa/102)");
   }
 
   llvm::Value *res = nullptr;
@@ -1634,8 +1634,7 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
 
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
   if (!idx->getType()->isIntegerTy()) {
-    emit_salvage_trap(ctx, dst_v);
-    return true;
+    codegen_fail(pn, "list index is not an integer type (ifa/102)");
   }
   if (!idx->getType()->isIntegerTy(64))
     idx = Builder->CreateSExtOrTrunc(idx, i64);
@@ -1773,8 +1772,7 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
   llvm::Type *elem_ty = val->getType();
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
   if (!idx->getType()->isIntegerTy()) {
-    emit_salvage_trap(ctx);
-    return true;
+    codegen_fail(pn, "list index is not an integer type (ifa/102)");
   }
   if (!idx->getType()->isIntegerTy(64))
     idx = Builder->CreateSExtOrTrunc(idx, i64);
@@ -2661,11 +2659,8 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     // Same target whitelist as the C backend, duplicated rather than
     // shared across the two files -- matches how this primitive's
     // core logic is already kept in sync rather than shared elsewhere
-    // in this function (see __pyc_format_string__ below). Traps
-    // unconditionally on mismatch, not gated on fruntime_errors: none
-    // of this backend's other guarded-degrade paths (emit_salvage_trap's
-    // other call sites above) consult that flag either -- LLVM codegen
-    // isn't currently threaded through strict/permissive mode at all.
+    // in this function (see __pyc_format_string__ below). A mismatch is
+    // refused in every mode, as in the C backend (ifa/102).
     static cchar *checked_c_call_targets[] = {
         "_CG_str_eq",  "_CG_str_ne", "_CG_str_lt", "_CG_str_le",
         "_CG_str_gt",  "_CG_str_ge", "_CG_fopen",  "_CG_chr",
@@ -2684,8 +2679,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         Var *av = pn->rvals.v[i];
         if (!tv || !av) continue;
         if (c_call_arg_type_mismatch(tv->sym, av->type)) {
-          emit_salvage_trap(ctx, pn->lvals.n > 0 ? pn->lvals.v[0] : nullptr);
-          return true;
+          codegen_fail(pn, "call argument type mismatch calling '%s' (ifa/102)", fn_name);
         }
       }
     }
@@ -3231,7 +3225,7 @@ class LLVMEmitter : public VirtualCGEmitter {
       // check (already emitted, codegen_common) has a dead result and
       // nothing to load.
       if (pn->lvals.n && pn->lvals.v[0] && !pn->lvals.v[0]->live) return true;
-      emit_salvage_trap(ctx, pn->lvals.n ? pn->lvals.v[0] : nullptr);
+      emit_salvage_trap(ctx, "getter_not_resolved", pn->lvals.n ? pn->lvals.v[0] : nullptr);
       return true;
     }
     return false;
@@ -3461,7 +3455,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   ctx.watch_result_put = saved_put;
   if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->getTerminator()) {
     codegen_unresolved_send(pn, ctx.fn ? ctx.fn->calls.get(pn) : nullptr, "no dispatch plan produced its result");
-    emit_salvage_trap(ctx, dst);
+    emit_salvage_trap(ctx, "no_dispatch_plan_result", dst);
   }
 }
 
@@ -3476,7 +3470,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     // {list, tuple} union). Trap at run time, and give the result a
     // defined value so the code after it still emits.
     codegen_unresolved_send(pn, callees, "the analysis found no target");
-    emit_salvage_trap(ctx, pn->lvals.n ? pn->lvals.v[0] : nullptr);
+    emit_salvage_trap(ctx, "matching_function_not_found", pn->lvals.n ? pn->lvals.v[0] : nullptr);
     return;
   }
   Fun *single_target = get_target_fun_core(pn, ctx.fn);
@@ -3580,6 +3574,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     if (arity_cases.last()->tests.n) {
       // No case matched: FA proved this unreachable; trap like the C
       // backend's assert.
+      cg_trap_census("llvm", "arity_dispatch:_no_branch_matched", ctx.fn);
       llvm::Function *trap = get_intrinsic_decl(llvm::Intrinsic::trap);
       Builder->CreateCall(trap);
       Builder->CreateUnreachable();
@@ -4392,6 +4387,7 @@ static bool is_unresolved_condition(EmitCtx &ctx, Var *cond) {
 // condition was never evaluated, not proven dead), and `unreachable`
 // is an optimizer license (UB if actually hit), not a runtime check.
 static void emit_abort_trap(EmitCtx &ctx) {
+  cg_trap_census("llvm", "unresolved_if_condition", ctx.fn);
   llvm::FunctionType *abort_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {}, false);
   llvm::FunctionCallee abort_fn = TheModule->getOrInsertFunction("abort", abort_ty);
   Builder->CreateCall(abort_fn);
@@ -4411,7 +4407,7 @@ static void emit_abort_trap(EmitCtx &ctx) {
 void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
 
   if (!closer || !closer->code) {
-    Builder->CreateUnreachable();
+    { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
     return;
   }
   Code *cd = closer->code;
@@ -4422,7 +4418,7 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         succ_bb = ctx.label_bb.get(closer->cfg_succ.v[0]);
       }
       if (succ_bb) Builder->CreateBr(succ_bb);
-      else Builder->CreateUnreachable();
+      else { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       break;
     }
     case Code_IF: {
@@ -4493,7 +4489,7 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
           emit_phi_moves(ctx, closer, 1);
           Builder->CreateBr(f_bb);
         } else {
-          Builder->CreateUnreachable();
+          { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
         }
       } else if (t_bb && !f_bb) {
         emit_phy_moves(ctx, closer, 0);
@@ -4504,7 +4500,7 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         emit_phi_moves(ctx, closer, 1);
         Builder->CreateBr(f_bb);
       } else {
-        Builder->CreateUnreachable();
+        { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       }
       break;
     }
@@ -4635,9 +4631,9 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         llvm::BasicBlock *succ_bb =
             ctx.label_bb.get(closer->cfg_succ.v[0]);
         if (succ_bb) Builder->CreateBr(succ_bb);
-        else Builder->CreateUnreachable();
+        else { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       } else {
-        Builder->CreateUnreachable();
+        { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       }
       break;
     }
@@ -4646,11 +4642,11 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         llvm::BasicBlock *succ_bb =
             ctx.label_bb.get(closer->cfg_succ.v[0]);
         if (succ_bb) Builder->CreateBr(succ_bb);
-        else Builder->CreateUnreachable();
+        else { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       } else if (ctx.llvm_fn->getReturnType()->isVoidTy()) {
         Builder->CreateRetVoid();
       } else {
-        Builder->CreateUnreachable();
+        { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       }
       break;
     }
@@ -5315,6 +5311,7 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
   for (llvm::BasicBlock &bb : *ctx.llvm_fn) {
     if (!bb.getTerminator()) {
       Builder->SetInsertPoint(&bb);
+      cg_trap_census("llvm", "unterminated_block", ctx.fn);
       Builder->CreateUnreachable();
     }
   }
