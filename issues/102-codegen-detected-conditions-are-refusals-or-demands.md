@@ -114,7 +114,7 @@ every mode, and that is the end of it.
 | jump to unreachable block (2983) | 278 / 14 | bh, msp_ss, othello2, rdb, voronoi2 | — | ifa/049's dead arm after a call that can only raise. FA proved it dead, so it is correct as a trap, like `send does not complete` |
 | send does not complete (3075) | 7 / 5 | pylife | — | `fa_noreturn`, correct as a trap |
 | polymorphic / arity dispatch: no branch matched (2844, 2293) | 63 + 12 / 29 + 68 | 14 binaries | arity 12 / 68 | the else arm of a dispatch FA proved exhaustive. This is step 3's territory (the guard the single-candidate path lacks), not a mismatch |
-| LLVM `unreachable` fallback (no successor block) | — | — | msp_ss `main` 41 + 5 elsewhere; suite: `evaluate` ×2 | an LLVM optimizer licence (UB if reached), not a trap. C has no matching emission (its dead-label trap is never reached), so this is an LLVM-only shape to explain |
+| LLVM `unreachable` fallback (no successor block) | — | — | msp_ss `main` 41 + 5 elsewhere; suite: `evaluate` ×2 | an LLVM optimizer licence (UB if reached), not a trap. It was LLVM emitting FA-dead regions; fixed in step 4 below |
 
 No `unterminated_block` fallback fired. Every program that reaches a trap
 matches CPython on both backends (sweeps `check__default__10c5f2f6+d9550405`,
@@ -158,7 +158,41 @@ matches CPython on both backends (sweeps `check__default__10c5f2f6+d9550405`,
      `…966472ad+e55772bf` except `bh`, which went rc=124 → 0, the
      contention recorded in 200 A6.
 3. Make getter-not-resolved on a None-only receiver raise, with 165.
-4. Explain msp_ss's 41 LLVM `unreachable` terminators in `main`.
+4. **Done.** LLVM's `unreachable` fallbacks were FA-dead code that LLVM
+   emitted and C does not. There were two entries into it:
+
+   - **The exception check after a call that can only raise** (ifa/049).
+     C traps on the arm FA never reached (`dead0`/`dead1`). LLVM gave
+     that arm a block, branched into it, and emitted the region behind
+     it. Its nodes had no values, so its IFs had no condition and ended
+     in `unreachable`. That was msp_ss's 46, and every dead arm in the
+     corpus.
+   - **The code after a send that cannot complete** (`fa_noreturn`
+     without a raise, ifa/178). C writes `send does not complete`. LLVM
+     wrote nothing and ran on into the region. That was
+     `tests/expr_evaluator`'s `evaluate` ×2.
+
+   `succ_dead` (`cg_emit_llvm.cc`) now keeps both regions out of
+   `discover_blocks` and `emit_pnode`. A dead exception arm branches to
+   an `exc.dead` trap block. A non-completing send traps after itself,
+   whether or not DCE kept it, as C does.
+
+   LLVM census after the fix:
+
+   | | corpus | suite |
+   | --- | --- | --- |
+   | `unreachable` fallbacks | 46 → 0 | 2 → 0 |
+   | dead-arm traps | 278 | 14 |
+   | `send does not complete` | 7 | 5 |
+
+   The trap counts are now exactly C's. Unresolved-if fell 15 → 7 in the
+   corpus and 23 → 19 in the suite, because those were inside the
+   regions that are no longer emitted.
+
+   Verification:
+   - `make test` is green.
+   - `check__PYC_LLVM_1__04baeca8+f4c07c87` is identical to
+     `…87924498+01c0f4aa` in every column.
 5. Step 3 for the dispatch else arms.
 
 ## Why the check lives in codegen (settled 2026-10-14)

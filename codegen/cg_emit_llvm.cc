@@ -4404,6 +4404,37 @@ static void emit_abort_trap(EmitCtx &ctx) {
 // would execute in a block shared by both, corrupting the other branch.
 // -------------------------------------------------------------
 
+// ifa/049, as cg.cc's write_c_pnode (dead0/dead1): after a call that can
+// only raise, FA keeps only the exception check's pending arm, and the
+// other arm's successor is not fa_live. Nothing behind it is emitted; the
+// arm itself is a trap (ifa/102: this used to allocate the dead region's
+// blocks, emit them empty, and end them in `unreachable`, an optimizer
+// licence where C has a trap -- msp_ss's main had 41).
+static bool exc_arm_dead(PNode *n, int si) {
+  return n && n->code && n->code->kind == Code_IF && n->code->exc_check && n->live && n->fa_live &&
+         si < n->cfg_succ.n && n->cfg_succ.v[si] && !n->cfg_succ.v[si]->fa_live;
+}
+
+// The same for the code after a send that cannot complete (fa_noreturn):
+// emit_pnode traps after the send, and nothing FA did not reach behind it
+// is emitted. An fa_live successor (a label other paths reach) still is.
+static bool succ_dead(PNode *n, int si) {
+  if (exc_arm_dead(n, si)) return true;
+  return n && n->code && n->code->kind == Code_SEND && n->fa_live && n->fa_noreturn &&
+         si < n->cfg_succ.n && n->cfg_succ.v[si] && !n->cfg_succ.v[si]->fa_live;
+}
+
+static llvm::BasicBlock *exc_dead_arm_block(EmitCtx &ctx) {
+  llvm::BasicBlock *cur = Builder->GetInsertBlock();
+  llvm::BasicBlock *bb = llvm::BasicBlock::Create(*TheContext, "exc.dead", ctx.llvm_fn);
+  Builder->SetInsertPoint(bb);
+  cg_trap_census("llvm", "jump_to_unreachable_block", ctx.fn);
+  Builder->CreateCall(get_intrinsic_decl(llvm::Intrinsic::trap));
+  Builder->CreateUnreachable();
+  Builder->SetInsertPoint(cur);
+  return bb;
+}
+
 void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
 
   if (!closer || !closer->code) {
@@ -4449,6 +4480,9 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       if (closer->cfg_succ.n > 1 && closer->cfg_succ.v[1]) {
         f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
       }
+      bool dead0 = exc_arm_dead(closer, 0), dead1 = exc_arm_dead(closer, 1);
+      if (dead0) t_bb = exc_dead_arm_block(ctx);
+      if (dead1) f_bb = exc_dead_arm_block(ctx);
       // issues/085: a genuinely unresolved condition (FA gave up,
       // salvaged to NOTYPE/void_type -- not proven dead the way
       // const_if_successor's true_type/false_type check above
@@ -4860,6 +4894,7 @@ void discover_blocks(EmitCtx &ctx, Fun *f) {
       only_succ = const_if_successor(ctx, cur);
     for (int si = 0; si < cur->cfg_succ.n; si++) {
       if (only_succ >= 0 && si != only_succ) continue;
+      if (succ_dead(cur, si)) continue;
       PNode *s = cur->cfg_succ.v[si];
       if (!s || !seen.set_add(s)) continue;
       if (s->code && s->code->kind == Code_LABEL) {
@@ -4961,6 +4996,19 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
         break;
     }
   }
+  if (pn->code->kind == Code_SEND && pn->fa_live && pn->fa_noreturn && !pn->fa_noreturn_raises &&
+      Builder->GetInsertBlock() && !Builder->GetInsertBlock()->getTerminator()) {
+    // ifa/178, as cg.cc: a send that cannot complete in any contour of
+    // this clone (a callee that never returns, a read on None), whether
+    // or not DCE kept the send itself. Trap rather than run on into the
+    // code after it, which FA never reached (ifa/102: that code was
+    // emitted with no values and ended in `unreachable`;
+    // tests/expr_evaluator's evaluate).
+    cg_trap_census("llvm", "send_does_not_complete", ctx.fn);
+    Builder->CreateCall(get_intrinsic_decl(llvm::Intrinsic::trap));
+    Builder->CreateUnreachable();
+    Builder->SetInsertPoint(llvm::BasicBlock::Create(*TheContext, "after.noreturn", ctx.llvm_fn));
+  }
   // Phi/phy edge MOVE emission — mirrors cg.cc:do_phy_nodes /
   // do_phi_nodes at the per-PNode tail switch.  Called AFTER
   // the main emit so phi/phy MOVEs see the just-computed
@@ -5004,6 +5052,7 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
   if (pn->code->kind == Code_IF && pn->live && pn->fa_live) only_succ = const_if_successor(ctx, pn);
   for (int si = 0; si < pn->cfg_succ.n; si++) {
     if (only_succ >= 0 && si != only_succ) continue;
+    if (succ_dead(pn, si)) continue;
     PNode *s = pn->cfg_succ.v[si];
     if (s && done.set_add(s)) {
       emit_pnode(ctx, s, done);
@@ -5311,7 +5360,7 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
   for (llvm::BasicBlock &bb : *ctx.llvm_fn) {
     if (!bb.getTerminator()) {
       Builder->SetInsertPoint(&bb);
-      cg_trap_census("llvm", "unterminated_block", ctx.fn);
+      if (!llvm::pred_empty(&bb)) cg_trap_census("llvm", "unterminated_block", ctx.fn);
       Builder->CreateUnreachable();
     }
   }
