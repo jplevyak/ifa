@@ -1,11 +1,14 @@
 # 102 — a condition codegen detects is a refusal or a demand, never a run-time trap
 
-**Status: open; census and steps 1–6 done 2026-11-07** (below). Rewritten 2026-11-03 to its current scope. The
+**Closed 2026-11-07.** Every trap kind the census found is now a refusal,
+a CPython raise, or a guard at a point FA proved unreachable (below). The
+one residual, LLVM's dead unresolved-if IFs, is [200](../200-llvm-backend-parity.md) A3.
+It was rewritten 2026-11-03 to its current scope.
 unresolved-send half landed 2026-10-14 (`codegen_unresolved_send`, refused
 in every mode) and the softrender, `{list, tuple}` and bytearray cases are
 fixed; that record is in git (`git show 123ac81:ifa/issues/102-corpus-programs-compile-then-abort-at-runtime.md`).
-It now also carries [closed/079](closed/079-DISPATCH-single-candidate-dispatch-unchecked-cast.md)'s
-safeguard and [closed/192](closed/192-review-analysis-and-issues-2026-11.md)
+It now also carries [closed/079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md)'s
+safeguard and [closed/192](192-review-analysis-and-issues-2026-11.md)
 A6.
 
 ## Principle
@@ -31,7 +34,7 @@ shape with `emit_salvage_trap`.
 | list index type mismatch | 1105, 1293 | the index is not an integer type |
 | list element type mismatch | 1241, 1291, 1329 | element C type disagrees with the slot |
 | primitive operand type mismatch | 2180 | `write_c_prim`'s operand check |
-| call argument type mismatch | 2292 | the clone's formal is coarser than the actual (closed/097, [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 2) |
+| call argument type mismatch | 2292 | the clone's formal is coarser than the actual (closed/097, [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 2) |
 | bad getter | 1170 | an empty record type |
 | None coerced to a floating-point value | 1789 | a dead nil arm into a float slot (closed/071) |
 | unresolved if condition | 3119 | a condition FA salvaged to NOTYPE |
@@ -55,9 +58,9 @@ One trap at a time, each with a same-binary corpus `check` sweep:
    corpus program and no suite test reaches the trap, that is the end.
 2. **If a program reaches it**, the trap is a representation fact FA never
    saw. File it against the analysis with the backtrack
-   ([205](205-ai-centric-interface.md) D1's classification says whether
+   ([205](../205-ai-centric-interface.md) D1's classification says whether
    it is temporal, polymorphism, or separable), and leave the refusal in
-   place. [201](201-representation-oracle.md) is where FA will be able to
+   place. [201](../201-representation-oracle.md) is where FA will be able to
    ask the question codegen is answering here.
 3. **The single-candidate fast path** (closed/079): after the nil test and
    the tag compares, `directs.n == 1` casts the remainder to the one
@@ -107,8 +110,8 @@ every mode, and that is the end of it.
 
 | trap | C emitted (corpus / suite) | survives `-O2` | LLVM (corpus / suite) | reading |
 | --- | --- | --- | --- | --- |
-| unresolved if condition (3024) | 521 / 643, in every program | **0 binaries** | 15 / 23 (astar, dijkstra2, sudoku1, voronoi2; 20 suite tests) | C: the IF is not live, only a successor is (the `isinstance(x, int) or …` chains in numeric `__ne__`/`__eq__`), so the trap is dead text. C and LLVM guard it differently (C tests successor liveness only; LLVM is inside `closer->live && fa_live`), which is [200](200-llvm-backend-parity.md) A3's duplicated `is_unresolved_condition`. The LLVM hits are on live IFs and need a look |
-| getter not resolved (864) | 6 / 2: genetic2 (2), msp_ss (1), mwmatching (3), all in `__pyc_getslice__`; `genetic2_idioms`, `none_receiver_dead_path` | genetic2, msp_ss, mwmatching | same 6 / 2 | a read on a None-only receiver on a path FA cannot prove dead. CPython raises a catchable `AttributeError`/`TypeError` there, so this is [165](165-none-reaching-an-operation-is-silently-accepted.md)'s raise, not a refusal. All three programs match CPython |
+| unresolved if condition (3024) | 521 / 643, in every program | **0 binaries** | 15 / 23 (astar, dijkstra2, sudoku1, voronoi2; 20 suite tests) | C: the IF is not live, only a successor is (the `isinstance(x, int) or …` chains in numeric `__ne__`/`__eq__`), so the trap is dead text. C and LLVM guard it differently (C tests successor liveness only; LLVM is inside `closer->live && fa_live`), which is [200](../200-llvm-backend-parity.md) A3's duplicated `is_unresolved_condition`. The LLVM hits are on live IFs and need a look |
+| getter not resolved (864) | 6 / 2: genetic2 (2), msp_ss (1), mwmatching (3), all in `__pyc_getslice__`; `genetic2_idioms`, `none_receiver_dead_path` | genetic2, msp_ss, mwmatching | same 6 / 2 | a read on a None-only receiver on a path FA cannot prove dead. CPython raises a catchable `AttributeError`/`TypeError` there, so this is [165](../165-none-reaching-an-operation-is-silently-accepted.md)'s raise, not a refusal. All three programs match CPython |
 | jump to unreachable block (2983) | 278 / 14 | bh, msp_ss, othello2, rdb, voronoi2 | — | ifa/049's dead arm after a call that can only raise. FA proved it dead, so it is correct as a trap, like `send does not complete` |
 | send does not complete (3075) | 7 / 5 | pylife | — | `fa_noreturn`, correct as a trap |
 | polymorphic / arity dispatch: no branch matched (2844, 2293) | 63 + 12 / 29 + 68 | 14 binaries | arity 12 / 68 | the else arm of a dispatch FA proved exhaustive. This is step 3's territory (the guard the single-candidate path lacks), not a mismatch |
@@ -282,7 +285,7 @@ Whether candidates can be discriminated depends on representation routes
 (tag, null test, arity header, layout bits) over post-clone Funs; four of
 its inputs are post-FA. FA cannot restate it without drifting (AGENTS.md:
 call it, never restate it). The refusal stays where the plans are tried;
-what moves to FA is the oracle ([201](201-representation-oracle.md)).
+what moves to FA is the oracle ([201](../201-representation-oracle.md)).
 
 ## The untyped-value work list (kept from closed/149)
 
@@ -300,6 +303,23 @@ type lacks it (then it goes to the top-level `issues/`).
 
 ## Verification
 
-The generated C for the corpus has zero `runtime error:` strings other
-than `send does not complete`; every refusal names its site; no program
+**As planned.** The planned verification was: the generated C for the
+corpus has zero `runtime error:` strings other than
+`send does not complete`, every refusal names its site, and no program
 that matched CPython regresses.
+
+**As closed (2026-11-07).** Every refusal names its site, and every
+`check` sweep in steps 1–6 is identical to its predecessor. The
+`runtime error:` strings left in emitted code are all at points FA
+proved unreachable:
+
+- **The no-exception arm after a call that can only raise** (ifa/049,
+  `jump to unreachable block`).
+- **The code after a send that cannot complete** (`send does not
+  complete`).
+- **The no-match arm of a polymorphic or arity dispatch.** Step 5's
+  coverage check proves the arms cover the receiver union.
+
+Each is a guard against an analysis bug, not a detected condition, so it
+is kept. On LLVM, the unresolved-if traps at FA-dead IFs remain; they are
+200 A3.

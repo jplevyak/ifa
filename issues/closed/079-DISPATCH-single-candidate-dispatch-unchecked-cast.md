@@ -1,6 +1,6 @@
 # 079 — the single-candidate dispatch fast path casts without checking the union's other members
 
-**CLOSED 2026-11-03: merged into [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)** as its safeguard row: the single-candidate fast path records its cast with `cg_note_blind_cast` and fails the compile on a member the candidate does not accept. The permissive remedy moved to [025](../025-FA-intra-function-union-narrowing.md) on 2026-10-16 and stays there.
+**CLOSED 2026-11-03: merged into [102](102-codegen-detected-conditions-are-refusals-or-demands.md)** as its safeguard row: the single-candidate fast path records its cast with `cg_note_blind_cast` and fails the compile on a member the candidate does not accept. The permissive remedy moved to [025](../025-FA-intra-function-union-narrowing.md) on 2026-10-16 and stays there.
 
 **Status:** open, CLEANUP, not attempted. **Shrunk 2026-10-16** to the
 codegen safeguard alone: the crash it was filed for can no longer reach

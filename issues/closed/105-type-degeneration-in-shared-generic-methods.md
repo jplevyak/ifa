@@ -107,7 +107,7 @@ gives it a direct, cheap measurement.
   they move independently, the causal story here is wrong.
 - Corpus: no exit-code **or run-status** changes
   (`ifa/issues/runstatus.sh` — see
-  [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)).
+  [102](102-codegen-detected-conditions-are-refusals-or-demands.md)).
 
 
 ## CORRECTION: the degeneration reproducer is not a failure reproducer
@@ -376,7 +376,7 @@ target but does not demonstrate: replacing linalg's single
 `M1=copy.deepcopy(M)` with `M1=[row[:] for row in M]` takes it from 62
 warnings plus a BOXING refusal to a **clean rc=0 compile**, nothing else
 changed. (It then aborts at runtime on a separate `matching function not
-found` -- an [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)
+found` -- an [102](102-codegen-detected-conditions-are-refusals-or-demands.md)
 member.) So `list.__deepcopy__` is not merely correlated with linalg's
 failure; it is the whole of it.
 

@@ -42,5 +42,5 @@ runtime assert rather than mis-dispatching.
 **Not this issue:** a union member with no implementation at all
 ([079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md)), and a
 `{list, tuple}` union with no tag
-([102](../102-codegen-detected-conditions-are-refusals-or-demands.md),
+([102](102-codegen-detected-conditions-are-refusals-or-demands.md),
 `tests/list_tuple_union_method.py`).

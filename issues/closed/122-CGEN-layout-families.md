@@ -118,7 +118,7 @@ bh:  'Cell' blind-cast to 'Body', read at e28,
 `_CG_int64`** -- every later field shifts by 7 -- and segfaults
 (`run_rc=139`). `bh` casts to a struct one member short, and aborts
 (`run_rc=139`). Both are
-[102](../102-codegen-detected-conditions-are-refusals-or-demands.md) members that
+[102](102-codegen-detected-conditions-are-refusals-or-demands.md) members that
 now have a named, located, compile-time cause instead of only a crash.
 
 **Fatal in every mode as of 2026-09-01.** It first landed as a warning

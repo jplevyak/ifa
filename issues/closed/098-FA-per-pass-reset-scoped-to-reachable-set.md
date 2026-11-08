@@ -405,7 +405,7 @@ reported repeatedly. Its three `unresolved call` messages are
 `FRONT[FRONT, 1] != FRONT[FRONT, 4]` — element reads whose type has
 degraded far enough that `__eq__`/`__ne__` no longer dispatch. `rubik`
 already aborted at run time in both arms (`run_rc=134`), so these are
-exactly the signal [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)
+exactly the signal [102](102-codegen-detected-conditions-are-refusals-or-demands.md)
 is short of: a compile-then-crash program that was reporting nothing
 about the reason.
 

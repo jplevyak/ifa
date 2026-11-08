@@ -51,7 +51,7 @@ lesson this directory paid for.
 9. **Check for a missing builtin before blaming FA.**
    ([closed/086](closed/086-list-and-dict-have-no-copy-method.md))
 10. **A condition the compiler detects is a refusal or a demand, never a
-    run-time trap.** ([102](102-codegen-detected-conditions-are-refusals-or-demands.md))
+    run-time trap.** ([102](closed/102-codegen-detected-conditions-are-refusals-or-demands.md))
 
 ## The plan
 
@@ -61,8 +61,8 @@ row are independent of each other.
 | order | do | why first | unblocks |
 | --- | --- | --- | --- |
 | 1 | the small defects. Done 2026-11-06: [200](200-llvm-backend-parity.md) A1 and A5, [204](204-optimize-pass-fixes.md) rows 1–2, [039](039-FA-uninitialized-local-reads-silent.md) item 1, [197](197-tuple-arity-dispatch-leftovers.md) item 1 (no fixture yet). [206](closed/206-a-field-read-through-a-union-receiver-reinterprets-int-as-float.md) (closed 2026-11-07: refused, then satisfied by a class-tag test at the read; `softrender` unchanged). [200](200-llvm-backend-parity.md) A6 (done 2026-11-07: three `-b` index-path defects behind `softrender` rendering nothing). Left: 204 row 3 (tried; not a day), 039 item 2 (needs a sentinel, not a day) | silent deviations on the default path | the contract (AGENTS.md) holds on both backends |
-| 2 | [102](102-codegen-detected-conditions-are-refusals-or-demands.md): the eleven traps, one at a time. Census done 2026-11-07: nine never reached, now refused; the C unresolved-if guard moved to live IFs. LLVM no longer emits FA-dead regions (its `unreachable` fallbacks: 48 → 0). `convert_NOTYPE_to_void` deleted (it touched only dead text). A None-only getter raises; every classtag dispatch is checked to cover its receiver union (54 unchecked None receivers now raise, issues/180 is refused). Left: the traps FA proved dead (exc_check arms, non-completing sends, dispatch else arms), and LLVM's dead unresolved-ifs (200 A3) | turns miscompiles into refusals and surfaces the demands FA never saw | [201](201-representation-oracle.md) has its witnesses |
-| 3 | [196](196-the-setter-stage-splits-on-a-fact.md): the counterfactual setter demand | the one open design question in the splitter | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3, `go`'s one layout, voronoi's one `list[int64]` |
+| 2 | [102](closed/102-codegen-detected-conditions-are-refusals-or-demands.md): **closed 2026-11-07**. Nine never-reached traps are refused; the C unresolved-if guard moved to live IFs; LLVM no longer emits FA-dead regions; `convert_NOTYPE_to_void` deleted; a None-only getter raises; every classtag dispatch is checked to cover its receiver union. Residual: LLVM's dead unresolved-ifs, in 200 A3 | turns miscompiles into refusals and surfaces the demands FA never saw | [201](201-representation-oracle.md) has its witnesses |
+| 3 | [196](196-the-setter-stage-splits-on-a-fact.md): the counterfactual setter demand. 2026-11-08: the demand-free half landed (120 of 720 splits had no demand; declining them is monotone). `go` is still split: its demand arrives through one-contour members on a violation's reach, and no local test separates it from dijkstra2/plcfrs/pylife/sunfish. Next: which violation, and can the partition change it | the one open design question in the splitter | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3, `go`'s one layout, voronoi's one `list[int64]` |
 | 4 | [205](205-ai-centric-interface.md) D1: structured diagnostics with the backtrack attached | the walks exist; an agent or a person can then act on temporal unions by editing the program | every refusal classified; the corpus edit policy becomes mechanical |
 | 5 | [203](203-shrink-the-graph-fa-walks.md): measure, then demand-placed renames and copy propagation | FA cost is Vars × contours × passes; this is the Vars | [186](186-FA-pass-one-confluence-through-shared-builtins.md) direction 3 |
 | 6 | [198](198-decision-snapshot-across-compiles.md) | most of a large program's convergence, on every recompile | the edit-compile loop |
@@ -80,7 +80,6 @@ row are independent of each other.
 | [039](039-FA-uninitialized-local-reads-silent.md) | possibly-unbound locals: analysis, `--safe` fill and DEFINITELY-by-default done; the runtime check is not, so `f(0)` prints `42` with no warning. Item 2 needs a sentinel on the unassigned path. |
 | [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that arrives: the check exits instead of raising a catchable `TypeError`; primitive argument positions other than `strcat` unchecked. |
 | [197](197-tuple-arity-dispatch-leftovers.md) | a `no_static_arity` flip on the final pass leaves a stale dispatch that aborts at run time; same-arity tuples with different element types in one list are refused. |
-| [102](102-codegen-detected-conditions-are-refusals-or-demands.md) | eleven codegen-detected type mismatches become `assert(!"runtime error")` under the default mode; the single-candidate cast safeguard. Refuse or demand, one at a time. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}` has no representation; a tri-state sentinel, chosen through [201](201-representation-oracle.md). |
 | [025](025-FA-intra-function-union-narrowing.md) | narrowing: branch correlation over a class union (tail duplication, or the permissive `AttributeError`), and composed predicates (`is not None and isinstance`). |
 | [072](072-FA-empty-container-notype-current-mechanism-and-plan.md) | a never-written container's bottom element reaching live code: derive "zero-trip" and "raises" from it. |
@@ -133,7 +132,8 @@ Frontend-side items from the same work are in the top-level `issues/`:
 | [010](closed/010-CLEANUP-vec-set-api-cleanup.md) | merged | 202 (Vec/Set) |
 | [030](closed/030-DISPATCH-polymorphic-dispatch-fat-pointers.md) | merged | 199 (tables), 200 (the two divergences) |
 | [054](closed/054-CGEN-remove-unconditional-tuple-list-header.md) | merged | 199 (cost), 201 (the flag) |
-| [079](closed/079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | merged | 102 (safeguard), 025 (permissive remedy) |
+| [079](closed/079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | merged | 102 (safeguard; done 2026-11-07), 025 (permissive remedy) |
+| [102](closed/102-codegen-detected-conditions-are-refusals-or-demands.md) | closed 2026-11-07: steps 1–6 done | 200 A3 (LLVM's dead unresolved-ifs), 165 residual 1 (the None checks exit rather than raise) |
 | [093](closed/093-CGEN-int-float-union-move-not-coerced.md) | merged | 200 A5 |
 | [094](closed/094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md) | merged | 202 (ASAN) |
 | [124](closed/124-FA-refuse-imprecise-inference.md) | residual 1 fixed; the rest moved | 196 (go's six sites), 201 (FA types, not strings) |

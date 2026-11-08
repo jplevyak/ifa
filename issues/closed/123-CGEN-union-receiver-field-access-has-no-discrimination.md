@@ -24,7 +24,7 @@ DISPATCH and has no counterpart for FIELD ACCESS.
 `shedskin_examples/go` segfaults (`run_rc=139`); `shedskin_examples/bh`
 dies inside the collector (`GC_clear_fl_marks`), the signature of a
 wrong-offset write. Both are
-[102](../102-codegen-detected-conditions-are-refusals-or-demands.md) members.
+[102](102-codegen-detected-conditions-are-refusals-or-demands.md) members.
 
 ## Root cause, with the crash line
 
@@ -172,7 +172,7 @@ miscompile now; 1 is the real fix.
 
 ## What this unblocks
 
-Two of [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)'s
+Two of [102](102-codegen-detected-conditions-are-refusals-or-demands.md)'s
 compiles-then-crashes programs, with a named cause rather than a
 bisection. More broadly it is the first crash in that bucket traced end
 to end from a compile-time diagnostic to the faulting line — which is

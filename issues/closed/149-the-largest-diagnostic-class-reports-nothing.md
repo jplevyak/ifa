@@ -1,6 +1,6 @@
 # ifa/149 — the corpus's largest warning class was reporting a blank
 
-> **CLOSED 2026-09-28 (done; work list moved).** Both diagnostic fixes landed: a blank `illegal:` now prints `(no type)` or `__pyc_None_type__`, and bottom-typed SEND_ARGUMENT duplicates are no longer reported. The census conclusion (86% of unresolved calls cascade from an untyped value) and its work list moved to [102](../102-codegen-detected-conditions-are-refusals-or-demands.md).
+> **CLOSED 2026-09-28 (done; work list moved).** Both diagnostic fixes landed: a blank `illegal:` now prints `(no type)` or `__pyc_None_type__`, and bottom-typed SEND_ARGUMENT duplicates are no longer reported. The census conclusion (86% of unresolved calls cascade from an untyped value) and its work list moved to [102](102-codegen-detected-conditions-are-refusals-or-demands.md).
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 

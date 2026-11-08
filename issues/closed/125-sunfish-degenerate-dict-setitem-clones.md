@@ -1,6 +1,6 @@
 # 125 — sunfish: every `dict::__setitem__` clone degenerates to `getter not resolved`
 
-> **CLOSED 2026-09-28 (symptom gone).** sunfish no longer compiles and then aborts in `dict::__setitem__`. Sweep `4b61e721`: compile_rc=1, with `'score' has no type` and `{list, tuple}` receiver errors. The four refuted hypotheses below stand. The current failure is untriaged and belongs to [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)'s untyped-value work list.
+> **CLOSED 2026-09-28 (symptom gone).** sunfish no longer compiles and then aborts in `dict::__setitem__`. Sweep `4b61e721`: compile_rc=1, with `'score' has no type` and `{list, tuple}` receiver errors. The four refuted hypotheses below stand. The current failure is untriaged and belongs to [102](102-codegen-detected-conditions-are-refusals-or-demands.md)'s untyped-value work list.
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
@@ -15,7 +15,7 @@ surfaces; the cause is upstream in FA/clone, which produces a
 `dict::__setitem__` clone whose key and value formals are gone.
 
 **Severity:** compiles with warnings and exit 0, then aborts at runtime.
-Class B of [102](../102-codegen-detected-conditions-are-refusals-or-demands.md).
+Class B of [102](102-codegen-detected-conditions-are-refusals-or-demands.md).
 
 **Reproducer:** `shedskin_examples/sunfish/sunfish.py` only. **No minimal
 repro yet** — four hypotheses tested and refuted, see below. This is
@@ -152,9 +152,9 @@ arity in a dict value position is demonstrably fine.
 ## What this unblocks
 
 `sunfish` is one of the corpus's `compile_rc=0 run_rc≠0` programs, the
-population [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)
+population [102](102-codegen-detected-conditions-are-refusals-or-demands.md)
 exists to shrink and the one that
-[corpus-compiles-but-crashes](../102-codegen-detected-conditions-are-refusals-or-demands.md)
+[corpus-compiles-but-crashes](102-codegen-detected-conditions-are-refusals-or-demands.md)
 makes the case is invisible to `-m compile` sweeps. It is also the last
 thing standing between sunfish and a working chess engine, having
 already survived tuple slicing

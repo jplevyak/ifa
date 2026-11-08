@@ -7258,10 +7258,56 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
 
 
 
+// ifa/196: the SETTER stage splits only a contour something DEMANDS. Its
+// nomination -- the setters of a confluence differ -- is a fact. A split is
+// now taken only when the merged contour carries a demand, asked with
+// SETTER_OF_SETTER's tests (sos_*, built once per stage):
+//
+//   - a member that cannot be represented;
+//   - a member on the backward reach of a type violation;
+//   - a member holding two or more receivers, or two or more CALLED values,
+//     of one send that dispatches to two or more functions;
+//   - or a CreationSet a member holds carrying one of these, to any depth.
+//
+// The called-value clause is new here. Without it, `decorator_recursion`
+// segfaults: `counted`'s wrapper closure holds `f = {fact, down}`, and
+// `f(n)` dispatches to two functions, which no receiver test sees.
+//
+// Census (2026-11-08, 606 corpus and suite compiles): 120 of the 720
+// SETTER splits had none of these. Declining them: suite unchanged, every
+// corpus verdict unchanged, EntrySets and CreationSets down in 11 programs
+// and up in none.
+//
+// What this does NOT do is the counterfactual 196 asks for, and `go` keeps
+// its two UCTNode layouts. Its split is demanded: losses/pos/wins (one
+// contour each) lie on a violation's backward reach, and parent/bestchild
+// ({None, UCTNode}) are receivers of a truthiness dispatch. Counting only
+// members a split could partition (two or more contours) fixes go and loses
+// dijkstra2, plcfrs, pylife and sunfish, whose demand also arrives through
+// a one-contour member while the split partitions another. See 196.
+static void sos_build_demand();
+static bool sos_member_demanded(AVar *av);
+static bool sos_type_conflict(AVar *av);
+static bool sos_callee_demanded(AVar *av);
+static bool setter_contour_demanded(Vec<AVar *> &avs) {
+  for (AVar *a : avs) {
+    if (!a || !a->out) continue;
+    if (atype_irrepresentable(a->out) || sos_member_demanded(a) || sos_callee_demanded(a) || sos_type_conflict(a))
+      return true;
+  }
+  return false;
+}
+
 [[nodiscard]] static int split_ess_setters(Vec<AVar *> &confluences) {
   int analyze_again = 0;
+  if (confluences.n) sos_build_demand();
   for (AVar *av : confluences) {
     if (av->contour_is_entry_set) {
+      {  // ifa/196: only a demanded confluence
+        Vec<AVar *> one;
+        one.add(av);
+        if (!setter_contour_demanded(one)) continue;
+      }
       if (!av->is_lvalue) {
         //      This proved overly conservative for pyc.sf.net as one edge
         //      carried None which was
@@ -7374,6 +7420,7 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
 
 [[nodiscard]] static int split_css(Vec<AVar *> &starters) {
   int analyze_again = 0;
+  sos_build_demand();  // ifa/196
   Vec<CreationSet *> css;
   for (AVar *av : starters) form_Map(CSMapElem, x, *av->cs_map) if (fa->css_set.set_in(x->value)) css.set_add(x->value);
   // ifa/133: PYC_ELEMSETTER (offer an irrepresentable-element CreationSet
@@ -7430,6 +7477,12 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
       starter_set.move(save);
       Vec<AVar *> new_defs;
       cs->defs.set_difference(compatible_set, new_defs);
+      if (new_defs.n) {  // ifa/196: only a demanded CreationSet
+        Vec<AVar *> members;
+        for (AVar *m : cs->vars) members.add(m);
+        if (cs->added_element_var) members.add(get_element_avar(cs));
+        if (!setter_contour_demanded(members)) continue;
+      }
       if (new_defs.n) {
         // Issue 066 part 1 (enforcement): the CS-side analog of the
         // issue-033 ES product routing (4498-4513). cs_group_signature
@@ -10038,8 +10091,12 @@ static bool cs_demanded(CreationSet *cs);  // with the CreationSet merge (ifa/17
 // Rebuilt once per call of collect_cs_setter_confluences.
 static Vec<AVar *> sos_viol_reach;
 static std::vector<Vec<CreationSet *>> sos_poly_recvs;
+// ifa/196: the CALLED values of those sends. `f(n)` with `f` holding two
+// functions is the same unresolved dispatch, seen from the callee side.
+static std::vector<Vec<CreationSet *>> sos_poly_callees;
 static void sos_build_demand() {
   sos_viol_reach.clear();
+  sos_poly_callees.clear();
   Vec<AVar *> work;
   for (ATypeViolation *v : fa->type_violations)
     if (v && v->av && sos_viol_reach.set_add(v->av)) work.add(v->av);
@@ -10069,6 +10126,11 @@ static void sos_build_demand() {
         for (CreationSet *c : callee->out->sorted)
           if (c && c->sym == sym_closure)
             for (AVar *bv : c->vars) if (bv) recvs.add(bv);
+      if (callee->out) {
+        Vec<CreationSet *> fs;
+        for (CreationSet *c : callee->out->sorted) if (c && c->sym) fs.set_add(c);
+        if (fs.set_count() > 1) sos_poly_callees.push_back(fs);
+      }
       for (AVar *r : recvs) {
         if (!r || !r->out || r->out->sorted.n < 2) continue;
         Vec<CreationSet *> rs;
@@ -10085,6 +10147,15 @@ static bool sos_member_demanded(AVar *av) {
     int k = 0;
     for (CreationSet *c : av->out->sorted)
       if (c && rs.set_in(c) && ++k > 1) return true;
+  }
+  return false;
+}
+static bool sos_callee_demanded(AVar *av) {
+  if (!av || !av->out) return false;
+  for (Vec<CreationSet *> &fs : sos_poly_callees) {
+    int k = 0;
+    for (CreationSet *c : av->out->sorted)
+      if (c && fs.set_in(c) && ++k > 1) return true;
   }
   return false;
 }

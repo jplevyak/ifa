@@ -1,6 +1,6 @@
 ;; phase: clone
 
-(summary fa_rc=-1 clone_rc=0 funs=4 css=33 ess=5)
+(summary fa_rc=-1 clone_rc=0 funs=3 css=31 ess=3)
 
 (cs-equiv
   class[(anon)] members=1 type=int32
@@ -15,8 +15,7 @@
   class[B] members=1 type=B
   class[B] members=1 type=B
   class[It] members=1 type=It
-  class[It] members=2 type=It
-  class[V] members=1 type=V
+  class[It] members=1 type=It
   class[V] members=1 type=V
   class[V] members=1 type=V
   class[__main__] members=1 type=__main__
@@ -40,16 +39,13 @@
 (es-equiv
   fun __main__ ess=1 equiv-classes=1
   fun consume ess=1 equiv-classes=1
-  fun consume ess=1 equiv-classes=1
-  fun next ess=2 equiv-classes=1
+  fun next ess=1 equiv-classes=1
 )
 
 (call-graph
   fun __main__
     pnode-send → consume
     pnode-send → consume
-  fun consume
-    pnode-send → next
   fun consume
     pnode-send → next
 )

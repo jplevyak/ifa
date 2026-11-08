@@ -1,17 +1,15 @@
 ;; phase: freq
 
-(summary fa_rc=-1 clone_rc=0 funs=4)
+(summary fa_rc=-1 clone_rc=0 funs=3)
 
 (freq-funs
   __main__ 1
-  consume 1
-  consume 1
+  consume 2
   next 1
 )
 
 (freq-pnode-peaks
   __main__ peak=1
-  consume peak=1
   consume peak=1
   next peak=1
 )

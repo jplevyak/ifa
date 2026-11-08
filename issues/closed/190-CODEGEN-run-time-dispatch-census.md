@@ -82,7 +82,7 @@ comparing clones directly reported `Chrome(Material)` as unrelated to
 | **71** | **distinct classes with a common user ancestor**: polymorphism, which is legitimate. shedskin emits these as virtual calls; hoist, do not split (AGENTS.md) | pygasus 39 (`_exec` over `AddrMode`, `Instruction`, `MMCread/Write/Load`), quameon 11 (`sto_base`, `base_jastrow`), pygmy 7, bh 7 (`Node`), yopyra 3, tarsalzp 2, richards 1 (`Task`), path_tracing 1 (`Material`) |
 | **4** | **one class, two clones** at one call site: each is a value merge no contour split can separate (see below) | quameon 2 (`coulomb_pot.compute_en_value` / `compute_nn_value`), fysphun 1 (`Link.applyme`), softrender 1 (`Vector4.add`) |
 | **7** | `__pyc_unhandled_exception__`: `e.__str__()` over the exception classes a program raises, plus None | one per program; 4 removed 2026-10-14 (item 3) |
-| **13** | builtin receivers: tuple shapes (`__eq__` / `__str__`, amaze 8, 4 of them with None), `{bytes, bytearray}.__getitem__` (softrender 4: on the C backend these were `matching function not found` STUBS, not dispatches; gone since 2026-10-14, when `len` of a constant began to fold, see [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)), tuple `__eq__` (sunfish 1) | |
+| **13** | builtin receivers: tuple shapes (`__eq__` / `__str__`, amaze 8, 4 of them with None), `{bytes, bytearray}.__getitem__` (softrender 4: on the C backend these were `matching function not found` STUBS, not dispatches; gone since 2026-10-14, when `len` of a constant began to fold, see [102](102-codegen-detected-conditions-are-refusals-or-demands.md)), tuple `__eq__` (sunfish 1) | |
 
 **No dynamic call has receivers of unrelated user classes.** Every
 user-class dispatch in the corpus is either a hierarchy or clones of one
@@ -150,7 +150,7 @@ class.
 
 ### Can a split remove any of them? The soft-demand inventory (2026-10-14)
 
-The next step after [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)'s
+The next step after [102](102-codegen-detected-conditions-are-refusals-or-demands.md)'s
 refusal work was a SOFT dispatch demand: treat every dispatch that has a
 plan as a demand, so the splitter tries to make the site monomorphic.
 Stop condition, set before measuring: if no dispatching send's receiver

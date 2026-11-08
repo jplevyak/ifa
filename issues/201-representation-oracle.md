@@ -4,7 +4,7 @@
 [closed/194](closed/194-review-codegen-2026-11.md) A4, C1, C2, C3,
 [closed/124](closed/124-FA-refuse-imprecise-inference.md) residual 3,
 [closed/054](closed/054-CGEN-remove-unconditional-tuple-list-header.md)
-and [102](102-codegen-detected-conditions-are-refusals-or-demands.md)'s
+and [102](closed/102-codegen-detected-conditions-are-refusals-or-demands.md)'s
 inventory. AGENTS.md names representation as the legitimate third
 category of contour identity and says it belongs behind `IFACallbacks`.
 

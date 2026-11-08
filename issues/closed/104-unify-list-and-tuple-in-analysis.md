@@ -153,7 +153,7 @@ machinery.
 - `plcfrs`, `rdb`, `sudoku5` show a measurable drop in split count.
 - Full corpus: no exit-code changes **and** no run-status changes
   (`ifa/issues/runstatus.sh` — compile status alone is not evidence, see
-  [102](../102-codegen-detected-conditions-are-refusals-or-demands.md)).
+  [102](102-codegen-detected-conditions-are-refusals-or-demands.md)).
 
 
 ## What the experiment found (2026-08-17)

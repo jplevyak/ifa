@@ -209,7 +209,7 @@ re-taken after every landed change**, not reused across them.
 ### Is it a net loss?
 
 Arguably not, by
-[102](../102-codegen-detected-conditions-are-refusals-or-demands.md)'s own
+[102](102-codegen-detected-conditions-are-refusals-or-demands.md)'s own
 argument — a compile-time diagnostic beats a runtime SIGABRT, and
 `sunfish` produced no useful output either way. But it is a real
 behaviour change in the wrong direction for that program, it was not
@@ -424,7 +424,7 @@ assert(!"runtime error: matching function not found");
 It is **not slice-specific** — `len(x)`, `x[0]` and `for v in x` fail
 identically on the same union. It is
 [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) /
-[102](../102-codegen-detected-conditions-are-refusals-or-demands.md) class B, a
+[102](102-codegen-detected-conditions-are-refusals-or-demands.md) class B, a
 separate problem from this issue.
 
 Worth recording why a `{tuple, str}` union does **not** fail: FA

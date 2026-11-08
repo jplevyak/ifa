@@ -1028,7 +1028,7 @@ measurement above that involves them — notably `rdb`'s 693 326 → 693 764
 bytes in the `PYC_CSMOLD` table — is no longer reproducible.
 
 This is not a regression: all three were already in
-[102](../102-codegen-detected-conditions-are-refusals-or-demands.md)'s
+[102](102-codegen-detected-conditions-are-refusals-or-demands.md)'s
 compile-then-crash list, so the failure moved from runtime to compile
 time, which is 102's goal. But it does mean the corpus baseline for
 FA-level comparisons is now 74 programs, not 77, and a re-run is needed

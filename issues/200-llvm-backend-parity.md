@@ -101,6 +101,14 @@ LLVM bail a whole site. **Do:** one implementation each in
 `codegen_common`, and delete the comment that calls duplication a
 convention. Stop condition: the two divergences gone, a fixture each.
 
+**Also (from closed/102, 2026-11-07).** LLVM still writes an
+unresolved-if trap at 7 corpus and 19 suite IFs that C does not emit at
+all. Every one is dead code: astar's `if False:` body behind `br i1 false`,
+or blocks with no predecessors. The cause is that LLVM treats those IFs
+as live where C's walk never reaches them. That is the same kind of
+divergence: one liveness decision made in two places. It is counted with
+`IFA_DBG_TRAPS=1` (`unresolved_if`).
+
 ## D3. No unit fixture and no determinism oracle for `-b`
 
 The `codegen-llvm` IR phase was retired with v1 and not re-created;
