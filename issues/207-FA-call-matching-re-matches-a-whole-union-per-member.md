@@ -3,7 +3,10 @@
 **Status: open.** The measurements are taken, and a prototype of
 direction 1 is exact (0 mismatches in 494 249 checked dispatches) but buys
 only 11–17%, which says what the real algorithm needs (2026-11-08,
-below). Filed 2026-11-08 from
+below). **The direction changed on 2026-11-09: stop re-dispatching when a
+union grows, rather than make the re-dispatch faster.** See
+[the last section](#revised-direction-2026-11-09-dispatch-as-a-standing-constraint),
+which supersedes steps 3–6 of the redesign plan. Filed 2026-11-08 from
 [203](203-shrink-the-graph-fa-walks.md)'s re-scoping. That measurement
 put FA's time in call matching, not flow, on every program where FA takes
 real time. This issue is for the matching algorithm itself
@@ -211,6 +214,7 @@ sub-passes. The pass counts printed today also omit them.
      which candidates survive.
 2. **Deferred connection** cuts the steps, but not the per-step O(*w*),
    and at othello3's width a single hit is O(*w*) as well.
+   (2026-11-09: most of this already exists. See the last section.)
 3. **A wide-union `AType`** is the fix for the hit path at othello3's
    width (`get_all_args`' comparison walk). It is the one place a
    constant factor is not enough on its own.
@@ -379,6 +383,11 @@ so the per-pass reset replays lookups.
      accepting everything is that case. That is step 5's other half,
      alongside ending the hit-validation walk.
 
+   **Corrected 2026-11-09: "none on othello3" came from the class key.**
+   These classes group members by their own `Sym`, not by what the
+   candidates can tell apart. Grouped by verdict, othello3 does compress.
+   See the last section.
+
    **Revised stop condition for step 3:** on sunfish, a class is matched
    at most once per (send, position) over the whole compile. If the
    per-class work is not then a small fraction of today's matching (it
@@ -466,3 +475,134 @@ so the per-pass reset replays lookups.
   `dispatch_arity_epoch` change must drop the state.
 - **`Matcher` is per call and woven through `PMatch`,** so step 3 is
   the bulk of the work.
+
+## Revised direction, 2026-11-09: dispatch as a standing constraint
+
+**The finding: most re-matching produces no new routing.** So the
+algorithm to replace is the re-dispatch, not the matcher inside it. No
+prototype of this exists yet. The percentages below are upper bounds on
+what it can save.
+
+### How the code behaves (tree `fee4d441`)
+
+- **A `Match` is only a function, its per-formal filters, its visibility
+  points and `is_partial`** (`pattern.h`). `cache_copy` discards the rest
+  of `PMatch`. That answers the open question under direction 1 about what
+  a `Match` carries.
+- **The filters are snapshots.** `analyze_edge` calls
+  `flow_var_type_permit(filtered, filter)` with an `AType` listing the
+  members present at dispatch. The `flow_vars(actual, filtered)` edge is
+  permanent, so a new member reaches the existing edge and stops at the
+  permit until the send re-fires and re-matches.
+- **Deferred connection mostly exists.** The worklist loop in
+  `analyze_to_convergence` drains edges, then flow, then sends, and
+  `in_send_worklist` limits a send to one firing per round. So the growth
+  steps measured above are rounds, and a type crossing a call boundary
+  waits one round for the re-match. Rounds, whole compile: sunfish 10 746
+  over 31 passes (about 350 a pass), plcfrs 12 264 over 67, othello3
+  1 504 over 15, chess 1 472 over 16.
+
+### Measured (temporary probe on a scratch copy of `fee4d441`, not in the tree)
+
+**Probe.** At each full match that returned a result, it recorded each
+member's **verdict** at each formal: the set of functions whose filter
+holds it. Members with one verdict at one formal form a **verdict class**.
+A miss has **no new route** if every (formal, function, verdict) triple
+was already seen. "Seen" is scoped two ways: the same send AVar in the
+same pass, or the same send site (`send->var`) in any pass and any
+contour. Matches that returned nothing are not counted (sunfish: 137 963
+counted of about 168 000 misses). The time is the `pattern_match_full`
+call, excluding the probe.
+
+The four programs ran concurrently, so read the shares, not the seconds.
+
+| program | miss time | no new route, same contour and pass | no new route, same site, any pass |
+| --- | --- | --- | --- |
+| sunfish | 57.8 s (137 963 misses) | 83% of time (99 219) | **93%** (126 587) |
+| plcfrs | 26.7 s (158 396) | 77% (118 967) | **92%** (150 337) |
+| othello3 | 286.9 s (1 126 001) | 22% (186 791) | **72%** (845 536) |
+| chess | 0.67 s (8 289) | 6% (2 279) | 10% (5 044) |
+
+Compression over wide misses: mean width of the widest position against
+verdict classes there, and argument combinations (sum over formals of
+log2 width against log2 classes, averaged).
+
+| program | wide misses | width → verdict classes | combinations |
+| --- | --- | --- | --- |
+| sunfish (32–499) | 51 080 | 40.1 → 4.3 (step 2's `Sym` classes: 15.6) | 2^6.3 → 2^2.0 |
+| plcfrs (32–499) | 76 062 | 50.7 → 4.7 (step 2: 12.9) | 2^6.9 → 2^2.2 |
+| othello3 (500+) | 5 400 | 875 → 371, mixed | 2^10.0 → 2^5.0 |
+
+othello3 looks bimodal: the arithmetic mean is 371 classes and the
+geometric mean about 32. That fits sends whose hundreds of overrides are
+real routes alongside sends with few routes, but the probe did not
+separate them by selector.
+
+The site-scoped column matters most for othello3 (72% against 22%), so
+the state has to persist across passes and be shared across contours, as
+decisions do.
+
+### The alternatives
+
+| option | what it does | verdict |
+| --- | --- | --- |
+| **A. Dispatch as a standing constraint** | Filters admit verdict classes instead of listing members. A new member of a routed class crosses the existing edge during flow. The send fires only for a new class. | **Chosen.** It removes the re-fires, so it also attacks rounds and hits. |
+| **B. Shared dispatch table** | A memo from (candidates, tuple of verdict classes) to winners, across sends: multimethod dispatch compression (Dujardin et al.; Chambers and Chen's lookup DAGs). | A's slow path. Alone, it still re-fires and rebuilds O(*w*) filters. |
+| **C. Per-send delta matching** (the 2026-11-08 plan) | Semi-naive evaluation at each send. | Exact, but the output stays O(*w*) a dispatch, and step 3 was 4–6× slower. Superseded. |
+| **D. Width-threshold deferral** | Hold wide sends back. | Little left to gain: sends already follow flow. |
+| **E. Bitset `AType`** | Wide set operations cost O(*w*/64). | Reconsider after A, which removes most of those operations. |
+| **F. Hash the match cache** | Replaces the linear entry scan in `match_cache_hit`. | Small and exact. The fallback if A stalls. |
+| **G. Shrink the unions** | Parametric summaries, or widening. | [GENERICS.md](../../GENERICS.md) estimates about 20% of FA on othello3. Widening is ruled out by the 057 directive. |
+
+### Why A should reach the same fixed point
+
+A member enters a filter only through a tuple of classes already present,
+which is the decomposition the prototype checked (0 mismatches in 494 249
+dispatches). So at quiescence the filter is the same set. Only the
+arrival order changes.
+
+### Steps, each with its stop condition
+
+1. **Check mode for a static verdict key.** Compute each member's verdict
+   class from what the matcher's tests read (`Sym`, static arity,
+   `no_static_arity`, per candidate) and compare that partition with the
+   matcher's on every miss, as `IFA_INCMATCH=2` does.
+   **Stop if they disagree:** the class is not a function of the member
+   alone, and A does not hold as designed.
+2. **Class-admitting filters for sends with no pattern formal.** Replace
+   the snapshot permit with a class predicate (`restrict_pred` is the
+   existing mechanism to look at), and fire a send only for a new class.
+   Materialise `formal_filters` from current members at the end of the
+   pass for the consumers that read them (clone, codegen), and apply
+   `cs->ess.set_add` as a member crosses.
+   **Stop if** sunfish's dispatches and rounds do not fall by a large
+   factor: the percentages above did not translate, so re-profile.
+3. **The shared table (B) as the slow path,** on a per-class code path
+   rather than a `Matcher` run. Step 3 above measured a `Matcher` on
+   narrowed arguments at about 50 µs, which is too slow.
+4. **Delete the prototype and the old cache** wherever the new state
+   covers them, then decide about E on what remains.
+
+### Risks
+
+- **Byte-identical C may not hold.** Arrival order changes, so any
+  decision that reads transient types can shift. The first place to look
+  is edge-to-EntrySet binding. A difference is a finding under
+  [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md),
+  not automatically a failure, but it weakens the verification criterion
+  above: if it happens, the test becomes unchanged `check` verdicts and
+  contour counts explained case by case.
+- **Pattern formals.** A tuple's class depends on nested contents, which
+  keep growing (step 3's 8 052 962 representative runs), so those sends
+  stay on the current matcher at first.
+- **Class membership can change.** A flip in `no_static_arity`, a new
+  instantiation wrapper or `add_patterns` must invalidate the classes
+  they touch.
+
+### Not measured
+
+- How much of othello3's 266 s hit path goes away. No-new-route
+  dispatches that hit the cache were not counted, so 186's stop condition
+  (othello3 under the cap) is unproven.
+- The fall in rounds, and so any saving in flow (27% of FA on sunfish).
+- The cost of the per-member class lookup that replaces a dispatch.
