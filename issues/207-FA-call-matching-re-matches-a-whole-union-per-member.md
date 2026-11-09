@@ -301,3 +301,112 @@ validation at width about 1 000) is direction 3's.
   is unchanged, since the matching result must be identical.
 - `make test` is green on both backends.
 - othello3 compiles under the 400 s cap (186's stop condition).
+
+## The redesign plan (2026-11-08)
+
+**Idea: match member CLASSES, not members, and keep the answers.** The
+prototype established two facts:
+- members with one dispatch signature (`Sym`, static arity, member count)
+  are treated identically;
+- the result decomposes over combinations of argument members.
+
+So per (send, position) the matcher keeps state that persists across
+dispatches:
+
+1. **member → class.** A CreationSet's dispatch signature, the twin rule
+   generalised. Classes are what the matcher's tests read; members only
+   decide what goes into the output filters.
+2. **class × position → accepting candidates.** `pattern_match_sym` is
+   already memoised per (`Sym`, position) in `sym_match_cache`; this adds
+   the arity and `None` tests.
+3. **class tuple → winners,** computed by the existing
+   `find_best_cs_match`/`set_filters` on class representatives, as 037's
+   collapse already does within one call. It depends only on the
+   candidate set and the class tuple, so it can be shared across sends
+   (every `__eq__` over the same classes).
+4. **Output from current members.** A function's filter at a formal is
+   the current members whose class is in one of its winning tuples. That
+   is set work, not matching.
+
+A growth step then costs (new classes × classes elsewhere) lookups, and
+nothing when the new member's class is known. A "hit" becomes "no new
+members since the last dispatch", which ends othello3's 266 s validation
+walk. The state is keyed on CreationSets, which persist across passes,
+so the per-pass reset replays lookups.
+
+**Steps, each with its stop condition:**
+
+1. **Fix `-v`'s timer. Done 2026-11-08.** `initialize_pass` no longer
+   restarts `pass_timer`. The first run of a numbered pass starts it, and
+   later runs `snap()`, so a pass's time covers all its runs. The `-v`
+   line now ends with `N runs` (plcfrs pass 1: 6, sunfish: 5).
+   - Corrected totals: sunfish FA 97.0 s (match 67.7, flow 26.0);
+     plcfrs 54.0 s (match 29.6, flow 19.8).
+   - The earlier "flow 2.5 s" for sunfish was the timer bug: pass 1's
+     flow was negative and cancelled the rest.
+2. **Measure class compression. Done 2026-11-08.** A temporary probe
+   (`IFA_DBG_CLASSES`, removed) ran at the end of every full match. It
+   counted members against signature classes (`Sym`, static arity,
+   `no_static_arity`, member count) at each position. It also checked
+   that every member of a class, at a position it holds alone, lands in
+   the same (function, formal) filters.
+
+   **Uniformity holds everywhere: 0 uneven positions** in 474 311 (plcfrs
+   and sunfish) and 1 241 915 (othello3) checked.
+
+   **Compression, over the misses with a position at least 32 wide:**
+
+   | program | wide misses | width → classes | combinations, members → classes |
+   | --- | --- | --- | --- |
+   | plcfrs | 104 717 | 52.3 → 12.9 | 2^6.6 ≈ 97 → 2^4.2 ≈ 18 |
+   | sunfish | 66 100 | 41.2 → 15.6 | 2^6.2 ≈ 74 → 2^4.6 ≈ 24 |
+   | othello3 | 1 043 735 | 887.6 → **848.5** | 2^9.8 → 2^9.7 |
+
+   **What it means.**
+   - **Compression is 3–5× on sunfish and plcfrs, and none on othello3,**
+     whose union is the `Flip` subclasses, each its own `Sym`. So the
+     stop condition as written ("classes ≈ width") is hit on othello3.
+   - **But that condition mis-stated the plan.** The redesign has two
+     factors, and compression is the smaller. The larger is **reuse**: a
+     class is matched once per send, not once per growth step per pass.
+     That is the 10–25 steps per pass on sunfish and plcfrs, 280–290 on
+     othello3, and again on every pass, since the state is keyed on
+     CreationSets, which persist. Reuse does not depend on compression.
+   - **On othello3, then, the whole gain is reuse.** Its cost moves to the
+     output. A function's filter is still O(*w*) to build per dispatch.
+     The cheap case to exploit is a filter equal to the whole argument
+     type, so its `AType` pointer is reused; a single `__eq__` candidate
+     accepting everything is that case. That is step 5's other half,
+     alongside ending the hit-validation walk.
+
+   **Revised stop condition for step 3:** on sunfish, a class is matched
+   at most once per (send, position) over the whole compile. If the
+   per-class work is not then a small fraction of today's matching (it
+   is 3–5× fewer classes times 10–25× fewer steps), stop and re-profile
+   before step 4.
+3. **Per-send state and class-level matching.** Fall back to the full
+   matcher for nested pattern positions, named or out-of-position
+   arguments, varargs and generic candidates. Every answer is checked
+   against the full matcher (`IFA_INCMATCH=2`'s harness); a mismatch is
+   a bug, never a trade.
+4. **Share the combination table** across sends.
+5. **Replace the `AType`-keyed cache.** Unchanged arguments mean an
+   unchanged answer.
+6. **Retire the prototype,** and the old cache wherever the new state
+   covers it.
+
+**Verification:**
+- the corpus's generated C is byte-identical for every program;
+- `make test` is green;
+- `check` sweeps are unchanged on both backends;
+- a timed A/B on sunfish, plcfrs and othello3 shows a large fall in
+  matching;
+- 186's stop condition: othello3 under the cap.
+
+**Risks:**
+- **Nested patterns and named arguments.** The signature would have to
+  include member classes; they are a fallback at first.
+- **Invalidation.** `add_patterns`, new instantiation wrappers and a
+  `dispatch_arity_epoch` change must drop the state.
+- **`Matcher` is per call and woven through `PMatch`,** so step 3 is
+  the bulk of the work.

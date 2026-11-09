@@ -4483,8 +4483,20 @@ static void initialize() {
   build_patterns(fa);
 }
 
+// ifa/207: the flow runs that make up one numbered pass. The frontend's
+// structural reanalyze() can ask for another run without extend_analysis
+// running, so the pass counter does not advance (pass 0 on plcfrs is six
+// runs). pass_timer used to restart() here, which dropped every run but the
+// last from the pass's time while match_timer kept them, so -v printed
+// `match` larger than the pass. The numbered-pass boundary zeroes the timers
+// (accumulate()); within a pass, later runs snap() instead of restarting.
+static int pass_runs = 0;
 static void initialize_pass() {
-  pass_timer.restart();
+  if (pass_runs)
+    pass_timer.snap();  // a later run of the same pass: keep the time since the last one
+  else
+    pass_timer.start();
+  ++pass_runs;
   fa->dbg_dispatch_fail_sites = 0;      // ifa/issues/098 second defect
   fa->dbg_dispatch_fail_reported = 0;
   fa->dbg_dispatch_total_sites = 0;
@@ -12361,13 +12373,14 @@ static void probe_invalidation_closure() {
     printf(
         "PASS %d COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%), %f "
         "extend (%d%%), %d ess, %d css, %d violations, %d dup_splits, %d cs_dups, "
-        "%ld dirty/%ld examined avars\n",
+        "%ld dirty/%ld examined avars, %d runs\n",
         analysis_pass, pass_timer.time, flow, (int)(flow * 100.0 / pass_timer.time), match_timer.time,
         (int)(match_timer.time * 100.0 / pass_timer.time), extend_timer.time,
         (int)(extend_timer.time * 100.0 / pass_timer.time), fa->ess.n, fa->css.n,
         fa->type_violations.set_count(), fa->dup_split_attempts, fa->cs_dup_split_attempts, fa->dirty_avar_count,
-        fa->examined_avar_count);
+        fa->examined_avar_count, pass_runs);
   }
+  pass_runs = 0;
   // Per-pass violation histogram: totals by kind, then the most frequent
   // (kind, function, variable) groups. Names are for reading only; the
   // groups are diagnostic, never analysis keys.

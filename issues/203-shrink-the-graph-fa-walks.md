@@ -34,6 +34,23 @@ convergence and at the end.
 | plcfrs | 47.9 s | 12.6 | **31.3** | 4.0 | 67 | 27 656 | 6 444 | 1 823 | 5 930 (406) | 472 K |
 | sunfish | 75.7 s | 2.5 | **69.9** | 3.3 | 31 | 38 845 | 9 944 | 2 961 | 10 132 (1 136) | 669 K |
 
+**Correction (2026-11-08, after 207 step 1 fixed `-v`'s pass timer).** The
+`flow` column above is wrong for the two expensive programs. Pass 1 is
+several runs (the frontend's structural `reanalyze`), and the timer kept
+only the last run, so pass 1's `flow` came out negative (sunfish −13.4 s)
+and cancelled the real flow of the later passes in the sum. With the timer
+fixed:
+
+| program | FA | flow | match | extend |
+| --- | --- | --- | --- | --- |
+| sunfish | 97.0 s | **26.0 s (27%)** | 67.7 s (70%) | 3.3 s |
+| plcfrs | 54.0 s | **19.8 s (37%)** | 29.6 s (55%) | 4.6 s |
+
+Matching still dominates, but flow is a quarter to a third of FA, not 3%.
+The upper bound for C1 and C2 below (phy lvals 18–26% of Vars, MOVEs
+6–8%) is then roughly 5–9 s on these two, not under 1 s. That is still
+not the first lever, but it is not negligible.
+
 **What it shows:**
 - **Flow is not the cost where there is a cost.** The two programs with
   real FA time spend it in matching: sunfish 70 of 76 s, plcfrs 31 of
