@@ -1,7 +1,9 @@
 # 207 — call matching re-matches the whole argument union every time it grows by one member
 
-**Status: open; the measurements are taken (2026-11-08, below), and
-direction 1 is supported.** Filed 2026-11-08 from
+**Status: open.** The measurements are taken, and a prototype of
+direction 1 is exact (0 mismatches in 494 249 checked dispatches) but buys
+only 11–17%, which says what the real algorithm needs (2026-11-08,
+below). Filed 2026-11-08 from
 [203](203-shrink-the-graph-fa-walks.md)'s re-scoping. That measurement
 put FA's time in call matching, not flow, on every program where FA takes
 real time. This issue is for the matching algorithm itself
@@ -213,10 +215,84 @@ sub-passes. The pass counts printed today also omit them.
    width (`get_all_args`' comparison walk). It is the one place a
    constant factor is not enough on its own.
 
-**Next:** prototype 1 on sunfish behind a flag, with the match results
-compared against the current matcher on every dispatch. The result must
-be identical, so a mismatch is a bug in the decomposition, not a
-precision trade.
+## Prototype, 2026-11-08: incremental matching from the cache (in the tree, off by default)
+
+**What it is.** `IFA_INCMATCH`, in `pattern_match` (`incmatch_try`). `=1`
+uses it; `=2` computes it, runs the full matcher anyway, and compares the
+two Match by Match, printing an `INCMATCH` summary at exit. It is kept as
+the reference the redesign is checked against, not as a lever to turn on.
+A miss whose arguments EXTEND an existing
+cache entry E (every argument type a superset of E's, the selector
+unchanged, no nested pattern positions) is answered from E in one of two
+ways:
+
+- **Twin path.** Each new CreationSet has a twin in E's type at the same
+  position: the same `Sym`, static arity and member count. Every test
+  the matcher applies to a member reads only what twins share:
+  `pattern_match_sym` keys on the `Sym`, `arity_admits` on the static
+  arity, and candidate selection on `cs->sym` and `cs->sym->type`. So
+  the new member goes into exactly the formal filters its twin is in. The
+  twin must appear in no other argument.
+- **Delta path.** Otherwise, the result decomposes over combinations of
+  argument members: `find_best_cs_match` picks winners per combination,
+  and `set_filters` adds that combination's members. So the full result
+  is E's result merged with the matches of the new combinations only.
+  Partition those by the first grown position that holds a new member.
+  Run *k* sets the grown positions before it to their old types, it to
+  its delta, and those after to their full types. The runs reuse
+  `pattern_match_full`, with the argument `out`s swapped temporarily and
+  cache insertion suppressed.
+
+**Correctness.** Check mode over all 606 corpus and suite compiles:
+494 249 dispatches answered by the prototype and checked against the
+full matcher. **0 mismatches.** The one bug it found: merging filters
+with `type_union`, which subsumes members, where the matcher builds an
+explicit set (`cache_copy`'s `make_AType`). That produced 61 mismatches
+in five programs before the fix. sunfish's and plcfrs's generated C are
+byte-identical with it on.
+
+**Speed** (each program compiled alone):
+
+| | matching, default | matching, prototype | dispatches answered by it |
+| --- | --- | --- | --- |
+| sunfish | 67.3 s | 56.0 s (−17%) | 103 976 of 168 408 misses |
+| plcfrs | 31.1 s | 27.6 s (−11%) | 125 661 of 197 475 misses |
+
+**Why so little.**
+- **The cheap paths take the cheap misses.** The twin path costs about
+  47 µs per dispatch, but it answers the narrow ones.
+- **The delta runs cost about a full match each.** One run per grown
+  position still walks the FULL width of every position it does not
+  restrict: `find_all_matches` visits every member of every argument,
+  and candidate selection enumerates their classes. On sunfish the
+  answered dispatches took 35.0 s, most of it in the multi-position
+  delta runs (13 519 dispatches where two or more positions grew at
+  once, the commonest shape on `__eq__`/`__lt__`).
+- **What remains is 10.2 s of full matches,** chiefly:
+  - "not a superset of any entry" (19 K, 4.4 s), because types re-derived
+    each pass grow through different intermediate types;
+  - "first sight" (42 K, 2.7 s).
+
+**What the real algorithm needs, then.** The decomposition is exact, so
+the gap is in reuse, not correctness. The matcher has to keep **per
+(send, position) state across dispatches**:
+- for each argument CreationSet already seen there, the candidates that
+  accept it and the formal it reaches;
+- and per combination class, the winners;
+
+so that a growth step does work proportional to its new members times
+the classes at the other positions, not to the full widths. Two things
+make that a redesign, not a patch:
+- `Matcher` is built per call and discarded;
+- `find_best_matches`' class collapsing (037) is computed per call over
+  the whole union.
+
+The cross-pass misses ("not a superset") suggest keying that state on
+CreationSets, not on `AType`s. The state then survives the per-pass
+reset, as decisions do (AGENTS.md: keep decisions, rebuild structure).
+
+**Not addressed by this prototype:** othello3's hit path (266 s of cache
+validation at width about 1 000) is direction 3's.
 
 ## Verification
 

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "ifadefs.h"
 
 #include "pattern.h"
@@ -1755,7 +1756,8 @@ void Matcher::cannonicalize_matches(Vec<Fun *> &partial_matches, int is_closure,
     m->visibility_points.set_add(visibility_point);
     matches.add(m);
   }
-  if (!is_error) {
+  extern bool incmatch_no_record;
+  if (!is_error && !incmatch_no_record) {
     MatchCache *mc = send->match_cache;
     if (!mc) mc = send->match_cache = new MatchCache;
     MatchCacheEntry *e = new MatchCacheEntry(is_closure, partial, visibility_point);
@@ -1936,6 +1938,241 @@ static int match_cache_hit(Vec<AVar *> &args, AVar *send, int is_closure, Partia
   return 0;
 }
 
+// ifa/207 PROTOTYPE, off by default: incremental matching (IFA_INCMATCH=1
+// use, =2 check against the full matcher on every dispatch it answers). It is
+// exact (0 mismatches in 494 249 checked dispatches over the corpus and suite)
+// and buys 11-17% of matching, because the delta runs below still walk the
+// full width of every position they do not restrict. Kept as the reference
+// the redesign is checked against; see 207 for the measurements and plan.
+//
+// A miss whose arguments EXTEND an existing cache entry E -- every argument
+// type a superset of E's, the selector unchanged -- where every new
+// CreationSet c has a TWIN t in E's type at the same position (same Sym,
+// static arity and member count), is answered from E without matching.
+// Every test the matcher applies to a member reads only what twins share:
+// pattern_match_sym keys on the Sym, arity_admits on the static arity, and
+// candidate selection (find_best_matches, subsumes_arg, set_filters) on
+// cs->sym and cs->sym->type. So c lands in exactly the formal filters t
+// did, and the result is E's matches with c added wherever t is. Two guards
+// keep that exact: E has no nested (pattern) positions, so no member was
+// recursed into; and t appears in no other argument, so "the filters t is
+// in" names the formals of this argument only.
+static int incmatch_mode() {
+  static int e = -1;
+  if (e < 0) e = getenv("IFA_INCMATCH") ? atoi(getenv("IFA_INCMATCH")) : 0;
+  return e;
+}
+bool incmatch_no_record = false;
+enum { IM_TRIED, IM_USED, IM_NO_ENTRY, IM_NESTED, IM_SELECTOR, IM_NOT_SUPERSET, IM_NO_TWIN, IM_TWIN_SHARED,
+       IM_CHECKED, IM_MISMATCH, IM_DELTA_USED, IM_DELTA_MULTIPOS, IM_N };
+static int pattern_match_full(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
+                              PNode *visibility_point, Vec<Match *> &matches);
+static long incmatch_stat[IM_N];
+#include <chrono>
+static double incmatch_t[4];  // fast ok, fast failed, full after a failed try, full with no try
+static long incmatch_entries_scanned = 0;
+static int incmatch_last_reason = 0;
+static int incmatch_path = 0;  // 1 twin, 2 delta
+static double incmatch_reason_t[16];
+static long incmatch_reason_w[16];
+static double im_now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+static void incmatch_report() {
+  fprintf(stderr, "INCMATCH-TIME fast_ok=%.2f fast_fail=%.2f full_after_fail=%.2f entries_scanned=%ld\n", incmatch_t[0],
+          incmatch_t[1], incmatch_t[2], incmatch_entries_scanned);
+  static cchar *rn[IM_N] = {"tried", "used", "no_entry", "nested", "selector", "not_superset", "no_twin",
+                            "twin_shared", "checked", "MISMATCH", "delta_used", "delta_multipos"};
+  for (int i = 0; i < IM_N; i++)
+    if (incmatch_reason_t[i] > 0)
+      fprintf(stderr, "INCMATCH-FULL reason=%s time=%.2f n=%ld avg_width=%.1f\n", rn[i], incmatch_reason_t[i],
+              incmatch_stat[i], incmatch_stat[i] ? (double)incmatch_reason_w[i] / incmatch_stat[i] : 0.0);
+  static cchar *names[IM_N] = {"tried", "used", "no_entry", "nested", "selector", "not_superset", "no_twin",
+                               "twin_shared", "checked", "MISMATCH", "delta_used", "delta_multipos"};
+  fprintf(stderr, "INCMATCH");
+  for (int i = 0; i < IM_N; i++) fprintf(stderr, " %s=%ld", names[i], incmatch_stat[i]);
+  fprintf(stderr, "\n");
+}
+static bool cs_twin(CreationSet *a, CreationSet *b) {
+  return a->sym == b->sym && a->static_arity == b->static_arity && a->no_static_arity == b->no_static_arity &&
+         a->vars.n == b->vars.n;
+}
+// Returns 1 and fills `matches` (and a new cache entry when `record`) when
+// the delta applies; 0 otherwise, with the reason counted.
+static int incmatch_try(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
+                        PNode *visibility_point, Vec<Match *> &matches, bool record) {
+  MatchCache *mc = send->match_cache;
+  ++incmatch_stat[IM_TRIED];
+  if (!mc || !mc->n) return incmatch_last_reason = IM_NO_ENTRY, ++incmatch_stat[IM_NO_ENTRY], 0;
+  int reason = IM_NO_ENTRY;
+  MatchCacheEntry *delta_e = nullptr;  // a superset entry whose new members lack twins
+  for (MatchCacheEntry *e : *mc) {
+    ++incmatch_entries_scanned;
+    if (e->is_closure != is_closure || e->partial != partial || e->visibility_point != visibility_point) continue;
+    if (e->top_out.n != args.n) continue;
+    if (e->arity_epoch >= 0 && e->arity_epoch != dispatch_arity_epoch) continue;
+    bool nested = false;
+    form_MPositionAType(x, e->all_args) if (x->key->pos.n != 1) nested = true;
+    if (nested) { reason = IM_NESTED; continue; }
+    if (e->top_out.v[0] != args.v[0]->out) { if (reason < IM_SELECTOR) reason = IM_SELECTOR; continue; }
+    // every argument a superset; collect (new member, twin, position)
+    Vec<CreationSet *> news, twins;
+    Vec<int> at;
+    bool ok = true;
+    for (int i = 0; i < args.n && ok; i++) {
+      AType *o = e->top_out.v[i], *n = args.v[i]->out;
+      if (o == n) continue;
+      for (CreationSet *c : o->sorted) if (c && !n->in(c)) { ok = false; break; }
+      if (!ok) { if (reason < IM_NOT_SUPERSET) reason = IM_NOT_SUPERSET; break; }
+      for (CreationSet *c : n->sorted) {
+        if (!c || o->in(c)) continue;
+        CreationSet *t = nullptr;
+        for (CreationSet *oc : o->sorted) if (oc && cs_twin(oc, c)) { t = oc; break; }
+        if (!t) {
+          ok = false;
+          if (reason < IM_NO_TWIN) reason = IM_NO_TWIN;
+          if (!delta_e) {  // still a superset at every position?
+            bool sup = true;
+            for (int j = 0; j < args.n && sup; j++)
+              for (CreationSet *oc : e->top_out.v[j]->sorted) if (oc && !args.v[j]->out->in(oc)) { sup = false; break; }
+            if (sup) delta_e = e;
+          }
+          break;
+        }
+        news.add(c), twins.add(t), at.add(i);
+      }
+    }
+    if (!ok) continue;
+    for (int k = 0; k < news.n && ok; k++)
+      for (int j = 0; j < args.n; j++) {
+        if (j == at[k]) continue;
+        if (e->top_out.v[j]->in(twins[k]) || args.v[j]->out->in(news[k])) { ok = false; break; }
+      }
+    if (!ok) { if (reason < IM_TWIN_SHARED) reason = IM_TWIN_SHARED; continue; }
+    // the delta applies: E's matches, each new member added where its twin is
+    for (Match *mm : *e) {
+      Match *m = new Match(*mm);
+      Vec<MPosition *> keys;
+      form_Map(MapMPositionATypeElem, x, m->formal_filters) keys.add(x->key);
+      for (MPosition *fp : keys) {
+        AType *f = m->formal_filters.get(fp);
+        if (!f) continue;
+        Vec<CreationSet *> add;
+        for (int k = 0; k < news.n; k++) if (f->in(twins[k])) add.set_add(news[k]);
+        if (add.n) {  // an explicit set, as cache_copy builds it -- not type_union, which subsumes
+          for (CreationSet *c : f->sorted) if (c) add.set_add(c);
+          add.set_to_vec();
+          m->formal_filters.put(fp, make_AType(add));
+        }
+      }
+      m->visibility_points.set_add(visibility_point);
+      matches.add(m);
+    }
+    incmatch_path = 1;
+    for (AVar *a : args) a->arg_of_send.add(send);
+    if (record) {
+      MatchCacheEntry *ne = new MatchCacheEntry(is_closure, partial, visibility_point);
+      ne->arity_epoch = e->arity_epoch;
+      form_MPositionAType(x, e->all_args) {
+        int i = (int)Position2int(x->key->pos[0]) - 1;
+        ne->all_args.put(x->key, i >= 0 && i < args.n ? args.v[i]->out : x->value);
+      }
+      for (AVar *a : args) ne->top_out.add(a->out);
+      for (Match *m : matches) ne->add(new Match(*m));
+      mc->add(ne);
+    }
+    return 1;
+  }
+  incmatch_last_reason = reason;
+  if (delta_e) {
+    // One grown position: match only (new members there) x (old members
+    // elsewhere), then merge with E. Combinations are independent in the
+    // matcher (find_best_cs_match picks winners per combination and
+    // set_filters adds that combination's members), so the union of the two
+    // results is the full result -- the check mode is what says so.
+    // Grown positions G. Every new combination has a FIRST grown position
+    // holding a new member, so partition by it: run k sets G[<k] to their
+    // old types, G[k] to its delta, G[>k] to their full current types.
+    Vec<int> G;
+    for (int j = 0; j < args.n; j++)
+      if (delta_e->top_out.v[j] != args.v[j]->out) G.add(j);
+    if (G.n && G[0] > 0) {
+      if (G.n > 1) ++incmatch_stat[IM_DELTA_MULTIPOS];
+      Vec<AType *> full;
+      for (AVar *a : args) full.add(a->out);
+      Vec<Match *> dm;
+      bool saved = incmatch_no_record;
+      incmatch_no_record = true;
+      for (int k = 0; k < G.n; k++) {
+        Vec<CreationSet *> delta;
+        for (CreationSet *c : full.v[G[k]]->sorted) if (c && !delta_e->top_out.v[G[k]]->in(c)) delta.add(c);
+        for (int q = 0; q < G.n; q++)
+          args.v[G[q]]->out = q < k ? delta_e->top_out.v[G[q]] : q == k ? make_AType(delta) : full.v[G[q]];
+        Vec<Match *> part;
+        pattern_match_full(args, names, send, is_closure, partial, visibility_point, part);
+        dm.append(part);
+      }
+      for (int q = 0; q < G.n; q++) args.v[G[q]]->out = full.v[G[q]];
+      incmatch_no_record = saved;
+      // merge E's matches and the delta's, in fun-id order as cannonicalize_matches emits
+      Vec<Match *> merged;
+      for (Match *mm : *delta_e) merged.add(new Match(*mm));
+      for (Match *d : dm) {
+        Match *hit = nullptr;
+        for (Match *m : merged) if (m->fun == d->fun) { hit = m; break; }
+        if (hit) {
+          form_Map(MapMPositionATypeElem, x, d->formal_filters) {
+            AType *t = hit->formal_filters.get(x->key);
+            if (!t) { hit->formal_filters.put(x->key, x->value); continue; }
+            Vec<CreationSet *> u;
+            for (CreationSet *c : t->sorted) if (c) u.set_add(c);
+            for (CreationSet *c : x->value->sorted) if (c) u.set_add(c);
+            u.set_to_vec();
+            hit->formal_filters.put(x->key, make_AType(u));
+          }
+          hit->visibility_points.set_union(d->visibility_points);
+        } else
+          merged.add(new Match(*d));
+      }
+      std::sort(merged.v, merged.v + merged.n, [](Match *a, Match *b) { return a->fun->id < b->fun->id; });
+      for (Match *m : merged) {
+        m->visibility_points.set_add(visibility_point);
+        matches.add(m);
+      }
+      for (AVar *a : args) a->arg_of_send.add(send);
+      if (record) {
+        MatchCacheEntry *ne = new MatchCacheEntry(is_closure, partial, visibility_point);
+        ne->arity_epoch = delta_e->arity_epoch;
+        form_MPositionAType(x, delta_e->all_args) {
+          int i = (int)Position2int(x->key->pos[0]) - 1;
+          ne->all_args.put(x->key, i >= 0 && i < args.n ? args.v[i]->out : x->value);
+        }
+        for (AVar *a : args) ne->top_out.add(a->out);
+        for (Match *m : matches) ne->add(new Match(*m));
+        mc->add(ne);
+      }
+      ++incmatch_stat[IM_DELTA_USED];
+      incmatch_path = 2;
+      return 1;
+    }
+  }
+  ++incmatch_stat[reason];
+  return 0;
+}
+static bool incmatch_same(Vec<Match *> &a, Vec<Match *> &b) {
+  if (a.n != b.n) return false;
+  for (int i = 0; i < a.n; i++) {
+    Match *x = a[i], *y = b[i];
+    if (x->fun != y->fun || x->is_partial != y->is_partial) return false;
+    int nx = 0, ny = 0;
+    form_Map(MapMPositionATypeElem, e, x->formal_filters) {
+      ++nx;
+      if (y->formal_filters.get(e->key) != e->value) return false;
+    }
+    form_Map(MapMPositionATypeElem, e, y->formal_filters) ++ny;
+    if (nx != ny) return false;
+  }
+  return true;
+}
+
 //
 // main dispatch entry point - given a vector of arguments return a vector of
 // matches
@@ -1949,6 +2186,65 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
     pattern_match_hits++;
     return matches.n;
   }
+  int mode = incmatch_mode();
+  if (mode) {
+    static bool reg = false;
+    if (!reg) reg = true, atexit(incmatch_report);
+    if (mode == 1) {
+      double t0 = im_now();
+      if (incmatch_try(args, names, send, is_closure, partial, visibility_point, matches, true)) {
+        ++incmatch_stat[IM_USED];
+        incmatch_t[0] += im_now() - t0;
+        return matches.n;
+      }
+      double t1 = im_now();
+      incmatch_t[1] += t1 - t0;
+      int r = pattern_match_full(args, names, send, is_closure, partial, visibility_point, matches);
+      double dt = im_now() - t1;
+      incmatch_t[2] += dt;
+      incmatch_reason_t[incmatch_last_reason] += dt;
+      long w = 0;
+      for (AVar *a : args) w += a->out->sorted.n;
+      incmatch_reason_w[incmatch_last_reason] += w;
+      return r;
+    } else {
+      Vec<Match *> fast;
+      if (incmatch_try(args, names, send, is_closure, partial, visibility_point, fast, false)) {
+        int r = pattern_match_full(args, names, send, is_closure, partial, visibility_point, matches);
+        ++incmatch_stat[IM_CHECKED];
+        if (!incmatch_same(fast, matches)) {
+          if (++incmatch_stat[IM_MISMATCH] <= 10) {
+            fprintf(stderr, "INCMATCH MISMATCH send=%d fast=%d full=%d:", send->id, fast.n, matches.n);
+            for (Match *m : fast) fprintf(stderr, " f:%s", m->fun->sym->name ? m->fun->sym->name : "?");
+            for (Match *m : matches) fprintf(stderr, " F:%s", m->fun->sym->name ? m->fun->sym->name : "?");
+            fprintf(stderr, " path=%d args:", incmatch_path);
+            for (AVar *a : args) fprintf(stderr, " %d", a->out->sorted.n);
+            fprintf(stderr, "\n");
+            for (int i = 0; i < fast.n && i < matches.n; i++) {
+              form_Map(MapMPositionATypeElem, e, matches[i]->formal_filters) {
+                AType *fv = fast[i]->formal_filters.get(e->key);
+                if (fv == e->value) continue;
+                fprintf(stderr, "   formal pos.n=%d last=%ld full:", e->key->pos.n, (long)Position2int(e->key->pos[e->key->pos.n - 1]));
+                for (CreationSet *c : e->value->sorted) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+                fprintf(stderr, " | fast:");
+                if (fv) for (CreationSet *c : fv->sorted) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
+                else fprintf(stderr, " (none)");
+                fprintf(stderr, "\n");
+              }
+              form_Map(MapMPositionATypeElem, e, fast[i]->formal_filters) if (!matches[i]->formal_filters.get(e->key))
+                fprintf(stderr, "   formal only in fast pos.n=%d\n", e->key->pos.n);
+            }
+          }
+        }
+        return r;
+      }
+    }
+  }
+  return pattern_match_full(args, names, send, is_closure, partial, visibility_point, matches);
+}
+
+static int pattern_match_full(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
+                              PNode *visibility_point, Vec<Match *> &matches) {
   Matcher matcher(send, args[0], is_closure, partial);
   Vec<Fun *> *partial_matches = 0;
   find_visible_functions(args, visibility_point, &partial_matches, matcher.function_values);
