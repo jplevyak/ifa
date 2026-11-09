@@ -384,11 +384,67 @@ so the per-pass reset replays lookups.
    per-class work is not then a small fraction of today's matching (it
    is 3–5× fewer classes times 10–25× fewer steps), stop and re-profile
    before step 4.
-3. **Per-send state and class-level matching.** Fall back to the full
-   matcher for nested pattern positions, named or out-of-position
-   arguments, varargs and generic candidates. Every answer is checked
-   against the full matcher (`IFA_INCMATCH=2`'s harness); a mismatch is
-   a bug, never a trade.
+3. **Per-send state and class-level matching. Tried 2026-11-08; the stop
+   condition was hit, and it is not in the tree.**
+
+   **The design.** `IFA_CLASSMATCH`, in `pattern_match`. Per (send,
+   `is_closure`, `partial`, visibility point) it keeps:
+   - per position, class → representative;
+   - per tuple of classes, the winners, from one full-matcher run on one
+     current member per position (`incmatch_no_record`, arguments'
+     `out`s swapped).
+
+   A dispatch classifies its members, looks up every tuple of present
+   classes, and builds filters from the current members of the winning
+   classes. It records a cache entry so that later dispatches hit.
+
+   **What was learned building it:**
+   - **Attribute formals by position, not by identity.** A positional
+     formal *q* is fed by actual *q*−1. Attributing by representative
+     identity made every send where one CreationSet sits at two positions
+     ambiguous (`self` and an argument sharing a contour, `x == x`): 60 K
+     of sunfish's misses fell back permanently. Positional attribution
+     left 0.
+   - **Do not put a member's contents in the class key.** Keying tuples on
+     their members' `AType`s, so nested pattern formals could be copied,
+     made a tuple's class change every time its members grew: 8 052 962
+     representative runs and 604 s on sunfish. Nested formals have to be
+     a fallback, or need a key that does not move with growth.
+   - **It is exact.** In check mode it answered every sunfish miss
+     (168 362), with 0 mismatches against the full matcher, and the C was
+     byte-identical.
+
+   **Why it stopped: it is slower.**
+
+   | | matching, default | matching, class matcher |
+   | --- | --- | --- |
+   | sunfish | 67.7 s | **270.9 s** |
+   | plcfrs | 29.6 s | **181.5 s** |
+
+   Its own cost on sunfish is 63 s: 784 642 representative runs (40.4 s,
+   about 50 µs each, since a full `Matcher` on width-1 arguments is not
+   cheap) and 22.8 s of assembly. The other ~208 s is outside it, and the
+   likely cause is the cache it feeds:
+   - it records an entry per answer, pinned to the arity epoch;
+   - `match_cache_hit` scans and validates every entry of a send.
+
+   Two more measured facts: 44 920 state resets when the selector's type
+   changed, each discarding the send's tuples; and 243 K dispatches
+   reached it against 168 K misses before, so its entries hit less
+   often.
+
+   **Re-profile before trying again.** Three things are now known to
+   matter more than the class idea itself:
+   - **The cache's scan.** Step 5's replacement of the `AType`-keyed
+     cache has to come first, or with this. Bolted onto the old cache, the
+     state makes hits worse.
+   - **The cost of one representative run.** It must be a few
+     microseconds, so a class-level match has to be its own code path,
+     not a `Matcher` call on narrowed arguments.
+   - **State keyed on the selector's type,** kept rather than reset.
+
+   The patch is kept outside the tree. The prototype
+   (`IFA_INCMATCH`, below) is still the committed reference.
 4. **Share the combination table** across sends.
 5. **Replace the `AType`-keyed cache.** Unchanged arguments mean an
    unchanged answer.
