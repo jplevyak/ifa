@@ -1,4 +1,7 @@
 #include <algorithm>
+#include <cmath>
+#include <unordered_map>
+#include <vector>
 #include "ifadefs.h"
 
 #include "pattern.h"
@@ -130,6 +133,7 @@ class Matcher {
   Map<MPosition *, int> mapped_positions;
   MapMPositionAType all_args;
   bool uses_dispatch_arity = false;  // ifa/185: some candidate formal had an arity constraint
+  struct VerdictKeys *vk = nullptr;  // ifa/207 step 1: IFA_VERDICTKEY's per-dispatch state
 
   // C++'s manditory redundant declarations, tedious++
   int pattern_match_sym(Sym *, MPosition *, Vec<Fun *> *, Vec<Fun *> &, int);
@@ -163,6 +167,8 @@ static void log_dispatch_cs_match(Matcher &matcher, Vec<CreationSet *> &csargs, 
                                   Vec<Fun *> &local_matches);
 static void log_dispatch_matches(Matcher &matcher, Vec<PMatch *> &matches);
 static void log_dispatch_funs(Matcher &matcher, Vec<Fun *> &funs);
+static void vk_leaf(Matcher &matcher, Vec<CreationSet *> &csargs, Vec<Fun *> &winners);
+static void vk_clear();
 
 static ChainHash<MPosition *, MPositionHashFuns> cannonical_mposition;
 // ROADMAP 6.1: every `*args` Fun, collected in build_arg_positions.
@@ -174,6 +180,7 @@ void pattern_reset() {
   cannonical_mposition.clear();
   varargs_funs.clear();
   sym_match_cache.clear();
+  vk_clear();
   pattern_match_hits = 0;
   pattern_match_complete = 0;
   pattern_matches = 0;
@@ -1341,7 +1348,13 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
   covered.set_to_vec();
   log(LOG_DISPATCH, "%d- cover_formals: %d\n", send->var->sym->id, covered.n);
   log_dispatch_matches(*this, covered);
-  if (!covered.n) return;
+  if (!covered.n) {
+    if (top_level && vk) {
+      Vec<Fun *> none;
+      vk_leaf(*this, csargs, none);
+    }
+    return;
+  }
 
   Vec<PMatch *> applicable;
   // record generic substitutions and point-wise applications
@@ -1421,6 +1434,7 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
     app.pop();
     matches.append(similar);
   }
+  if (top_level && vk) vk_leaf(*this, csargs, matches);  // before wrappers replace the winners
   if (top_level) instantiation_wrappers_and_partial_application(matches);
   set_filters(csargs, app, matches, cls);
   // reverify_filters runs once per dispatch, in pattern_match, after every
@@ -2173,6 +2187,277 @@ static bool incmatch_same(Vec<Match *> &a, Vec<Match *> &b) {
   return true;
 }
 
+// ifa/207 step 1, CHECK MODE, off by default (IFA_VERDICTKEY=1; =2 also
+// recomputes every key instead of reading the memo, to validate the memo).
+// Changes nothing the analysis sees. It asks whether a member's routing is a
+// function of the member alone, which is what admitting a member through an
+// existing edge (dispatch as a standing constraint) relies on.
+//
+// The key of a member at an actual position, over the candidates the selector
+// admits, is computed from exactly what the matcher's tests read of a member:
+//   - which candidates accept it: the dispatch tables, arity_admits,
+//     is_exact_match and is_this;
+//   - for each of those, its promotion and coercion, verify_arg's verdict and
+//     reverify_filters';
+//   - only where those candidates' formal types differ, what subsumes_arg
+//     reads to order them: isa, and the relative place of the types in the
+//     member's MRO;
+//   - the member's own Sym only when a generic candidate accepts it.
+// It deliberately does not read the Sym otherwise. A Sym key cannot compress
+// a union of subclasses that all route to one method (othello3).
+//
+// Two checks, each of which is the stop condition if it fails:
+//   - partition: two members with one key at a position are in the same
+//     (function, formal) filters of the finished match;
+//   - tuple: the winners at a leaf of find_best_matches are a function of the
+//     tuple of keys, across dispatches, contours and passes of one send site.
+// Sends with named actuals or a pattern formal among their candidates are
+// counted and skipped; 207 leaves pattern formals on the current matcher.
+struct VerdictKeys {
+  std::vector<std::unordered_map<CreationSet *, uint64_t>> keys;
+  uint64_t seed = 0;
+};
+static std::unordered_map<uint64_t, uint64_t> vk_memo;    // (candidates, position, member state) -> key
+static std::unordered_map<uint64_t, uint64_t> vk_tuples;  // (site, candidates, key tuple) -> winners
+static long vk_dispatches, vk_checked, vk_skip_named, vk_skip_pattern, vk_positions, vk_partition_mismatch, vk_leaves,
+    vk_tuple_mismatch, vk_overfine;
+struct VkBand {
+  long n = 0;
+  double width = 0, keys = 0, verdicts = 0, log_keys = 0, log_verdicts = 0;
+};
+static VkBand vk_band[2];  // the widest position of a dispatch: 32-499, 500+
+
+static void vk_clear() {
+  vk_memo.clear();
+  vk_tuples.clear();
+}
+static int vk_mode() {
+  static int e = -1;
+  if (e < 0) e = getenv("IFA_VERDICTKEY") ? atoi(getenv("IFA_VERDICTKEY")) : 0;
+  return e;
+}
+static inline uint64_t vk_mix(uint64_t h, uint64_t v) {
+  h ^= (v + 1) * 0x9E3779B97F4A7C15ull;
+  h = (h << 27) | (h >> 37);
+  return h * 0xFF51AFD7ED558CCDull;
+}
+static cchar *vk_name(Sym *s) { return s && s->name ? s->name : "?"; }
+static void vk_report() {
+  fprintf(stderr,
+          "VERDICTKEY dispatches=%ld checked=%ld skip_named=%ld skip_pattern=%ld positions=%ld PARTITION_MISMATCH=%ld "
+          "leaves=%ld tuples=%zu TUPLE_MISMATCH=%ld overfine_positions=%ld\n",
+          vk_dispatches, vk_checked, vk_skip_named, vk_skip_pattern, vk_positions, vk_partition_mismatch, vk_leaves,
+          vk_tuples.size(), vk_tuple_mismatch, vk_overfine);
+  static cchar *bands[2] = {"32-499", "500+"};
+  for (int i = 0; i < 2; i++) {
+    VkBand &b = vk_band[i];
+    if (!b.n) continue;
+    fprintf(stderr, "VERDICTKEY-WIDE band=%s n=%ld width=%.1f keys=%.1f verdicts=%.1f geo_keys=%.1f geo_verdicts=%.1f\n",
+            bands[i], b.n, b.width / b.n, b.keys / b.n, b.verdicts / b.n, pow(2.0, b.log_keys / b.n),
+            pow(2.0, b.log_verdicts / b.n));
+  }
+}
+
+// The candidates at `acpp` that accept `cs`, as find_arg_matches asks.
+static void vk_accepted(Matcher &m, AVar *a, CreationSet *cs, MPosition *acpp, Vec<Fun *> *candidates, Vec<Fun *> &funs) {
+  Sym *sym = cs->sym, *aspect = a->var->sym->aspect;
+  if (aspect) {
+    if (!aspect->specializers.set_in(cs->sym) && (cs->sym != sym_nil_type || !sym_object->specializers.set_in(aspect)))
+      return;
+    sym = aspect;
+  }
+  m.pattern_match_sym(sym, acpp, candidates, funs, 0);
+}
+
+static uint64_t vk_digest(Vec<Fun *> *candidates, Vec<Fun *> &function_values) {
+  uint64_t sum = candidates ? 1 : 2;
+  if (candidates)
+    for (Fun *f : *candidates) if (f) sum += vk_mix(11, f->id);
+  for (Fun *f : function_values) if (f) sum += vk_mix(13, f->id);
+  return sum;
+}
+
+static uint64_t vk_member_key(Matcher &m, AVar *a, CreationSet *cs, MPosition *acpp, Vec<Fun *> *candidates,
+                              uint64_t digest) {
+  Sym *aspect = a->var->sym->aspect;
+  uint64_t mk = vk_mix(digest, (uintptr_t)acpp);
+  mk = vk_mix(mk, cs->sym->id);
+  mk = vk_mix(mk, aspect ? aspect->id : 0);
+  mk = vk_mix(mk, cs->no_static_arity);
+  mk = vk_mix(mk, (uint64_t)(int64_t)cs->static_arity);
+  if (vk_mode() != 2) {
+    auto it = vk_memo.find(mk);
+    if (it != vk_memo.end()) return it->second;
+  }
+  Vec<Fun *> funs;
+  vk_accepted(m, a, cs, acpp, candidates, funs);
+  std::vector<Fun *> accepted;
+  for (Fun *f : funs) if (f) accepted.push_back(f);
+  std::sort(accepted.begin(), accepted.end(), [](Fun *x, Fun *y) { return x->id < y->id; });
+  uint64_t h = 17;
+  std::vector<Sym *> types;
+  bool generic = false;
+  for (Fun *f : accepted) {
+    Sym *formal = f->arg_syms.get(acpp);
+    if (!formal) {  // a varargs candidate past its formals takes every member
+      h = vk_mix(h, f->id);
+      continue;
+    }
+    if (!arity_admits(formal, cs)) continue;
+    Sym *declared = dispatch_type(formal);
+    if (formal->is_exact_match && cs->sym != declared && cs->sym->type != declared &&
+        cs->sym->type->meta_type != declared)
+      continue;
+    if (formal->is_this && cs->sym == sym_nil_type) continue;
+    // promotion_uses, then coercion_uses, then verify_arg
+    Sym *concrete = (aspect ? aspect : cs->sym)->type, *ft = declared, *promoted = nullptr;
+    bool coerced = false;
+    if (ft != concrete) {
+      Sym *p = if1->callback->promote(f, formal, ft, concrete);
+      if (p && p != concrete) promoted = ft = p;
+    }
+    if (ft != concrete) {
+      Sym *c = if1->callback->coerce(concrete, ft);
+      if (c && c != concrete) coerced = true, ft = c;
+    }
+    bool nil_aspect = cs->sym == sym_nil_type && aspect && sym_object->specializers.set_in(aspect);
+    if (!promoted && !coerced) {
+      Sym *actual = nil_aspect ? aspect : cs->sym;
+      if (ft != actual && !ft->specializers.set_in(actual->type)) continue;
+    }
+    // reverify_filters' `keeps`
+    bool keeps = false;
+    if (nil_aspect)
+      keeps = declared->specializers.set_in(aspect);
+    else {
+      keeps = declared == cs->sym || declared->specializers.set_in(cs->sym->type);
+      if (!keeps) for (Sym *s : declared->dispatch_types) if (s->specializers.set_in(cs->sym->type)) { keeps = true; break; }
+    }
+    h = vk_mix(h, f->id);
+    h = vk_mix(h, promoted ? promoted->id : 0);
+    h = vk_mix(h, (coerced ? 2 : 0) | (keeps ? 1 : 0));
+    if (f->is_generic) generic = true;
+    if (std::find(types.begin(), types.end(), ft->type) == types.end()) types.push_back(ft->type);
+  }
+  if (types.size() > 1) {  // subsumes_arg compares these only when they differ
+    std::sort(types.begin(), types.end(), [](Sym *x, Sym *y) { return x->id < y->id; });
+    std::vector<int> places;
+    for (Sym *t : types) {
+      int at = cs->sym->dispatch_types.index(t);
+      if (at >= 0) places.push_back(at);
+    }
+    std::sort(places.begin(), places.end());
+    for (Sym *t : types) {
+      int at = cs->sym->dispatch_types.index(t), rank = -1;
+      if (at >= 0) rank = std::lower_bound(places.begin(), places.end(), at) - places.begin();
+      h = vk_mix(h, t->id);
+      h = vk_mix(h, (t->isa.set_in(cs->sym) ? 1 : 0) | (t->isa.set_in(cs->sym->type) ? 2 : 0));
+      h = vk_mix(h, (uint64_t)(int64_t)rank);
+    }
+  }
+  if (generic) h = vk_mix(h, cs->sym->id);
+  if (vk_mode() != 2) vk_memo.emplace(mk, h);
+  return h;
+}
+
+// Compute every member's key for this dispatch. Returns false for a send the
+// check does not cover.
+static bool vk_begin(Matcher &m, VerdictKeys &vk, Vec<AVar *> &args, Vec<cchar *> &names, Vec<Fun *> *visible) {
+  static bool registered = false;
+  if (!registered) registered = true, atexit(vk_report);
+  ++vk_dispatches;
+  for (int i = 0; i < names.n; i++)
+    if (names[i]) return ++vk_skip_named, false;
+  std::vector<MPosition *> positions;
+  MPosition app;
+  app.push(1);
+  for (int i = 0; i < args.n; i++, app.inc()) positions.push_back(cannonicalize_mposition(app));
+  // The candidates the selector admits: what find_arg_matches leaves in
+  // partial_matches after position 0.
+  Vec<Fun *> selected;
+  for (CreationSet *cs : args[0]->out->sorted) vk_accepted(m, args[0], cs, positions[0], visible, selected);
+  for (Fun *f : selected) if (f)
+    for (int i = 0; i < args.n; i++) {
+      Sym *formal = f->arg_syms.get(positions[i]);
+      if (formal && formal->is_pattern) return ++vk_skip_pattern, false;
+    }
+  uint64_t d0 = vk_digest(visible, m.function_values), d1 = vk_digest(&selected, m.function_values);
+  vk.keys.resize(args.n);
+  for (int i = 0; i < args.n; i++)
+    for (CreationSet *cs : args[i]->out->sorted)
+      vk.keys[i][cs] = vk_member_key(m, args[i], cs, positions[i], i ? &selected : visible, i ? d1 : d0);
+  vk.seed = vk_mix(vk_mix(vk_mix(d0, d1), m.send->var->id), (m.is_closure ? 8 : 0) | (uint64_t)m.partial);
+  m.vk = &vk;
+  ++vk_checked;
+  return true;
+}
+
+static void vk_leaf(Matcher &m, Vec<CreationSet *> &csargs, Vec<Fun *> &winners) {
+  VerdictKeys &vk = *m.vk;
+  uint64_t tuple = vk.seed, won = 0;
+  for (int i = 0; i < csargs.n; i++) tuple = vk_mix(tuple, vk.keys[i][csargs[i]]);
+  for (Fun *f : winners) if (f) won += vk_mix(19, f->id);
+  ++vk_leaves;
+  auto r = vk_tuples.emplace(tuple, won);
+  if (!r.second && r.first->second != won && ++vk_tuple_mismatch <= 20) {
+    fprintf(stderr, "VERDICTKEY TUPLE send=%d line=%d args:", m.send->id, m.send->var->sym->source_line());
+    for (CreationSet *cs : csargs) fprintf(stderr, " %s#%d", vk_name(cs->sym), cs->id);
+    fprintf(stderr, " winners:");
+    for (Fun *f : winners) if (f) fprintf(stderr, " %s#%d", vk_name(f->sym), f->id);
+    fprintf(stderr, "\n");
+  }
+}
+
+static void vk_check(Matcher &m, VerdictKeys &vk, Vec<AVar *> &args, Vec<Match *> &matches) {
+  std::vector<std::unordered_map<CreationSet *, uint64_t>> verdict(args.n);
+  for (Match *mm : matches) {
+    PMatch *pm = m.match_map.get(mm->fun);
+    form_MPositionAType(x, mm->formal_filters) {
+      if (!x->value || x->key->pos.n != 1) continue;
+      MPosition *acp = pm ? to_actual(x->key, pm) : x->key;
+      if (!acp->last_is_positional()) continue;
+      int i = (int)Position2int(acp->last()) - 1;
+      if (i < 0 || i >= args.n) continue;
+      uint64_t route = vk_mix(vk_mix(23, mm->fun->id), Position2int(x->key->last()));
+      for (CreationSet *cs : x->value->sorted) if (cs) verdict[i][cs] += route;
+    }
+  }
+  int widest_w = -1;
+  size_t widest_k = 0, widest_v = 0;
+  for (int i = 0; i < args.n; i++) {
+    ++vk_positions;
+    std::unordered_map<uint64_t, std::pair<uint64_t, CreationSet *>> by_key;
+    std::unordered_map<uint64_t, int> verdicts;
+    for (CreationSet *cs : args[i]->out->sorted) {
+      auto f = verdict[i].find(cs);
+      uint64_t v = f == verdict[i].end() ? 0 : f->second;
+      verdicts[v] = 1;
+      auto r = by_key.emplace(vk.keys[i][cs], std::make_pair(v, cs));
+      if (!r.second && r.first->second.first != v && ++vk_partition_mismatch <= 20) {
+        CreationSet *o = r.first->second.second;
+        fprintf(stderr, "VERDICTKEY PARTITION send=%d line=%d position=%d: %s#%d and %s#%d share a key; matches:", m.send->id,
+                m.send->var->sym->source_line(), i, vk_name(cs->sym), cs->id, vk_name(o->sym), o->id);
+        for (Match *mm : matches) fprintf(stderr, " %s#%d", vk_name(mm->fun->sym), mm->fun->id);
+        fprintf(stderr, "\n");
+      }
+    }
+    if (by_key.size() > verdicts.size()) ++vk_overfine;
+    if (args[i]->out->sorted.n > widest_w) {
+      widest_w = args[i]->out->sorted.n;
+      widest_k = by_key.size(), widest_v = verdicts.size();
+    }
+  }
+  if (widest_w >= 32) {
+    VkBand &b = vk_band[widest_w < 500 ? 0 : 1];
+    ++b.n;
+    b.width += widest_w;
+    b.keys += widest_k;
+    b.verdicts += widest_v;
+    b.log_keys += log2((double)widest_k);
+    b.log_verdicts += log2((double)widest_v);
+  }
+}
+
 //
 // main dispatch entry point - given a vector of arguments return a vector of
 // matches
@@ -2249,6 +2534,10 @@ static int pattern_match_full(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send
   Vec<Fun *> *partial_matches = 0;
   find_visible_functions(args, visibility_point, &partial_matches, matcher.function_values);
   log_dispatch_pattern_match(partial_matches, matcher.function_values, send);
+  VerdictKeys verdict_keys;
+  Vec<Fun *> vk_visible;
+  bool vk_all_visible = !partial_matches;
+  if (vk_mode() && partial_matches) vk_visible.copy(*partial_matches);
   MPosition app;
   matcher.find_all_matches(0, args, names, &partial_matches, app, 0);
   // issues/103: a candidate with no formal of a given actual's NAME is
@@ -2319,6 +2608,7 @@ static int pattern_match_full(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send
     Vec<Vec<CreationSet *> *> csclasses;
     Vec<Fun *> result;
     matcher.prune_uncoverable(args, app, *partial_matches);
+    if (vk_mode()) vk_begin(matcher, verdict_keys, args, names, vk_all_visible ? nullptr : &vk_visible);
     matcher.find_best_matches(args, csargs, *partial_matches, app, result, 1, csclasses);
     // othello3: this ran at every top-level leaf, and rescanned every
     // CreationSet a candidate's formal_sets had accumulated over all the
@@ -2333,6 +2623,7 @@ static int pattern_match_full(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send
     if (!partial_matches->n) return 0;
   }
   matcher.cannonicalize_matches(*partial_matches, is_closure, partial, matches, visibility_point, args);
+  if (matcher.vk) vk_check(matcher, verdict_keys, args, matches);
   return matches.n;
 }
 
@@ -2377,7 +2668,7 @@ static void build_patterns(FA *fa, Fun *f, int add) {
   p.push(1);
   insert_fun(fa, f, f->sym, f->sym, p);
   for (Sym *a : f->sym->has) build_arg(fa, f, a, p);
-  if (add) sym_match_cache.clear();
+  if (add) sym_match_cache.clear(), vk_clear();
 }
 
 void add_patterns(FA *fa, Fun *f) { build_patterns(fa, f, 1); }

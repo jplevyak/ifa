@@ -569,6 +569,64 @@ arrival order changes.
    matcher's on every miss, as `IFA_INCMATCH=2` does.
    **Stop if they disagree:** the class is not a function of the member
    alone, and A does not hold as designed.
+
+   **Done 2026-11-09: they agree; the stop condition was not hit.**
+   `IFA_VERDICTKEY=1` (`=2` recomputes every key instead of using the
+   memo), in `pattern.cc`, off by default.
+
+   **The key.** `Sym` and arity alone would not compress. So the key
+   records, over the candidates the selector admits, which ones accept the
+   member after the arity, `is_exact_match` and `is_this` tests and
+   `verify_arg`. For each it adds the promotion, coercion and
+   `reverify_filters` outcome. Where the accepting candidates' formal
+   types differ, it adds what `subsumes_arg` reads (`isa`, and the types'
+   relative order in the member's MRO). The member's `Sym` goes in only
+   when a generic candidate accepts it.
+
+   **Two checks.** *Partition:* members with one key at a position are in
+   the same (function, formal) filters of the finished match. *Tuple:* a
+   leaf's winners are a function of the tuple of keys, across dispatches,
+   contours and passes of one send site. The tuple check sees only the
+   representatives of `find_best_matches`' existing class collapse.
+
+   **Result, all 77 corpus programs and 531 suite programs:** 2 219 504
+   dispatches checked (every full match that returned a result),
+   49 530 570 leaves, **0 partition and 0 tuple mismatches**. Skipped: 297
+   dispatches with named actuals. Nine suite programs are refused before
+   flow analysis. The memo-off run gives identical counts on chess,
+   sunfish and plcfrs.
+
+   **The check can fail.** A temporary mutation that dropped the accepting
+   candidates from the key gave 40 464 partition mismatches on chess, and
+   one that dropped only the `subsumes_arg` part was caught on a
+   `class B(C, D)` / `class E(D, C)` program, which is the case that part
+   exists for. Chess does not need that part; the mutation was not run on
+   the rest of the corpus.
+
+   **Compression**, at the widest position of a dispatch, widths 32–499
+   except othello3's second row:
+
+   | program | dispatches | width | keys | verdict classes | step 2's `Sym` classes |
+   | --- | --- | --- | --- | --- | --- |
+   | sunfish | 66 100 | 41.2 | 6.1 | 4.6 | 15.6 |
+   | plcfrs | 104 717 | 52.3 | 4.8 | 4.5 | 12.9 |
+   | chess | 853 | 34.4 | 5.0 | 4.2 | |
+   | othello3 (500+) | 1 037 546 | 892.5 | 4.0 | 4.0 | 848.5 |
+
+   The key is close to the matcher's own partition: it is finer at 49 942
+   of the positions outside othello3 and 182 on othello3, and that costs
+   only some compression. Distinct key tuples over the whole compile:
+   sunfish 26 252, plcfrs 14 088, othello3 757 631.
+
+   **Unreconciled:** the probe above reported othello3 at 875 → 371 over
+   5 400 wide misses, and this check reports 892.5 → 4.0 over 1 037 546.
+   Step 2's count of wide misses (1 043 735) agrees with this one. That
+   probe is gone, so the difference in population is not explained, and
+   371 should not be relied on.
+
+   **Pattern formals do not arise in pyc.** Only the V frontend and the IR
+   test parser set `is_pattern` (`skip_pattern=0` everywhere), so the
+   exclusion in step 2 costs nothing on Python programs.
 2. **Class-admitting filters for sends with no pattern formal.** Replace
    the snapshot permit with a class predicate (`restrict_pred` is the
    existing mechanism to look at), and fire a send only for a new class.
