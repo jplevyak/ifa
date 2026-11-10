@@ -9,7 +9,7 @@
 #ifdef LEAK_DETECT
 #define GC_DEBUG
 #include "gc.h"
-#define MEM_INIT() GC_INIT()
+#define MEM_INIT() do { GC_INIT(); mem_init_heap(); } while (0)
 #define MALLOC(_n) GC_MALLOC(_n)
 #define REALLOC(_p, _n) GC_REALLOC((_p), (_n))
 #define MEMALIGN(_p, _n, _a) _p = GC_MALLOC(_n)
@@ -18,13 +18,33 @@
 #define DELETE(_x)
 #else
 #include "gc_cpp.h"
-#define MEM_INIT() GC_INIT()
+#define MEM_INIT() do { GC_INIT(); mem_init_heap(); } while (0)
 #define MALLOC(_n) GC_MALLOC(_n)
 #define REALLOC(_p, _n) GC_REALLOC((_p), (_n))
 #define MEMALIGN(_p, _n, _a) _p = GC_MALLOC(_n)
 #define FREE(_x) (void)(_x)
 #define DELETE(_x) (void)(_x)
 #endif
+
+#include <stdlib.h>
+#include <unistd.h>
+
+// The compilers' starting heap (not generated programs', which have their
+// own MEM_INIT). The collector runs when the heap cannot satisfy an
+// allocation, so a small starting heap collects over and over while the
+// analysis grows: on sunfish, 4 GiB takes the compile from 139 s to 50 s
+// and 8 GiB only to 47 s (ifa/207). Pages are touched only as they are
+// allocated, so a small program stays small. Limited to an eighth of
+// physical memory because parallel compiles add up; GC_expand_hp failing
+// just leaves the collector's default. GC_INITIAL_HEAP_SIZE still decides
+// when it is set.
+static inline void mem_init_heap() {
+  if (getenv("GC_INITIAL_HEAP_SIZE")) return;
+  size_t want = (size_t)4 << 30;
+  long pages = sysconf(_SC_PHYS_PAGES), page_size = sysconf(_SC_PAGESIZE);
+  if (pages > 0 && page_size > 0 && (size_t)pages * page_size / 8 < want) want = (size_t)pages * page_size / 8;
+  (void)GC_expand_hp(want);
+}
 
 #define round2(_x, _n) ((_x + ((_n)-1)) & ~((_n)-1))
 // (unsigned char) cast is required: `char` is signed on this platform, so

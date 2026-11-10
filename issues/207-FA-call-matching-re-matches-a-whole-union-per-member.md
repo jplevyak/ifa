@@ -700,6 +700,33 @@ arrival order changes.
    earlier in this issue was measured with the default heap and includes
    collections triggered by the matcher's allocation. The shares remain
    useful, but the seconds overstate what a faster matcher can save.
+
+   **Landed 2026-11-10: the compilers start with a 4 GiB heap**
+   (`mem_init_heap` in `ifa/common/common.h`, called from `MEM_INIT`, at
+   most an eighth of physical memory, `GC_INITIAL_HEAP_SIZE` still
+   overrides; generated programs keep their own `MEM_INIT`). The
+   collector runs only when the heap cannot satisfy an allocation, so a
+   larger start means fewer collections, not a different trigger. Ladder,
+   each compile alone, wall / FA / peak RSS:
+
+   | starting heap | sunfish | plcfrs | hashlib_md5 (suite) |
+   | --- | --- | --- | --- |
+   | default | 138.9 s / 92.0 s / 2.0 GB | 66.2 s / 53.7 s / 0.96 GB | 1.56 s / 0.17 s / 0.21 GB |
+   | 1 GiB | 113.2 s / 93.4 s / 2.0 GB | | |
+   | 2 GiB | 63.5 s / 52.9 s / 2.5 GB | 49.7 s / 41.8 s / 2.4 GB | 1.04 s / 0.15 s / 0.43 GB |
+   | 4 GiB | 49.6 s / 42.2 s / 4.6 GB | 46.8 s / 39.0 s / 4.6 GB | |
+   | 8 GiB | 47.4 s / 39.7 s / 9.1 GB | | 1.04 s / 0.15 s / 0.43 GB |
+
+   4 GiB is the knee: within 5% of 8 GiB at half the memory. The heap
+   does not change the analysis: `compile -e GC_INITIAL_HEAP_SIZE=262144`
+   against `check__default__5fa6edcc+a866b08f` (same binary) differs in
+   none of compile rc, warnings, ess, css, container CSs or shapes on any
+   of 77 programs. The `check` verdicts equal `eb635d2a`'s (othello3
+   compile-fail, othello2 stdout); cs/shapes 2670 → 2664 comes from the
+   commits since then, since both heaps give 2664. Lowest MemAvailable
+   during the `check` sweep (compile -j32): 66.7 GB of 125 GB. Sweep compile
+   phase: sunfish 176 s → 67 s, ac_encode 156 s → 71 s; othello3 stays at the
+   400 s cap.
 3. **The shared table (B) as the slow path,** on a per-class code path
    rather than a `Matcher` run. Step 3 above measured a `Matcher` on
    narrowed arguments at about 50 µs, which is too slow.
