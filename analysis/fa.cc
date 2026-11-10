@@ -2288,6 +2288,30 @@ int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, Vec<AVar
   for (int j = args.n - 1; j >= 0; j--) a.add(args[j]);
   Vec<Match *> matches;
   AVar *send = make_AVar(p->lvals[0], es);
+  // ifa/207: a dispatch that decides nothing is not run; see
+  // dispatch_unchanged. IFA_DISPMEMO=0 turns it off; =2 runs the matcher
+  // behind every witness answer and reports any it would have got wrong.
+  static int memo_on = getenv("IFA_DISPMEMO") ? atoi(getenv("IFA_DISPMEMO")) : 1;
+  if (memo_on) {
+    int remembered;
+    int r = dispatch_unchanged(a, send, is_closure, partial, visibility_point, &remembered);
+    if (r == 1) return remembered;
+    if (r == 2) {
+      if (memo_on == 2) {
+        static long checked = 0, mismatch = 0;
+        static bool reg = false;
+        if (!reg) reg = true, atexit([] { fprintf(stderr, "DISPMEMO witness checked=%ld MISMATCH=%ld\n", checked, mismatch); });
+        Vec<Match *> chk;
+        int n = pattern_match(a, names, send, is_closure, partial, visibility_point, chk);
+        bool ok = n > 0;
+        for (Match *m : chk) if (!m->is_partial && partial != Partial_ALWAYS) ok = false;
+        checked++;
+        if (!ok && ++mismatch <= 10) fprintf(stderr, "DISPMEMO WITNESS MISMATCH send=%d n=%d\n", send->id, n);
+      }
+      dispatch_remember(a, send, is_closure, partial, visibility_point, 1, nullptr);
+      return 1;
+    }
+  }
   match_timer.start();
   // ifa/207 step 2: a firing that brought no new verdict class needs no
   // matching; see standing_try.
@@ -2297,6 +2321,7 @@ int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, Vec<AVar
     if (standing_try(a, send, is_closure, partial, visibility_point, admitted, nullptr)) {
       for (Match *m : admitted) make_AEdges(m, p, es, a);
       match_timer.stop();
+      if (memo_on) dispatch_remember(a, send, is_closure, partial, visibility_point, 0, nullptr);
       return 0;
     }
   }
@@ -2316,6 +2341,7 @@ int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, Vec<AVar
     standing_record(a, names, send, is_closure, partial, visibility_point, matches);
   }
   match_timer.stop();
+  if (memo_on) dispatch_remember(a, send, is_closure, partial, visibility_point, matches.n ? partial_result : -1, &matches);
   return matches.n ? partial_result : -1;
 }
 

@@ -6,7 +6,11 @@ only 11–17%, which says what the real algorithm needs (2026-11-08,
 below). **The direction changed on 2026-11-09: stop re-dispatching when a
 union grows, rather than make the re-dispatch faster.** See
 [the last section](#revised-direction-2026-11-09-dispatch-as-a-standing-constraint),
-which supersedes steps 3–6 of the redesign plan. Filed 2026-11-08 from
+which supersedes steps 3–6 of the redesign plan. **Landed 2026-11-10:**
+a dispatch that decides nothing is no longer run, and the match cache is
+hashed; othello3's matching went 356 s → 104 s with identical output
+([last two sections](#what-each-dispatch-finds-changed-2026-11-10-tree-56c21a33-temporary-probe-since-removed)).
+Filed 2026-11-08 from
 [203](203-shrink-the-graph-fa-walks.md)'s re-scoping. That measurement
 put FA's time in call matching, not flow, on every program where FA takes
 real time. This issue is for the matching algorithm itself
@@ -756,3 +760,152 @@ arrival order changes.
   (othello3 under the cap) is unproven.
 - The fall in rounds, and so any saving in flow (27% of FA on sunfish).
 - The cost of the per-member class lookup that replaces a dispatch.
+
+## What each dispatch finds changed, 2026-11-10 (tree `56c21a33`, temporary probe, since removed)
+
+**The question.** Before building a delta-driven dispatch: is the cost in
+dispatches whose inputs did not change, and where do they come from? The
+guess was the closure loop in `all_applications`. **That guess was wrong.**
+The fan-out of a call send is 1 (sunfish: 196 of 2.9 M firings dispatch
+more than once; othello3: none). The fan-out is in the `obj.attr`
+primitive.
+
+**Probe.** `IFA_DBG_DISPPROF`, in `function_dispatch`. Per (send,
+`is_closure`, visibility point, argument AVars) it kept the arguments'
+`out` pointers from the last dispatch in the same flow run, and classified
+each dispatch:
+- *first*: no dispatch of that tuple yet this run;
+- *unchanged*: every `out` is the pointer it was;
+- *changed*: one or more differ.
+
+It timed the whole `function_dispatch` call and attributed it to the
+caller: a call send, or `P_prim_period`'s two calls of `all_applications`
+(the **member loop**, one call per receiver CreationSet whose member of
+that name holds a method, and the **selector** dispatch). It also counted
+the entries `match_cache_hit` scans. Each program compiled alone, 4 GiB
+heap.
+
+**othello3** (FA 454 s, matching 356 s):
+
+| caller | class | cache | dispatches | time | avg width |
+| --- | --- | --- | --- | --- | --- |
+| member loop | unchanged | hit | 9 661 357 | **135.3 s** | 847 |
+| member loop | first | miss | 861 043 | **68.3 s** | 891 |
+| member loop | first | hit | 2 388 859 | **36.1 s** | 832 |
+| member loop | changed | either | 345 926 | 12.4 s | 892 |
+| call send | changed | miss | 92 144 | 62.5 s | 309 |
+| call send | unchanged | hit | 1 821 098 | 17.8 s | 12 |
+| call send | first | either | 221 851 | 11.9 s | |
+| selector | all | | 709 099 | 12.4 s | |
+
+- **The member loop is 252 s, 71% of matching.** It fired 32 423 times
+  with a mean of 409 members (maximum 898), so 13.3 M of the 16.5 M
+  dispatches are its.
+- **Each of its dispatches is (one member's AVar, the WHOLE receiver
+  union).** So a firing on a receiver of width *w* does *w* dispatches of
+  width *w*.
+- **The cache scan is the hit cost.** A lookup scans 2 921 entries on
+  average (maximum 7 671), because every (member, receiver type) pair of a
+  send is its own entry in one list. sunfish's mean is 7.1, plcfrs's 21.4.
+- **74% of all dispatches find nothing changed** (12.2 M), for 157 s.
+
+**sunfish** (FA 43.7 s, matching 25.2 s) is a different case:
+
+| caller | class | cache | dispatches | time |
+| --- | --- | --- | --- | --- |
+| call send | changed | miss | 83 500 | **19.3 s** |
+| call send | unchanged | hit | 2 489 389 | 2.7 s |
+| call send | first | either | 126 153 | 1.4 s |
+| member loop and selector | all | | 1 537 671 | 1.5 s |
+
+93% of its dispatches find nothing changed, but they cost 3.6 s. Its time
+is real re-matching of call sends as arguments grow, which is what
+`IFA_STANDING` answers. Its member loop has 1.7 members on average.
+plcfrs (first run of the probe, before the caller split) has sunfish's
+shape: 13.7 s of 20 s in changed misses, 3.6 s in unchanged hits.
+
+**What it means.**
+- **Two diseases, not one.** sunfish and plcfrs pay for re-matching on
+  growth. othello3 pays for the member loop's *w* × *w* and for the cache
+  scan. Standing dispatch refuses the member loop's sends, since their
+  result is a partial application; that is its 91% refused.
+- **Next for othello3:** dispatch the member loop once per distinct member
+  VALUE (the methods the members hold), not once per receiver CreationSet,
+  and skip a dispatch whose inputs are the pointers they were. Open
+  question first: what the member loop decides that the selector dispatch
+  after it does not, since both run for a receiver whose member is a
+  method.
+- **Option F is not small on othello3.** Replacing the linear scan is
+  worth most of the 198 s of hits there, and close to nothing elsewhere.
+
+The probe is not in the tree.
+
+## Landed 2026-11-10: a dispatch that decides nothing is not run
+
+Three changes, all exact, all on by default (`pattern.cc`:
+`MatchCache::index`, `dispatch_unchanged`, `dispatch_remember`; called from
+`function_dispatch`).
+
+1. **The match cache is hashed.** `match_cache_hit` finds its candidates
+   by a hash of the flags, the visibility point and the top-level argument
+   types, then compares and validates them as before. The linear scan and
+   its move-to-front are gone.
+2. **Unchanged inputs.** Per (send, argument AVars) a memo keeps the
+   argument types and result of the last dispatch. A dispatch in the same
+   flow run with the same arity epoch and pointer-identical types returns
+   the remembered result and does nothing else. Not used when the last
+   dispatch read a nested position (a pattern formal).
+3. **The witness rule.** A dispatch (function value, receiver) whose
+   matches are all partial makes no edges, so it decides only whether a
+   match exists. That is monotone in the receiver, because the result
+   decomposes over combinations of members. The memo keeps one receiver
+   member from the match's filter; while the function value is the same
+   type and that member is in the receiver, the answer is "a partial
+   match" without matching. It holds across flow runs.
+
+**Tried and dead: one dispatch per distinct member value.** othello3's
+wide member read is `flip_table[...].go()`: 894 classes, each defining its
+own `go`. Over 1 900 firings the member loop saw 1 543 283 members holding
+1 428 217 distinct values, each a distinct function. There is nothing to
+share, which is why the witness rule is per member.
+
+**Time** (each compiled alone, 4 GiB heap):
+
+| | FA | matching | wall |
+| --- | --- | --- | --- |
+| othello3, before | 454.2 s | 356.4 s | 666 s |
+| othello3, 1 and 2 | 243.5 s | 157.0 s | 495 s |
+| othello3, 1, 2 and 3 | 183.1 s | 104.3 s | 365 s |
+| sunfish, 1 only (`IFA_DISPMEMO=0`) → all | 45.1 s → 35.4 s | 29.1 s → 20.8 s | 51.8 s → 42.0 s |
+| plcfrs, 1 only → all | 37.5 s → 32.7 s | 18.6 s → 14.9 s | 44.8 s → 39.9 s |
+
+**Exact.**
+- othello3's and sunfish's generated C are byte-identical to the tree
+  before.
+- `IFA_DISPMEMO=2` runs the matcher behind every witness answer: 218 086
+  answers over the suite and 1 253 818 over the corpus
+  (`compile__IFA_DISPMEMO_2__56c21a33+56b2ee1a`), **0 mismatches**. No
+  mutation was run to show this check can fail.
+- `check__default__56c21a33+56b2ee1a` equals
+  `check__default__5fa6edcc+a866b08f` in every column on 76 programs.
+  othello3 differs only in now printing contour counts (4 883 ess, 11 500
+  css): it finishes flow analysis inside the 400 s cap.
+- `make test` is green.
+
+**186's stop condition is not met yet.** Alone, othello3 compiles in 365 s.
+In the sweep, at `-j32`, it still reaches the cap. Of the 365 s, 183 s is
+flow analysis and about 180 s comes after it; that half has not been
+profiled.
+
+**What is left in othello3's matching (104 s).** Pass 1 is 45 s of it and
+did not move with any of the three changes (45.2, 45.2, 45.3 s). The probe
+above points at a few hundred very large matches: 572 call-send
+dispatches where several arguments changed took 34 s, about 60 ms each.
+Those are the two-argument sends (`__eq__`) over two wide unions, where
+candidate selection enumerates member combinations. Step 1's verdict keys
+compress those positions from about 890 members to 4 classes, so the
+next step is to collapse `find_best_matches` by verdict key, where it
+collapses by `Sym` today.
+
+**Not answered:** what the member loop decides that the selector dispatch
+after it does not. It no longer sets the cost, so it was left.

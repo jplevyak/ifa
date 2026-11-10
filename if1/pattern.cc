@@ -119,10 +119,40 @@ class MatchCacheEntry : public Vec<Match *> {
 };
 
 class StandingDispatch;  // ifa/207 step 2
+// ifa/207: what the last dispatch of one argument tuple at a send saw and
+// returned; see dispatch_unchanged.
+class DispatchMemo : public gc {
+ public:
+  int generation, arity_epoch, is_closure, ret;
+  Partial_kind partial;
+  PNode *visibility_point;
+  Vec<AVar *> args;
+  Vec<AType *> outs;
+  // The witness of a partial-only result; see dispatch_unchanged.
+  CreationSet *witness = nullptr;
+  AType *witness_fun = nullptr;
+  int witness_arity_epoch = 0;
+};
 class MatchCache : public Vec<MatchCacheEntry *> {
  public:
   StandingDispatch *standing = nullptr;
+  // ifa/207: the entries again, by a hash of what match_cache_hit compares
+  // first (flags, visibility point, top-level argument types). A send
+  // holds one entry per type state it has dispatched on, and a member read
+  // (`obj.f`) dispatches once per receiver member, so othello3's sends
+  // averaged 2 921 entries a lookup, scanned linearly.
+  Map<void *, Vec<MatchCacheEntry *> *> index;
+  Map<void *, DispatchMemo *> memo;
+  void insert(MatchCacheEntry *e);
 };
+static inline uint64_t mc_mix(uint64_t h, uint64_t x) {
+  h ^= x + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+  return h * 1099511628211ULL;
+}
+static inline void *mc_key(uint64_t h) { return (void *)(uintptr_t)(h | 1); }
+// Set by a dispatch that read a type below the top level of an argument (a
+// pattern formal). Such a dispatch is not a function of the top-level types.
+static bool dispatch_read_nested = false;
 
 class Matcher {
  public:
@@ -396,6 +426,7 @@ int positional_to_named(PNode *pn, CreationSet *cs, Vec<cchar *> &names, MPositi
 // This is an approximation.  It should really take into account
 // the specific CreationSet which contributed at each MPosition
 static void add_all_args(MapMPositionAType &m, MPosition *cp, AType *t) {
+  if (cp->pos.n != 1) dispatch_read_nested = true;
   AType *tt = m.get(cp);
   if (!tt)
     m.put(cp, t);
@@ -1779,9 +1810,9 @@ void Matcher::cannonicalize_matches(Vec<Fun *> &partial_matches, int is_closure,
     MatchCache *mc = send->match_cache;
     if (!mc) mc = send->match_cache = new MatchCache;
     MatchCacheEntry *e = new MatchCacheEntry(is_closure, partial, visibility_point);
-    mc->add(e);
     e->all_args.copy(all_args);
     for (AVar *a : args) e->top_out.add(a->out);
+    mc->insert(e);
     for (Match *m : matches) e->add(new Match(*m));
     if (uses_dispatch_arity) e->arity_epoch = dispatch_arity_epoch;
   }
@@ -1899,22 +1930,40 @@ static void get_all_args(Vec<AVar *> &args, MapMPositionAType &all_args, MapMPos
   }
 }
 
+static void *mc_entry_key(int is_closure, Partial_kind partial, PNode *visibility_point, AType **outs, int n) {
+  uint64_t h = mc_mix(mc_mix(mc_mix(1469598103934665603ULL, is_closure), partial), (uintptr_t)visibility_point);
+  for (int i = 0; i < n; i++) h = mc_mix(h, (uintptr_t)outs[i]);
+  return mc_key(h);
+}
+
+// Entries are inserted after top_out is filled.
+void MatchCache::insert(MatchCacheEntry *e) {
+  add(e);
+  void *k = mc_entry_key(e->is_closure, e->partial, e->visibility_point, e->top_out.v, e->top_out.n);
+  Vec<MatchCacheEntry *> *b = index.get(k);
+  if (!b) index.put(k, (b = new Vec<MatchCacheEntry *>));
+  b->add(e);
+}
+
 static int match_cache_hit(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
                            Vec<Match *> &matches) {
   MatchCache *m = send->match_cache;
   if (!m) return 0;
   // Issue 033 S4-E: with the cache surviving across passes, a send
-  // accumulates one entry per distinct type-state and this scan is
-  // on the hot path (every send re-fires through the same monotone
-  // type-growth sequence every pass). Two mitigations: the top_out
-  // pointer pre-filter rejects non-matching entries without the
-  // recursive get_all_args walk, and a hit moves its entry to the
-  // front (MRU) — the entry that hit at this type-state last pass
-  // hits first this pass. At most one entry can fully validate
-  // (entries are only added on a miss), so order never changes the
-  // result, only the scan length.
+  // accumulates one entry per distinct type-state, and this lookup is on
+  // the hot path (every send re-fires through the same monotone
+  // type-growth sequence every pass). ifa/207: so the entries are found by
+  // a hash of the top-level types, not by scanning them. The bucket is
+  // still compared field by field, since a hash can collide, and then
+  // validated on the nested positions: a nested CS var's type can change
+  // under an unchanged top-level AType. At most one entry can fully
+  // validate (entries are only added on a miss).
+  AType *outs[args.n ? args.n : 1];
+  for (int i = 0; i < args.n; i++) outs[i] = args.v[i]->out;
+  Vec<MatchCacheEntry *> *bucket = m->index.get(mc_entry_key(is_closure, partial, visibility_point, outs, args.n));
+  if (!bucket) return 0;
   Vec<MatchCacheEntry *> entries;
-  for (MatchCacheEntry *e : *m) {
+  for (MatchCacheEntry *e : *bucket) {
     if (e->is_closure != is_closure) continue;
     if (e->partial != partial) continue;
     if (e->visibility_point != visibility_point) continue;
@@ -1922,7 +1971,7 @@ static int match_cache_hit(Vec<AVar *> &args, AVar *send, int is_closure, Partia
     if (e->arity_epoch >= 0 && e->arity_epoch != dispatch_arity_epoch) continue;
     bool top_ok = true;
     for (int i = 0; i < args.n; i++)
-      if (e->top_out.v[i] != args.v[i]->out) {
+      if (e->top_out.v[i] != outs[i]) {
         top_ok = false;
         break;
       }
@@ -1943,17 +1992,95 @@ static int match_cache_hit(Vec<AVar *> &args, AVar *send, int is_closure, Partia
       log(LOG_DISPATCH, "%d- hit: %d\n", send->var->sym->id, mm->fun->sym->id);
       matches.add(new Match(*mm));
     }
-    // MRU: move the hitting entry to the front of the cache.
-    for (int i = 0; i < m->n; i++)
-      if (m->v[i] == e) {
-        for (int j = i; j > 0; j--) m->v[j] = m->v[j - 1];
-        m->v[0] = e;
-        break;
-      }
     return 1;
   Lfail:;
   }
   return 0;
+}
+
+// ifa/207: a dispatch whose inputs are what they were at the last dispatch
+// of the same argument tuple, in the same flow run, decides nothing: the
+// matcher is a function of the argument types, and the edges it would make
+// exist. 74% of othello3's dispatches were these (157 s), most of them from
+// a member read, which dispatches once per receiver member whenever any one
+// member's type moves. Returns 1 and the remembered result in *ret.
+//
+// Not used when the last dispatch read a nested position (a pattern
+// formal), since the top-level types do not then determine it.
+//
+// Returns 2 for the WITNESS rule. A dispatch (function value, receiver)
+// whose matches are all partial makes no edges, so all it decides is whether
+// a match exists, and that is monotone in the receiver: the matcher's result
+// decomposes over combinations of argument members (207, IFA_INCMATCH), so a
+// combination that won keeps winning whatever joins the union. The memo
+// keeps one receiver member W from the match's filter. While the function
+// value is the same type and W is in the receiver, the answer is still "a
+// partial match". Whether a match is partial depends on the function alone,
+// so no later match of that function makes an edge either. This holds
+// across flow runs, since it reads types only. It is what a member read on
+// a wide receiver needs: othello3's `x.go()` has 894 receiver classes, each
+// with its own `go`, and asked the 894 questions again, each over all 894
+// members, every time the receiver gained one.
+static void *dispatch_memo_key(Vec<AVar *> &args) {
+  uint64_t h = 1469598103934665603ULL;
+  for (AVar *a : args) h = mc_mix(h, (uintptr_t)a);
+  return mc_key(h);
+}
+int dispatch_unchanged(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
+                       int *ret) {
+  dispatch_read_nested = false;  // the dispatch that follows a 0 sets it
+  MatchCache *mc = send->match_cache;
+  if (!mc) return 0;
+  DispatchMemo *d = mc->memo.get(dispatch_memo_key(args));
+  if (!d || d->is_closure != is_closure || d->partial != partial || d->visibility_point != visibility_point ||
+      d->args.n != args.n)
+    return 0;
+  for (int i = 0; i < args.n; i++)
+    if (d->args.v[i] != args.v[i]) return 0;
+  if (d->generation == standing_generation && d->arity_epoch == dispatch_arity_epoch) {
+    bool same = true;
+    for (int i = 0; same && i < args.n; i++) same = d->outs.v[i] == args.v[i]->out;
+    if (same) return *ret = d->ret, 1;
+  }
+  if (d->witness && d->witness_arity_epoch == dispatch_arity_epoch && args.n == 2 && args.v[0]->out == d->witness_fun &&
+      args.v[1]->out->in(d->witness))
+    return *ret = 1, 2;
+  return 0;
+}
+void dispatch_remember(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
+                       int ret, Vec<Match *> *matches) {
+  MatchCache *mc = send->match_cache;
+  if (!mc) mc = send->match_cache = new MatchCache;
+  void *k = dispatch_memo_key(args);
+  DispatchMemo *d = mc->memo.get(k);
+  if (dispatch_read_nested) {
+    if (d) d->generation = -1, d->witness = nullptr;
+    return;
+  }
+  if (!d) mc->memo.put(k, (d = new DispatchMemo));
+  d->generation = standing_generation;
+  d->arity_epoch = dispatch_arity_epoch;
+  d->is_closure = is_closure;
+  d->partial = partial;
+  d->visibility_point = visibility_point;
+  d->ret = ret;
+  d->args.copy(args);
+  d->outs.clear();
+  for (AVar *a : args) d->outs.add(a->out);
+  if (!matches) return;  // answered by the witness or the standing path: the witness stands
+  d->witness = nullptr;
+  if (ret != 1 || args.n != 2 || args.v[0]->out->sorted.n != 1) return;
+  for (Match *mm : *matches) if (!mm->is_partial) return;
+  for (Match *mm : *matches) form_MPositionAType(x, mm->formal_filters) {
+    if (!x->value || x->key->pos.n != 1 || !x->key->last_is_positional()) continue;
+    if ((int)Position2int(x->key->last()) - 1 != 1) continue;
+    for (CreationSet *cs : x->value->sorted) if (cs && args.v[1]->out->in(cs)) {
+      d->witness = cs;
+      d->witness_fun = args.v[0]->out;
+      d->witness_arity_epoch = dispatch_arity_epoch;
+      return;
+    }
+  }
 }
 
 // ifa/207 PROTOTYPE, off by default: incremental matching (IFA_INCMATCH=1
@@ -2095,7 +2222,7 @@ static int incmatch_try(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int 
       }
       for (AVar *a : args) ne->top_out.add(a->out);
       for (Match *m : matches) ne->add(new Match(*m));
-      mc->add(ne);
+      mc->insert(ne);
     }
     return 1;
   }
@@ -2165,7 +2292,7 @@ static int incmatch_try(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int 
         }
         for (AVar *a : args) ne->top_out.add(a->out);
         for (Match *m : matches) ne->add(new Match(*m));
-        mc->add(ne);
+        mc->insert(ne);
       }
       ++incmatch_stat[IM_DELTA_USED];
       incmatch_path = 2;

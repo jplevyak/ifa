@@ -172,4 +172,10 @@ void standing_record(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_
 int standing_try(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
                  Vec<Match *> &admitted, Vec<Match *> *check);
 
+// ifa/207: skip a dispatch whose inputs did not change. See pattern.cc.
+int dispatch_unchanged(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
+                       int *ret);
+void dispatch_remember(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
+                       int ret, Vec<Match *> *matches);
+
 #endif
