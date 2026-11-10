@@ -45,6 +45,7 @@ int write_code_exit = 0;
 int analysis_pass = 0;
 FA *fa = nullptr;
 static Timer pass_timer, match_timer, extend_timer;
+static long fa_rounds_total();  // ifa/207
 // ifa/111 probe: the units the propagation worklists actually process.
 // `examined_avar_count` counts the SPLITTER's exhaustive sweep, not this,
 // so per-unit cost cannot be derived from it. PYC_DBG_WORK=1 to print.
@@ -2288,6 +2289,17 @@ int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, Vec<AVar
   Vec<Match *> matches;
   AVar *send = make_AVar(p->lvals[0], es);
   match_timer.start();
+  // ifa/207 step 2: a firing that brought no new verdict class needs no
+  // matching; see standing_try.
+  int standing = standing_mode();
+  if (standing == 1) {
+    Vec<Match *> admitted;
+    if (standing_try(a, send, is_closure, partial, visibility_point, admitted, nullptr)) {
+      for (Match *m : admitted) make_AEdges(m, p, es, a);
+      match_timer.stop();
+      return 0;
+    }
+  }
   if (pattern_match(a, names, send, is_closure, partial, visibility_point, matches)) {
     for (Match *m : matches) {
       if (!m->is_partial && partial != Partial_ALWAYS)
@@ -2295,6 +2307,13 @@ int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, Vec<AVar
       else
         partial_result = 1;
     }
+  }
+  if (standing) {
+    if (standing == 2 && matches.n) {
+      Vec<Match *> unused;
+      standing_try(a, send, is_closure, partial, visibility_point, unused, &matches);
+    }
+    standing_record(a, names, send, is_closure, partial, visibility_point, matches);
   }
   match_timer.stop();
   return matches.n ? partial_result : -1;
@@ -4492,6 +4511,7 @@ static void initialize() {
 // (accumulate()); within a pass, later runs snap() instead of restarting.
 static int pass_runs = 0;
 static void initialize_pass() {
+  ++standing_generation;  // ifa/207: a run re-derives its types from bottom
   if (pass_runs)
     pass_timer.snap();  // a later run of the same pass: keep the time since the last one
   else
@@ -12525,9 +12545,9 @@ static void probe_invalidation_closure() {
   if (getenv("PYC_DBG_WORK")) {
     static long prev_e = 0, prev_s = 0, prev_c = 0;
     if (census.work_edges < prev_e) prev_e = prev_s = prev_c = 0;  // a new analysis
-    fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f cum_edges=%ld cum_sends=%ld\n",
+    fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f cum_edges=%ld cum_sends=%ld cum_rounds=%ld\n",
             analysis_pass, census.work_edges - prev_e, census.work_sends - prev_s, census.work_escons - prev_c,
-            pass_timer.time, census.work_edges, census.work_sends);
+            pass_timer.time, census.work_edges, census.work_sends, fa_rounds_total());
     prev_e = census.work_edges, prev_s = census.work_sends, prev_c = census.work_escons;
   }
   if (write_code_exit == analysis_pass) {
@@ -13900,6 +13920,10 @@ void constant_strip_census(int &nstrip, int &nmulti, int &nsame) {
 
 
 
+// ifa/207: rounds of the worklist loop, for PYC_DBG_WORK.
+static long fa_rounds = 0;
+static long fa_rounds_total() { return fa_rounds; }
+
 static void analyze_to_convergence() {
   // ifa/issues/098: the per-pass reset belongs here, unconditionally,
   // for two reasons. (1) Every pass must start from bottom, whether the
@@ -13967,6 +13991,7 @@ static void analyze_to_convergence() {
     fa->defer_flow = true;
     while (fa->edge_worklist.head || fa->send_worklist.head || fa->flow_worklist.head ||
            fa->es_worklist.head) {
+      ++fa_rounds;
       while (AEdge *e = fa->edge_worklist.pop()) {
         e->in_edge_worklist = 0;
         ++census.work_edges;  // ifa/111 probe

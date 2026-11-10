@@ -118,7 +118,11 @@ class MatchCacheEntry : public Vec<Match *> {
       : is_closure(ais_closure), partial(apartial), visibility_point(avp) {}
 };
 
-class MatchCache : public Vec<MatchCacheEntry *> {};
+class StandingDispatch;  // ifa/207 step 2
+class MatchCache : public Vec<MatchCacheEntry *> {
+ public:
+  StandingDispatch *standing = nullptr;
+};
 
 class Matcher {
  public:
@@ -2456,6 +2460,240 @@ static void vk_check(Matcher &m, VerdictKeys &vk, Vec<AVar *> &args, Vec<Match *
     b.log_keys += log2((double)widest_k);
     b.log_verdicts += log2((double)widest_v);
   }
+}
+
+// ifa/207 step 2: dispatch as a standing constraint, off by default.
+// IFA_STANDING=1 uses it; =2 keeps today's dispatch and checks every answer
+// it would have given against the matcher's.
+//
+// After a real dispatch a send remembers, per actual position, the verdict
+// key of every member present and which (function, formal) filters each key
+// reaches. When the send fires again and every new member's key is already
+// known, no new tuple of keys exists (step 1: a leaf's winners are a function
+// of the tuple, and the keys seen are the product enumerated by the last
+// dispatch). So the matcher has nothing to decide: each new member goes into
+// exactly the filters its key already reaches. The result is built as the
+// Match the matcher would have returned and goes to the same make_AEdges.
+//
+// A new key, any growth of the selector position, or a change of the arity
+// epoch falls back to the real dispatch. The state lives for one flow run
+// (standing_generation) because a run re-derives its types from bottom.
+int standing_generation = 0;
+int standing_mode() {
+  static int e = -1;
+  if (e < 0) e = getenv("IFA_STANDING") ? atoi(getenv("IFA_STANDING")) : 0;
+  return e;
+}
+class StandingRoute : public gc {
+ public:
+  Fun *fun;
+  MPosition *formal;
+  AType *filter;
+  Vec<CreationSet *> pending;
+};
+typedef Map<void *, Vec<StandingRoute *> *> StandingRoutes;
+typedef MapElem<Fun *, Vec<StandingRoute *> *> StandingFunElem;
+class StandingDispatch : public gc {
+ public:
+  int generation, arity_epoch, is_closure;
+  Partial_kind partial;
+  PNode *visibility_point;
+  bool all_visible;
+  uint64_t d0, d1;
+  Vec<AVar *> args;
+  Vec<AType *> seen;
+  Vec<MPosition *> positions;
+  Vec<Fun *> visible, selected, function_values;
+  Vec<StandingRoutes *> routes;
+  Map<Fun *, Vec<StandingRoute *> *> by_fun;
+  Vec<StandingRoute *> all_routes;
+};
+static long st_fires, st_used, st_used_empty, st_no_state, st_stale, st_new_key, st_selector, st_shrunk, st_recorded,
+    st_refused, st_checked, st_mismatch;
+static void standing_report() {
+  fprintf(stderr,
+          "STANDING fires=%ld used=%ld used_no_delta=%ld no_state=%ld stale=%ld new_key=%ld selector=%ld shrunk=%ld "
+          "recorded=%ld refused=%ld checked=%ld MISMATCH=%ld\n",
+          st_fires, st_used, st_used_empty, st_no_state, st_stale, st_new_key, st_selector, st_shrunk, st_recorded,
+          st_refused, st_checked, st_mismatch);
+}
+static void standing_register() {
+  static bool registered = false;
+  if (!registered) registered = true, atexit(standing_report);
+}
+static inline void *st_key(uint64_t k) { return (void *)(uintptr_t)(k | 1); }
+
+static uint64_t st_member_key(Matcher &m, StandingDispatch *st, int i, CreationSet *cs) {
+  return vk_member_key(m, st->args[i], cs, st->positions[i], i ? &st->selected : (st->all_visible ? nullptr : &st->visible),
+                       i ? st->d1 : st->d0);
+}
+
+// Remember what this real dispatch decided, or drop the state if the send
+// is one the standing path does not cover.
+void standing_record(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
+                     PNode *visibility_point, Vec<Match *> &matches) {
+  standing_register();
+  MatchCache *mc = send->match_cache;
+  if (mc) mc->standing = nullptr;
+  bool covered = matches.n && !is_closure && partial != Partial_ALWAYS && args[0]->out->n == 1;
+  for (int i = 0; covered && i < names.n; i++) if (names[i]) covered = false;
+  for (Match *mm : matches) if (mm->is_partial) covered = false;
+  if (!covered) return (void)++st_refused;
+  if (!mc) mc = send->match_cache = new MatchCache;
+  StandingDispatch *st = new StandingDispatch;
+  st->generation = standing_generation;
+  st->arity_epoch = dispatch_arity_epoch;
+  st->is_closure = is_closure;
+  st->partial = partial;
+  st->visibility_point = visibility_point;
+  st->args.copy(args);
+  Matcher m(send, args[0], is_closure, partial);
+  Vec<Fun *> *visible = nullptr;
+  find_visible_functions(args, visibility_point, &visible, m.function_values);
+  st->all_visible = !visible;
+  if (visible) st->visible.copy(*visible);
+  st->function_values.copy(m.function_values);
+  MPosition app;
+  app.push(1);
+  for (int i = 0; i < args.n; i++, app.inc()) st->positions.add(cannonicalize_mposition(app));
+  for (CreationSet *cs : args[0]->out->sorted)
+    vk_accepted(m, args[0], cs, st->positions[0], visible, st->selected);
+  for (Fun *f : st->selected) if (f)
+    for (int i = 0; i < args.n; i++) {
+      Sym *formal = f->arg_syms.get(st->positions[i]);
+      if (formal && formal->is_pattern) return (void)++st_refused;
+    }
+  st->d0 = vk_digest(visible, m.function_values);
+  st->d1 = vk_digest(&st->selected, m.function_values);
+  for (int i = 0; i < args.n; i++) {
+    st->seen.add(args[i]->out);
+    StandingRoutes *r = new StandingRoutes;
+    st->routes.add(r);
+    for (CreationSet *cs : args[i]->out->sorted) {
+      void *k = st_key(st_member_key(m, st, i, cs));
+      if (!r->get(k)) r->put(k, new Vec<StandingRoute *>);
+    }
+  }
+  for (Match *mm : matches) {
+    Vec<StandingRoute *> *rs = new Vec<StandingRoute *>;
+    st->by_fun.put(mm->fun, rs);
+    form_MPositionAType(x, mm->formal_filters) {
+      if (!x->value || x->key->pos.n != 1 || !x->key->last_is_positional()) continue;
+      int i = (int)Position2int(x->key->last()) - 1;
+      if (i < 0 || i >= args.n) continue;
+      StandingRoute *r = new StandingRoute;
+      r->fun = mm->fun;
+      r->formal = x->key;
+      r->filter = x->value;
+      rs->add(r);
+      st->all_routes.add(r);
+      for (CreationSet *cs : x->value->sorted) if (cs) {
+        Vec<StandingRoute *> *v = st->routes[i]->get(st_key(st_member_key(m, st, i, cs)));
+        if (v && (!v->n || v->v[v->n - 1] != r)) v->add(r);
+      }
+    }
+  }
+  mc->standing = st;
+  ++st_recorded;
+}
+
+// Answer a firing without matching, if no new key arrived. Returns 1 and
+// fills `admitted` with the Match of every function a new member reaches
+// (none, if nothing new arrived). With `check`, the prediction is compared
+// with the matcher's answer instead.
+int standing_try(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
+                 Vec<Match *> &admitted, Vec<Match *> *check) {
+  standing_register();
+  ++st_fires;
+  StandingDispatch *st = send->match_cache ? send->match_cache->standing : nullptr;
+  if (!st) return ++st_no_state, 0;
+  if (st->generation != standing_generation || st->arity_epoch != dispatch_arity_epoch || st->is_closure != is_closure ||
+      st->partial != partial || st->visibility_point != visibility_point || st->args.n != args.n)
+    return ++st_stale, 0;
+  for (int i = 0; i < args.n; i++) if (st->args[i] != args[i]) return ++st_stale, 0;
+  if (args[0]->out != st->seen[0]) return ++st_selector, 0;
+  Matcher m(send, args[0], is_closure, partial);
+  m.function_values.copy(st->function_values);
+  bool any = false, unknown = false;
+  // An argument's type is not monotone in its members: when an abstract type
+  // arrives, type_union subsumes the constants it covers. A member that left
+  // is a change the routes cannot express, so the matcher answers. Only
+  // growth is standing.
+  for (int i = 1; i < args.n; i++) {
+    if (args[i]->out == st->seen[i]) continue;
+    for (CreationSet *cs : st->seen[i]->sorted)
+      if (cs && !args[i]->out->in(cs)) return ++st_shrunk, 0;
+  }
+  for (int i = 1; i < args.n && !unknown; i++) {
+    if (args[i]->out == st->seen[i]) continue;
+    for (CreationSet *cs : args[i]->out->sorted) {
+      if (!cs || st->seen[i]->in(cs)) continue;
+      Vec<StandingRoute *> *v = st->routes[i]->get(st_key(st_member_key(m, st, i, cs)));
+      if (!v) { unknown = true; break; }
+      any = true;
+      for (StandingRoute *r : *v) r->pending.add(cs);
+    }
+  }
+  if (unknown) {
+    for (StandingRoute *r : st->all_routes) r->pending.clear();
+    return ++st_new_key, 0;
+  }
+  Vec<Fun *> touched;
+  for (StandingRoute *r : st->all_routes) if (r->pending.n) {
+    Vec<CreationSet *> u;
+    for (CreationSet *c : r->filter->sorted) if (c) u.set_add(c);
+    for (CreationSet *c : r->pending) u.set_add(c);
+    u.set_to_vec();
+    r->filter = make_AType(u);  // an explicit set, as cache_copy builds it
+    r->pending.clear();
+    touched.set_add(r->fun);
+  }
+  for (int i = 1; i < args.n; i++) st->seen[i] = args[i]->out;
+  if (check) {
+    ++st_checked;
+    bool same = true;
+    int nfuns = 0;
+    form_Map(StandingFunElem, x, st->by_fun) if (x->key) ++nfuns;
+    if (nfuns != check->n) same = false;
+    for (Match *mm : *check) {
+      Vec<StandingRoute *> *rs = st->by_fun.get(mm->fun);
+      if (!rs) { same = false; break; }
+      for (StandingRoute *r : *rs)
+        if (mm->formal_filters.get(r->formal) != r->filter) same = false;
+    }
+    if (!same && ++st_mismatch <= 20) {
+      fprintf(stderr, "STANDING MISMATCH send=%d line=%d widths:", send->id, send->var->sym->source_line());
+      for (AVar *a : args) fprintf(stderr, " %d", a->out->sorted.n);
+      fprintf(stderr, " matcher:");
+      for (Match *mm : *check) fprintf(stderr, " %s#%d", vk_name(mm->fun->sym), mm->fun->id);
+      fprintf(stderr, "\n");
+      for (Match *mm : *check) {
+        Vec<StandingRoute *> *rs = st->by_fun.get(mm->fun);
+        if (!rs) continue;
+        for (StandingRoute *r : *rs) {
+          AType *real = mm->formal_filters.get(r->formal);
+          if (real == r->filter) continue;
+          fprintf(stderr, "   fun#%d formal=%ld predicted:", mm->fun->id, (long)Position2int(r->formal->last()));
+          for (CreationSet *c : r->filter->sorted) fprintf(stderr, " %s#%d", vk_name(c->sym), c->id);
+          fprintf(stderr, " | matcher:");
+          if (real) for (CreationSet *c : real->sorted) fprintf(stderr, " %s#%d", vk_name(c->sym), c->id);
+          fprintf(stderr, "\n");
+        }
+      }
+    }
+    return 1;
+  }
+  touched.set_to_vec();
+  std::sort(touched.v, touched.v + touched.n, [](Fun *a, Fun *b) { return a->id < b->id; });
+  for (Fun *f : touched) {
+    Match *mm = new Match(f);
+    for (StandingRoute *r : *st->by_fun.get(f)) mm->formal_filters.put(r->formal, r->filter);
+    mm->visibility_points.set_add(visibility_point);
+    admitted.add(mm);
+  }
+  ++st_used;
+  if (!any) ++st_used_empty;
+  return 1;
 }
 
 //

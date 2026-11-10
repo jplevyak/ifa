@@ -635,6 +635,71 @@ arrival order changes.
    `cs->ess.set_add` as a member crosses.
    **Stop if** sunfish's dispatches and rounds do not fall by a large
    factor: the percentages above did not translate, so re-profile.
+
+   **Tried 2026-11-09: the stop condition was hit on rounds.** The first
+   half is in the tree, off by default (`IFA_STANDING=1`; `=2` keeps
+   today's dispatch and checks every prediction against the matcher).
+
+   **What it does.** After a real dispatch a send remembers, per position,
+   each present member's key and which (function, formal) filters that key
+   reaches. If a later firing brings no new key, it builds the `Match` the
+   matcher would have returned and hands it to the unchanged `make_AEdges`.
+   So `formal_filters` stay current and no consumer changes, which replaces
+   the plan's end-of-pass materialisation. It covers plain sends only: no
+   closures, partial results or named actuals. The state lasts one flow
+   run.
+
+   **Exact.** 12 477 861 predictions over the corpus and suite, **0
+   mismatches**; exit codes agree on all 608 programs. The check found one
+   real bug: an argument's type is not monotone. When an abstract type
+   arrives, `type_union` subsumes the constants it covers, so a member can
+   leave. A departed member now falls back to the matcher (`shrunk`:
+   468 746 of 58 M firings).
+
+   **Generated C:** 574 of 577 byte-identical. Two differ only in
+   temporary numbering. kmeanspp has two extra temp-and-move pairs with
+   the same contour counts (323/1019); the cause is not established, and
+   its only output is a wall-clock line, so running it shows nothing. No
+   `check` sweep has been run with this on.
+
+   **Time** (each compiled alone, `GC_INITIAL_HEAP_SIZE=8G`, see below):
+
+   | program | FA, today | FA, standing | matching, today | matching, standing | full matches |
+   | --- | --- | --- | --- | --- | --- |
+   | sunfish | 39.3 s | 23.5 s | 22.3 s | 9.6 s | 137 963 → 92 309 |
+   | plcfrs | 44.1 s | 33.3 s | 22.6 s | 12.0 s | 158 396 → 122 834 |
+   | othello3 | 427.6 s | 398.6 s | 349.0 s | 328.7 s | not counted |
+
+   Contour counts and passes are unchanged on all three. othello3 is still
+   over 186's cap: 91% of its firings are refused by this path (14 988 881
+   of 16 417 869).
+
+   **Why the stop condition was hit.** The second half of the step ran
+   every send the standing path can answer inside the edge and flow drain,
+   so a crossing would not wait for a round. Rounds on sunfish went from
+   10 746 to 10 735, so that change was deleted. A temporary probe
+   classified what each round waited on (each round is counted once, in
+   this order of precedence):
+
+   | rounds | a send had to be matched because |
+   | --- | --- |
+   | 750 | first dispatch of the send in this run |
+   | 5 321 | the standing path refuses it (closure or partial) |
+   | 3 822 | only primitive sends were waiting |
+   | 0 | a new verdict class, with nothing else waiting |
+   | 842 | nothing had to be matched |
+
+   So a verdict class never holds up a round on its own. Rounds are set by
+   closure sends and primitive transfer functions, which this design does
+   not touch. `PYC_DBG_WORK` now prints `cum_rounds`.
+
+   **The garbage collector is the larger cost, and it was charged to
+   matching.** sunfish, unchanged code: FA is 92.4 s by default and 39.1 s
+   under `GC_DONT_GC=1`. `GC_INITIAL_HEAP_SIZE=8G` gives 40.3 s FA and
+   wall time 140 s → 48 s, at 9.1 GB peak RSS. Every "matching" time
+   earlier in this issue was measured with the default heap and includes
+   collections triggered by the matcher's allocation. The shares remain
+   useful, but the seconds overstate what a faster matcher can save.
 3. **The shared table (B) as the slow path,** on a per-class code path
    rather than a `Matcher` run. Step 3 above measured a `Matcher` on
    narrowed arguments at about 50 µs, which is too slow.
