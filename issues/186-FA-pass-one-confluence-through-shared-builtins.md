@@ -1,6 +1,12 @@
 # 186 — pass 1 pushes a whole-program union through the shared builtins (othello3: FA is ~850 s against a 400 s cap)
 
-**Status: open.** othello3 compiles and matches CPython since 2026-10-09,
+**Status: open; the verification below was first met on 2026-11-10.**
+Sweep `check__default__0b55bb75+ae4581cf`: othello3 compiles in 352 s at
+`-j32` (cap 400 s) and its stdout matches CPython, after
+[207](207-FA-call-matching-re-matches-a-whole-union-per-member.md)'s
+matching changes. Alone it is 348 s, 138 s of it FA. The margin is thin
+and the 210 s after FA is unprofiled, so this stays open. Before that:
+othello3 compiles and matches CPython since 2026-10-09,
 in 994 s, almost all of it FA. Rewritten 2026-11-03; the fix-by-fix
 measurements, the stall-guard deletion and the post-FA profile are in git
 (`git show 123ac81:ifa/issues/186-FA-pass-one-confluence-through-shared-builtins.md`).

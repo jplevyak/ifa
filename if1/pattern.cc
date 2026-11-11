@@ -203,6 +203,10 @@ static void log_dispatch_matches(Matcher &matcher, Vec<PMatch *> &matches);
 static void log_dispatch_funs(Matcher &matcher, Vec<Fun *> &funs);
 static void vk_leaf(Matcher &matcher, Vec<CreationSet *> &csargs, Vec<Fun *> &winners);
 static void vk_clear();
+static int vkcollapse_mode();
+static uint64_t vk_collapse_key(AVar *a, CreationSet *cs, uint64_t digest, uint64_t votes, Fun **funs, Sym **formals,
+                                int n);
+static inline uint64_t vk_mix(uint64_t h, uint64_t v);
 
 static ChainHash<MPosition *, MPositionHashFuns> cannonical_mposition;
 // ROADMAP 6.1: every `*args` Fun, collected in build_arg_positions.
@@ -1634,6 +1638,7 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
     if (nmat > 1 && args[iarg]->out->sorted.n > 1 && ncand <= 64) {
       struct Cand {
         PMatch *m;
+        Fun *f;
         Sym *formal;
         VecCreationSet *t;
         Sym *ft;
@@ -1659,6 +1664,7 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
         if (fdt != sym_any) all_untyped = false;
         Cand c;
         c.m = m;
+        c.f = f;
         c.formal = formal;
         c.t = m->actual_filters.get(acpp);
         c.ft = formal->is_exact_match ? dispatch_type(formal) : nullptr;
@@ -1669,9 +1675,25 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
           uint64_t votes;
           Sym *type;
           Sym *raw;
+          uint64_t vkey;
           Vec<CreationSet *> *members;
         };
         Vec<MCClass> classes;
+        // ifa/207: with the verdict key the class is (votes, key), where
+        // the key is computed from what the leaf reads of a member (see
+        // vk_collapse_key). The type and the raw Sym below are the older,
+        // coarser stand-ins for that: they keep apart members the leaf
+        // cannot tell apart, and where the candidates' formal types differ
+        // (`a == b`, with int's, str's and object's `__eq__` live) the raw
+        // Sym made every class its own leaf: othello3's 888 x 888 `__eq__`
+        // ran 701 406 leaves a dispatch, 1 to 4 s each.
+        bool use_vkey = vkcollapse_mode() != 0;
+        uint64_t digest = 29;
+        Fun *vfuns[64];
+        Sym *vformals[64];
+        if (use_vkey)
+          for (int ci = 0; ci < cands.n; ci++) digest = vk_mix(vk_mix(digest, cands[ci].f->id), cands[ci].formal->id);
+        std::unordered_map<uint64_t, int> class_of;
         for (CreationSet *cs : args[iarg]->out->sorted) {
           uint64_t votes = 0;
           bool any_viable = false;
@@ -1706,9 +1728,24 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
               (type == sym_any || sym_any->specializers.set_in(type)))
             type = nullptr;
           Sym *raw = dispatch_types_differ ? cs->sym : nullptr;
+          uint64_t vkey = 0;
           int found = -1;
-          for (int ki = 0; ki < classes.n; ki++)
-            if (classes[ki].votes == votes && classes[ki].type == type && classes[ki].raw == raw) { found = ki; break; }
+          if (use_vkey) {
+            int nv = 0;
+            for (int ci = 0; ci < cands.n; ci++)
+              if (votes & (1ull << ci)) vfuns[nv] = cands[ci].f, vformals[nv++] = cands[ci].formal;
+            vkey = vk_collapse_key(args[iarg], cs, digest, votes, vfuns, vformals, nv);
+            type = raw = nullptr;
+            auto r = class_of.emplace(vk_mix(vkey, votes), classes.n);
+            if (!r.second) {
+              found = r.first->second;
+              if (classes[found].votes != votes || classes[found].vkey != vkey) found = -1;  // a hash collision
+            }
+          }
+          if (found < 0)
+            for (int ki = 0; ki < classes.n; ki++)
+              if (classes[ki].votes == votes && classes[ki].type == type && classes[ki].raw == raw &&
+                  classes[ki].vkey == vkey) { found = ki; break; }
           if (found >= 0)
             classes[found].members->add(cs);
           else {
@@ -1716,6 +1753,7 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
             k.votes = votes;
             k.type = type;
             k.raw = raw;
+            k.vkey = vkey;
             k.members = new Vec<CreationSet *>;
             k.members->add(cs);
             classes.add(k);
@@ -2358,7 +2396,9 @@ struct VkBand {
 };
 static VkBand vk_band[2];  // the widest position of a dispatch: 32-499, 500+
 
+static std::unordered_map<uint64_t, uint64_t> vkc_memo;  // (candidates, votes, member state) -> collapse key
 static void vk_clear() {
+  vkc_memo.clear();
   vk_memo.clear();
   vk_tuples.clear();
 }
@@ -2408,28 +2448,17 @@ static uint64_t vk_digest(Vec<Fun *> *candidates, Vec<Fun *> &function_values) {
   return sum;
 }
 
-static uint64_t vk_member_key(Matcher &m, AVar *a, CreationSet *cs, MPosition *acpp, Vec<Fun *> *candidates,
-                              uint64_t digest) {
+// What the matcher's leaf reads of member `cs` at one actual position, over
+// candidates that accept it there (`formals[k]` is `funs[k]`'s formal at that
+// position, or null for a varargs candidate past its formals).
+static uint64_t vk_core(AVar *a, CreationSet *cs, Fun **funs, Sym **formals, int n) {
   Sym *aspect = a->var->sym->aspect;
-  uint64_t mk = vk_mix(digest, (uintptr_t)acpp);
-  mk = vk_mix(mk, cs->sym->id);
-  mk = vk_mix(mk, aspect ? aspect->id : 0);
-  mk = vk_mix(mk, cs->no_static_arity);
-  mk = vk_mix(mk, (uint64_t)(int64_t)cs->static_arity);
-  if (vk_mode() != 2) {
-    auto it = vk_memo.find(mk);
-    if (it != vk_memo.end()) return it->second;
-  }
-  Vec<Fun *> funs;
-  vk_accepted(m, a, cs, acpp, candidates, funs);
-  std::vector<Fun *> accepted;
-  for (Fun *f : funs) if (f) accepted.push_back(f);
-  std::sort(accepted.begin(), accepted.end(), [](Fun *x, Fun *y) { return x->id < y->id; });
   uint64_t h = 17;
   std::vector<Sym *> types;
   bool generic = false;
-  for (Fun *f : accepted) {
-    Sym *formal = f->arg_syms.get(acpp);
+  for (int k = 0; k < n; k++) {
+    Fun *f = funs[k];
+    Sym *formal = formals[k];
     if (!formal) {  // a varargs candidate past its formals takes every member
       h = vk_mix(h, f->id);
       continue;
@@ -2487,6 +2516,56 @@ static uint64_t vk_member_key(Matcher &m, AVar *a, CreationSet *cs, MPosition *a
     }
   }
   if (generic) h = vk_mix(h, cs->sym->id);
+  return h;
+}
+
+// IFA_VKCOLLAPSE=0 turns the verdict-key collapse off; =2 runs the matcher
+// again without it on every full match and compares the two results.
+static int vkcollapse_force = -1;
+static int vkcollapse_mode() {
+  static int e = -1;
+  if (e < 0) e = getenv("IFA_VKCOLLAPSE") ? atoi(getenv("IFA_VKCOLLAPSE")) : 1;
+  return vkcollapse_force >= 0 ? vkcollapse_force : e;
+}
+// The key find_best_matches groups an argument's members by. `digest` names
+// the live candidates and their formals at the position, `votes` which of
+// them cover `cs`, and funs/formals are those. The key is a function of
+// (digest, votes) and of what vk_core reads of the member: its Sym, the
+// actual's aspect and its arity.
+static uint64_t vk_collapse_key(AVar *a, CreationSet *cs, uint64_t digest, uint64_t votes, Fun **funs, Sym **formals,
+                                int n) {
+  Sym *aspect = a->var->sym->aspect;
+  uint64_t mk = vk_mix(vk_mix(digest, votes), cs->sym->id);
+  mk = vk_mix(mk, aspect ? aspect->id : 0);
+  mk = vk_mix(mk, cs->no_static_arity);
+  mk = vk_mix(mk, (uint64_t)(int64_t)cs->static_arity);
+  auto it = vkc_memo.find(mk);
+  if (it != vkc_memo.end()) return it->second;
+  uint64_t h = vk_core(a, cs, funs, formals, n);
+  vkc_memo.emplace(mk, h);
+  return h;
+}
+
+static uint64_t vk_member_key(Matcher &m, AVar *a, CreationSet *cs, MPosition *acpp, Vec<Fun *> *candidates,
+                              uint64_t digest) {
+  Sym *aspect = a->var->sym->aspect;
+  uint64_t mk = vk_mix(digest, (uintptr_t)acpp);
+  mk = vk_mix(mk, cs->sym->id);
+  mk = vk_mix(mk, aspect ? aspect->id : 0);
+  mk = vk_mix(mk, cs->no_static_arity);
+  mk = vk_mix(mk, (uint64_t)(int64_t)cs->static_arity);
+  if (vk_mode() != 2) {
+    auto it = vk_memo.find(mk);
+    if (it != vk_memo.end()) return it->second;
+  }
+  Vec<Fun *> funs;
+  vk_accepted(m, a, cs, acpp, candidates, funs);
+  std::vector<Fun *> accepted;
+  for (Fun *f : funs) if (f) accepted.push_back(f);
+  std::sort(accepted.begin(), accepted.end(), [](Fun *x, Fun *y) { return x->id < y->id; });
+  std::vector<Sym *> formals;
+  for (Fun *f : accepted) formals.push_back(f->arg_syms.get(acpp));
+  uint64_t h = vk_core(a, cs, accepted.data(), formals.data(), (int)accepted.size());
   if (vk_mode() != 2) vk_memo.emplace(mk, h);
   return h;
 }
@@ -2893,8 +2972,31 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
   return pattern_match_full(args, names, send, is_closure, partial, visibility_point, matches);
 }
 
+static int pattern_match_full_(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
+                               PNode *visibility_point, Vec<Match *> &matches);
 static int pattern_match_full(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
                               PNode *visibility_point, Vec<Match *> &matches) {
+  int r = pattern_match_full_(args, names, send, is_closure, partial, visibility_point, matches);
+  if (vkcollapse_mode() == 2) {
+    static long checked = 0, mismatch = 0;
+    static bool reg = false;
+    if (!reg) reg = true, atexit([] { fprintf(stderr, "VKCOLLAPSE checked=%ld MISMATCH=%ld\n", checked, mismatch); });
+    Vec<Match *> chk;
+    bool saved = incmatch_no_record;
+    incmatch_no_record = true;
+    vkcollapse_force = 0;
+    pattern_match_full_(args, names, send, is_closure, partial, visibility_point, chk);
+    vkcollapse_force = -1;
+    incmatch_no_record = saved;
+    checked++;
+    if (!incmatch_same(matches, chk) && ++mismatch <= 10)
+      fprintf(stderr, "VKCOLLAPSE MISMATCH send=%d line=%d new=%d old=%d\n", send->id, send->var->sym->source_line(),
+              matches.n, chk.n);
+  }
+  return r;
+}
+static int pattern_match_full_(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
+                               PNode *visibility_point, Vec<Match *> &matches) {
   Matcher matcher(send, args[0], is_closure, partial);
   Vec<Fun *> *partial_matches = 0;
   find_visible_functions(args, visibility_point, &partial_matches, matcher.function_values);

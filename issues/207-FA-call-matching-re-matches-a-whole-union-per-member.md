@@ -9,7 +9,10 @@ union grows, rather than make the re-dispatch faster.** See
 which supersedes steps 3–6 of the redesign plan. **Landed 2026-11-10:**
 a dispatch that decides nothing is no longer run, and the match cache is
 hashed; othello3's matching went 356 s → 104 s with identical output
-([last two sections](#what-each-dispatch-finds-changed-2026-11-10-tree-56c21a33-temporary-probe-since-removed)).
+([the 2026-11-10 sections](#what-each-dispatch-finds-changed-2026-11-10-tree-56c21a33-temporary-probe-since-removed)).
+**Also 2026-11-10:** `find_best_matches` groups members by verdict key;
+matching 104 s → 46 s, and othello3 compiles inside the sweep's cap for
+the first time ([last section](#landed-2026-11-10-find_best_matches-collapses-by-verdict-key)).
 Filed 2026-11-08 from
 [203](203-shrink-the-graph-fa-walks.md)'s re-scoping. That measurement
 put FA's time in call matching, not flow, on every program where FA takes
@@ -909,3 +912,85 @@ collapses by `Sym` today.
 
 **Not answered:** what the member loop decides that the selector dispatch
 after it does not. It no longer sets the cost, so it was left.
+
+## Landed 2026-11-10: `find_best_matches` collapses by verdict key
+
+**The cost was where the last section guessed.** A temporary probe (tree
+`0b55bb75`, removed) timed each full match and its phases, on othello3
+compiled alone:
+
+| full matches, by time | count | total |
+| --- | --- | --- |
+| under 10 ms | 362 716 | 37.1 s |
+| 10–100 ms | 33 | 1.2 s |
+| 100 ms and over | 55 | **62.9 s** |
+
+- **54 of the 55 are `a == b`**, from five source lines of `__pyc__`. One
+  argument pair is 886–952 wide on both sides, and 10 or 11 `__eq__`
+  candidates are live.
+- **58.4 s of their 60.9 s is inside `find_best_matches`**: 701 406 to
+  814 506 leaves a dispatch, 1 to 4 s each. That is about 838 × 838.
+- **Why.** The multi-candidate collapse keyed a class on (votes,
+  `cs->sym->type`, and the raw `cs->sym` when the candidates' formal types
+  differ). `int.__eq__`, `str.__eq__` and `object.__eq__` differ, so every
+  `Sym` was its own class, on both sides.
+
+**The change** (`pattern.cc`: `vk_collapse_key`, `vk_core`; on by default,
+`IFA_VKCOLLAPSE=0` restores the old key). The class key is now (votes,
+verdict key). The verdict key is step 1's, computed over the candidates
+that cover the member: per candidate its promotion, coercion, `verify_arg`
+and `reverify_filters` outcome, and, where their formal types differ, what
+`subsumes_arg` reads (`isa`, and the types' order in the member's MRO).
+`vk_core` is that computation, shared with `IFA_VERDICTKEY`'s check. It is
+memoised on (live candidates and formals, votes, `Sym`, aspect, arity).
+The votes still come from the matcher's own filters. The paths that bailed
+before still bail: a generic candidate, a pattern or missing formal, more
+than 64 candidates.
+
+**Time** (each compiled alone, 4 GiB heap):
+
+| | FA | matching | pass 1 matching | wall |
+| --- | --- | --- | --- | --- |
+| othello3, before | 183.4 s | 105.9 s | 45.2 s | 367 s |
+| othello3, after | 138.4 s | 45.9 s | 27.9 s | 348 s |
+| sunfish, after | 33.6 s (was 35.4) | 20.6 s (was 20.8) | | 40.2 s |
+| plcfrs, after | 32.2 s (was 32.7) | 13.8 s (was 14.9) | | 39.4 s |
+
+Full matches of 100 ms and over on othello3: 55 → 1 (a 2.6 s closure
+dispatch of `go` with 894 candidates, most likely a collection, since its
+siblings take 10 ms). The `-v` flow figure rose (53 s → 77 s) as matching
+fell, which fits collections moving from one timer to the other; it was
+not investigated.
+
+**Exact.**
+- othello3's generated C is byte-identical to `0b55bb75`'s.
+- `IFA_VKCOLLAPSE=2` runs the matcher again with the old key after every
+  full match and compares the results: 194 464 over the suite (511
+  programs) and 776 467 over the corpus
+  (`compile__IFA_VKCOLLAPSE_2__0b55bb75+ae4581cf`, 76 programs; othello3
+  doubles its matching in this mode and reaches the cap), **0
+  mismatches**.
+- **The check can fail.** A mutation that made the key a constant, leaving
+  the votes, gave 2 mismatches on a `class B(C, D)` / `class E(D, C)`
+  program. It gave none on the suite: no suite program has two members
+  with the same votes that the leaf tells apart.
+- `check__default__0b55bb75+ae4581cf` equals
+  `check__default__56c21a33+56b2ee1a` on 76 programs. **othello3 now
+  compiles in the sweep (352 s at `-j32`, cap 400 s), runs, and its stdout
+  matches CPython:** `compile_fail` 1 → 0.
+- `make test` is green.
+
+**[186](186-FA-pass-one-confluence-through-shared-builtins.md)'s
+verification is met, with 48 s to spare.** That margin is one sweep on one
+machine.
+
+**What is left.**
+- **After flow analysis.** Alone, othello3 is 348 s, of which FA is 138 s.
+  The other 210 s has not been profiled, and it is now the larger half.
+- **othello3's matching, 46 s.** Pass 1 is 28 s. The probe's bands after
+  the change: 15.4 s in 239 395 matches of 10–100 µs, 14.6 s in 2 343
+  matches of 1–10 ms, 6.5 s in 45 576 matches of 0.1–1 ms. The 1–10 ms
+  band is the 894-candidate `go` sends, where `find_all_matches` is most
+  of each (7 of 10 ms).
+- **sunfish and plcfrs** did not move. Their matching is re-matching of
+  call sends on growth, which `IFA_STANDING` (off by default) answers.
