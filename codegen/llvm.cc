@@ -472,6 +472,36 @@ int llvm_codegen_compile(cchar *input_filename) {
 #endif
   }
 
+  // Extra link inputs: the frontend's extra translation unit (pyc's foreign
+  // call shims), compiled here to its own object, then --libs and the
+  // foreign libraries the program names. `extra` is spliced into both link
+  // lines below, after the program's object.
+  std::vector<char *> extra;
+  if (codegen_extra_source) {
+    static char src_file[FILENAME_MAX], src_obj[FILENAME_MAX];
+    if (snprintf(src_file, sizeof(src_file), "%s.ffi.cc", input_filename) >= (int)sizeof(src_file) ||
+        snprintf(src_obj, sizeof(src_obj), "%s.ffi.o", input_filename) >= (int)sizeof(src_obj))
+      fail("llvm_codegen_compile: input filename too long: %s", input_filename);
+    FILE *sfp = fopen(src_file, "w");
+    if (!sfp) fail("llvm_codegen_compile: unable to write %s", src_file);
+    fputs(codegen_extra_source, sfp);
+    fclose(sfp);
+    Vec<cchar *> cflags;
+    codegen_split_flags(codegen_extra_cflags, cflags);
+    std::vector<char *> sargv = {(char *)cxx, (char *)"-O2", (char *)"-c", (char *)"-fPIC", (char *)"-std=c++23"};
+    for (cchar *f : cflags) sargv.push_back((char *)f);
+    sargv.insert(sargv.end(), {src_file, (char *)"-o", src_obj, nullptr});
+    int res = codegen_spawn(cxx, sargv.data());
+    if (res != 0) fail("llvm_codegen_compile: compiling %s failed (exit=%d)", src_file, res);
+    extra.push_back(src_obj);
+  }
+  {
+    Vec<cchar *> libs;
+    codegen_split_flags(codegen_extra_libs, libs);
+    for (cchar *l : codegen_link_libs) libs.add(l);
+    for (cchar *l : libs) extra.push_back((char *)l);
+  }
+
   // LTO path (see llvm_lto_runtime): compile the IR to bitcode and link it
   // with the bitcode runtime under lld, so the runtime helpers inline. If that
   // link fails for any reason, fall through to the archive link below, which
@@ -480,16 +510,17 @@ int llvm_codegen_compile(cchar *input_filename) {
     char *cargv[] = {(char *)cxx, (char *)"-O2", (char *)"-flto", (char *)"-c", (char *)"-fPIC",
                      (char *)"-Wno-override-module", ll_file, (char *)"-o", obj_file, nullptr};
     if (codegen_spawn(cxx, cargv) == 0) {
-      char *largv[] = {(char *)cxx,        (char *)"-O2",       (char *)"-flto",
-                       (char *)"-fuse-ld=lld", obj_file,        (char *)lto_rt,
-                       (char *)"-o",       exe_file,            (char *)"-L/opt/homebrew/lib",
-                       (char *)"-L/usr/local/lib", (char *)"-lm", (char *)"-lgc",
-                       (char *)"-lgccpp",
+      std::vector<char *> largv = {(char *)cxx,        (char *)"-O2",       (char *)"-flto",
+                                   (char *)"-fuse-ld=lld", obj_file,        (char *)lto_rt};
+      largv.insert(largv.end(), extra.begin(), extra.end());
+      largv.insert(largv.end(), {(char *)"-o",       exe_file,            (char *)"-L/opt/homebrew/lib",
+                                 (char *)"-L/usr/local/lib", (char *)"-lm", (char *)"-lgc",
+                                 (char *)"-lgccpp",
 #ifdef __APPLE__
-                       (char *)"-stdlib=libc++",
+                                 (char *)"-stdlib=libc++",
 #endif
-                       nullptr};
-      if (spawn_quiet(cxx, largv) == 0) {
+                                 nullptr});
+      if (spawn_quiet(cxx, largv.data()) == 0) {
         DEBUG_LOG("Executable %s created with the LTO runtime %s\n", exe_file, lto_rt);
         return 0;
       }
@@ -532,20 +563,21 @@ int llvm_codegen_compile(cchar *input_filename) {
     int n = snprintf(libdir_arg, sizeof(libdir_arg), "-L%s", system_dir);
     if (n < 0 || (size_t)n >= sizeof(libdir_arg))
       fail("llvm_codegen_compile: -L<system_dir> arg too long");
-    char *argv[] = {(char *)cxx,             obj_file,
-                    (char *)"-o",            exe_file,
-                    libdir_arg,
-                    (char *)"-L..",
-                    (char *)"-L/opt/homebrew/lib",
-                    (char *)"-L/usr/local/lib",
-                    (char *)"-lpyc_runtime",
-                    (char *)"-lm",           (char *)"-lgc",
-                    (char *)"-lgccpp",
+    std::vector<char *> argv = {(char *)cxx, obj_file};
+    argv.insert(argv.end(), extra.begin(), extra.end());
+    argv.insert(argv.end(), {(char *)"-o",            exe_file,
+                             libdir_arg,
+                             (char *)"-L..",
+                             (char *)"-L/opt/homebrew/lib",
+                             (char *)"-L/usr/local/lib",
+                             (char *)"-lpyc_runtime",
+                             (char *)"-lm",           (char *)"-lgc",
+                             (char *)"-lgccpp",
 #ifdef __APPLE__
-                    (char *)"-stdlib=libc++",
+                             (char *)"-stdlib=libc++",
 #endif
-                    nullptr};
-    int res = codegen_spawn(cxx, argv);
+                             nullptr});
+    int res = codegen_spawn(cxx, argv.data());
     if (res != 0) {
       fail("llvm_codegen_compile: linking failed for %s (exit=%d)", obj_file, res);
       return res;

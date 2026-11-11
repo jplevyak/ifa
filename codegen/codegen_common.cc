@@ -1780,6 +1780,17 @@ Sym *poly_dispatch_nil_scalar_receiver(PNode *pn, Vec<Fun *> *cands, Var *recv_v
 // Process invocation
 // -------------------------------------------------------------
 
+void codegen_split_flags(cchar *flags, Vec<cchar *> &out) {
+  if (!flags) return;
+  for (cchar *p = flags; *p;) {
+    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+    cchar *e = p;
+    while (*e && *e != ' ' && *e != '\t' && *e != '\n') e++;
+    if (e > p) out.add(dupstr(p, e));
+    p = e;
+  }
+}
+
 int codegen_spawn(const char *file, char *const argv[]) {
   pid_t pid = 0;
   int rc = posix_spawnp(&pid, file, nullptr, nullptr, argv, environ);

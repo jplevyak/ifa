@@ -342,6 +342,8 @@ void assign_type_cg_strings_pass2(Vec<Sym *> &allsyms);
 // Process invocation
 // -------------------------------------------------------------
 
+// The whitespace-separated words of `flags`, appended to `out` (GC strings).
+void codegen_split_flags(cchar *flags, Vec<cchar *> &out);
 // Spawn a command via `posix_spawnp` (PATH-search) and wait for it.
 // `argv` must be a NULL-terminated array of char* (cast-away const
 // is acceptable since the spawn family takes char *const argv[]).

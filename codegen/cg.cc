@@ -4120,7 +4120,15 @@ int c_codegen_compile(cchar *filename) {
 
   // posix_spawn's argv signature is `char *const argv[]`; we pass pointers
   // to local buffers, which is OK because spawnp dup()s them before exec.
-  char *argv[16];
+  // Extra flags are handed to make as two variables. A make variable's
+  // value is one argv word however many spaces it holds, so no quoting.
+  Vec<cchar *> libs;
+  codegen_split_flags(codegen_extra_libs, libs);
+  for (cchar *l : codegen_link_libs) libs.add(l);
+  std::string extra_cflags = std::string("EXTRA_CFLAGS=") + codegen_extra_cflags;
+  std::string extra_libs = "EXTRA_LIBS=";
+  for (cchar *l : libs) extra_libs += std::string(l) + " ";
+  char *argv[20];
   int ai = 0;
   argv[ai++] = (char *)"make";
   argv[ai++] = (char *)"--no-print-directory";
@@ -4134,6 +4142,8 @@ int c_codegen_compile(cchar *filename) {
   // PYC_NO_GC: build the program with calloc in place of the collector,
   // so valgrind can diagnose a heap bug in emitted code. Leaks.
   if (getenv("PYC_NO_GC")) argv[ai++] = (char *)"NO_GC=1";
+  if (codegen_extra_cflags[0]) argv[ai++] = (char *)extra_cflags.c_str();
+  if (libs.n) argv[ai++] = (char *)extra_libs.c_str();
   argv[ai] = nullptr;
   return codegen_spawn("make", argv);
 }
