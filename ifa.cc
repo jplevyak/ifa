@@ -49,8 +49,10 @@ void ifa_phase(cchar *tag) {
   clock_gettime(CLOCK_MONOTONIC, &now);
   static struct timespec first = now;
   if (!last.tv_sec) last = first;
-  fprintf(stderr, "PHASE %-22s %8.2f s  (at %8.2f)\n", tag, (now.tv_sec - last.tv_sec) + (now.tv_nsec - last.tv_nsec) * 1e-9,
-          (now.tv_sec - first.tv_sec) + (now.tv_nsec - first.tv_nsec) * 1e-9);
+  fprintf(stderr, "PHASE %-22s %8.2f s  (at %8.2f)  %7.2f GiB allocated, %lu collections\n", tag,
+          (now.tv_sec - last.tv_sec) + (now.tv_nsec - last.tv_nsec) * 1e-9,
+          (now.tv_sec - first.tv_sec) + (now.tv_nsec - first.tv_nsec) * 1e-9,
+          GC_get_total_bytes() / (double)((size_t)1 << 30), (unsigned long)GC_get_gc_no());
   last = now;
 }
 

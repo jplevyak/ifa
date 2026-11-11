@@ -7,7 +7,11 @@ Sweep `check__default__0b55bb75+ae4581cf`: othello3 compiles in 352 s at
 matching changes. **Later the same day the time after FA went from 172 s
 to 25 s** ([below](#after-flow-analysis-2026-11-10)): alone it is 163 s,
 and 180 s in sweep `check__default__61d11baa+62bfc8eb`. FA is 136 s of
-that, so what is left of this issue is FA. Before that:
+that, so what is left of this issue is FA. **FA was then profiled**
+([below](#inside-flow-analysis-2026-11-10)): matching is about 39 s of it,
+the collector about 30 s, and the rest is fifteen passes with no hot spot;
+three small fixes took it to about 126 s (157 s alone, 170 s in sweep
+`check__default__6209a4c6+5b838f16`). Before that:
 othello3 compiles and matches CPython since 2026-10-09,
 in 994 s, almost all of it FA. Rewritten 2026-11-03; the fix-by-fix
 measurements, the stall-guard deletion and the post-FA profile are in git
@@ -125,3 +129,97 @@ sweep 593 s → 405 s.
   the kind of test AGENTS.md's "never decide by name" rules out.
 - clone's 10 s (`determine_basic_clones`, `sets_by_f`) was sampled only 8
   times and not looked at.
+
+## Inside flow analysis, 2026-11-10
+
+**Measured** on tree `6209a4c6`, othello3 alone, with a gdb sampler (280
+stacks at 0.5 s over FA), `-v`, `PYC_DBG_STAGEDELTA=1` and
+`GC_PRINT_STATS=1`. `PYC_DBG_PHASES=1` now also prints bytes allocated and
+collections so far on each line.
+
+| where (of 137 s, by samples) | time | |
+| --- | --- | --- |
+| call matching | 39 s | [207](207-FA-call-matching-re-matches-a-whole-union-per-member.md). `-v` says 46 s, 28 s of it in the first pass; its timer includes the collections that land in a match |
+| the collector | 30 s | eight collections; their marks are 1.5 to 4.6 s each, 27 s together |
+| flow (`analyze_edge`, `flow_vars`, `push_forward`) | 16 s | |
+| `complete_pass` (violations, `collect_results`) | 15 s | about 1 s a pass |
+| split stages | 13 s | `split_css_by_defs` 2/3 of it |
+| primitive sends | 12 s | |
+| dispatch outside matching | 8 s | `dispatch_unchanged`, closures |
+
+**There are fifteen passes and none is spurious.** Passes 1-4 are 42, 14,
+12 and 7 s; from pass 5 a pass is 3.8 s (2.8 flow, 0.3 match, 0.7 extend)
+plus a collection when one lands in it. `TYPE_CONFLUENCE` splits 104 and 39
+EntrySets on the first two passes and then 3 to 23 on every pass through
+12, out of about 1650 confluences; `CS_DEF_PARTITION` acts on every pass
+through 11, a handful of CreationSets each time. Pass 13 is the first
+where no split stage acts; `merge_equivalent_entry_sets` then retires 9
+contours (4892 to 4883), which costs pass 14, and pass 15 is the
+re-convergence after mid-FA inlining. So passes 5-15 are 45 s of
+re-deriving 930 000 AVars to place about a hundred splits. That is
+[closed/111](closed/111-FA-selective-invalidation-per-pass.md)'s subject and
+it is the largest thing left here that is not matching.
+
+**The collector: the mark stack overflows, on every collection.** othello3
+holds 2 to 3 GiB live in the 4 GiB heap and collects eight times in FA.
+bdwgc starts its mark stack at 4096 entries and doubles it once per
+collection, at the start of the one after it ran out. A mark that runs out
+drops entries and re-scans the heap for marked objects. The log shows 250
+to 400 `Mark stack overflow` lines per collection, at 4096, 8192, ... 131072
+entries, one doubling each; the collections after FA, with the stack at
+over a million entries, mark in 0.4 s.
+
+With the stack grown before the heap fills (a chain built to need it, ten
+collections at start-up), every mark of FA is 0.12 to 0.36 s and FA is
+137 s to 112 s. **Nothing was landed, because no place to do it pays:**
+
+| when the stack is grown | othello3 | others |
+| --- | --- | --- |
+| at start-up | FA 137 to 112 s | +0.8 s on every compile to reach a million entries and +2.9 s for the four million used here (a compile of a ten-line program allocates 0.3 GiB and takes 0.6 s) |
+| once, at 3/4 of the heap allocated | FA 137 to 122 s (the ten collections cost 10 s at 2.3 GiB live) | the four other programs that collect all lose: ac_encode 51.6 to 57.8 s, doom 28.3 to 32.1, sunfish 39.6 to 44.2, plcfrs 38.5 to 42.1 |
+| marker threads only (`GC_start_mark_threads`) | FA 137 to 154 s | not measured |
+| `GC_FREE_SPACE_DIVISOR=1` | no change: still eight collections, heap still 4.2 GiB | |
+
+The other four overflow too (86 to 728 lines) but their marks are 0.1 to
+1.6 s, so growing the stack costs more than it returns. The corpus is
+bimodal: five programs allocate more than the heap (ac_encode 54 GiB, doom
+17.5, othello3 14, sunfish 12, plcfrs 9) and collect; the other 72
+allocate 0.27 to 2.5 GiB and never do. The collector has no call or
+environment variable for the mark stack's size (`INITIAL_MARK_STACK_SIZE`
+is a build-time constant), so the fix that costs nothing is a libgc built
+with a larger one. That is outside this tree and is the open decision.
+The marker threads are also not running: where bdwgc handles fork it
+starts them at the first `pthread_create`, and the compilers create no
+thread.
+
+**Landed, three per-pass costs** (`6209a4c6` + this change):
+
+- **`qsort_by_id` was quadratic on sorted input.** It took the first
+  element as its pivot, and `collect_results` sorts `fa->css`, 11 500
+  CreationSets already in id order from the pass before: 0.2 s a pass.
+  Now `std::sort` (`fa.h`).
+- **The call index was two `std::map`s rebuilt every pass**, an entry per
+  edge argument, 0.4 s a pass. Both are only looked up, so they are hash
+  maps, and the one range query ("does any edge return into this AVar")
+  is a set (`callindex`, `fa.cc`).
+- **`type_diff_all` asked every filter about every member**: |a| x |bs|,
+  and a send on the 894-class union has a filter per class. The filters'
+  members go into one set first (`fa_lattice.cc`).
+
+FA 136 s to about 126 s, a steady pass 3.8 s to 3.2 s, alone 163 s to
+157 s. Generated C byte-identical, `make test` green,
+`check__default__6209a4c6+5b838f16` equals
+`check__default__61d11baa+62bfc8eb` in every column on all 77 programs;
+othello3 in the sweep 180 s to 170 s.
+
+**Not done.**
+- The mark stack, above.
+- sunfish's frontend allocates 2.05 GiB before FA starts, and msp_ss, doom,
+  sha and minpng 1.3 to 1.4 GiB, against 0.3 GiB for a small program. Seen
+  in the survey, not looked at.
+- What is left inside a steady pass (flow 2.4 s, extend 0.5 s) has no
+  single cost above about 3% of FA: `unique_AVar` under
+  `make_closure_var`, `dispatch_unchanged`, `split_css_by_defs`'s
+  allocation, `sos_member_demanded`.
+- The sampler keeps 16 frames, so inclusive counts above the leaf are low.
+

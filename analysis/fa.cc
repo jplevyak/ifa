@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <map>
+#include <unordered_map>
+#include <unordered_set>
 #include <set>
 #include <vector>
 #include "fa.h"
@@ -7797,10 +7799,19 @@ static const ObjVec *objvec_intern(ObjVec v) {
 }
 // Edge lookups for the walk, rebuilt when the pass or the contour count
 // changes (a split mints contours, and with them edges).
+// Hashed, not ordered: both are only ever looked up, and they are rebuilt
+// every pass with an entry per edge argument (othello3: 0.4 s a pass as
+// std::map, ifa/186).
+struct CallIndexRetHash {
+  size_t operator()(const std::pair<AVar *, EntrySet *> &k) const {
+    return std::hash<void *>()(k.first) * 0x9e3779b97f4a7c15ULL ^ std::hash<void *>()(k.second);
+  }
+};
 struct CallIndex {
   int pass = -1, ness = -1, gen = 0;
-  std::map<AVar *, AEdge *> filtered;                      // filtered arg -> its edge
-  std::map<std::pair<AVar *, EntrySet *>, AEdge *> ret;  // (caller result, callee) -> edge
+  std::unordered_map<AVar *, AEdge *> filtered;                                        // filtered arg -> its edge
+  std::unordered_map<std::pair<AVar *, EntrySet *>, AEdge *, CallIndexRetHash> ret;  // (caller result, callee) -> edge
+  std::unordered_set<AVar *> ret_callers;                                              // the caller results in `ret`
 };
 static CallIndex &callindex() {
   static CallIndex ix;
@@ -7810,12 +7821,16 @@ static CallIndex &callindex() {
   ++ix.gen;
   ix.filtered.clear();
   ix.ret.clear();
+  ix.ret_callers.clear();
   for (EntrySet *es : fa->ess) {
     if (!es) continue;
     auto add = [&](AEdge *e) {
       if (!e || !e->to) return;
       form_Map(MapElemMPositionAVarPair, mp, e->filtered_args) if (mp->value) ix.filtered[mp->value] = e;
-      for (AVar *r : e->rets) if (r) ix.ret[{r, e->to}] = e;
+      for (AVar *r : e->rets) if (r) {
+        ix.ret[{r, e->to}] = e;
+        ix.ret_callers.insert(r);
+      }
     };
     for (AEdge *e : es->edges) if (e && e->to == es) add(e);
     for (AEdge *e : es->out_edges) add(e);
@@ -7981,8 +7996,7 @@ static CallCtx *callctx_step(AVar *a, AVar *x, CallCtx *c, bool &ok, int walk) {
       // stays in `backward` (measured on kmeanspp: e641 es198->es249, split
       // from es85, and av9502 still links es85's return). No execution
       // returns through it.
-      auto lo = r.lower_bound({a, nullptr});
-      if (lo != r.end() && lo->first.first == a) { ok = false; return nullptr; }
+      if (callindex().ret_callers.count(a)) { ok = false; return nullptr; }
     }
   }
   // A read: from a load's result into the content it read. Which objects
