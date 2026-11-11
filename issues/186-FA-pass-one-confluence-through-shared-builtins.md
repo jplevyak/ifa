@@ -187,7 +187,14 @@ bimodal: five programs allocate more than the heap (ac_encode 54 GiB, doom
 allocate 0.27 to 2.5 GiB and never do. The collector has no call or
 environment variable for the mark stack's size (`INITIAL_MARK_STACK_SIZE`
 is a build-time constant), so the fix that costs nothing is a libgc built
-with a larger one. That is outside this tree and is the open decision.
+with a larger one. **Done that way, 2026-11-10:** bdwgc 8.2.8 built with
+`-DINITIAL_MARK_STACK_SIZE=4194304`, as the top-level README's "Optional: a
+collector with a larger mark stack" gives it. Against that library othello3
+has no overflow, its eight marks are 0.7 to 2.1 s on one core, FA is 126 s
+to 113 s and the compile alone 157 s to 141 s, with the same C; a ten-line
+program is 0.62 s and 361 MiB resident with either library. It is a
+property of the machine's libgc, not of this tree: CI and a packaged libgc
+are as before.
 The marker threads are also not running: where bdwgc handles fork it
 starts them at the first `pthread_create`, and the compilers create no
 thread.
@@ -213,7 +220,11 @@ FA 136 s to about 126 s, a steady pass 3.8 s to 3.2 s, alone 163 s to
 othello3 in the sweep 180 s to 170 s.
 
 **Not done.**
-- The mark stack, above.
+- Marker threads with the rebuilt collector. With the packaged one they
+  made othello3 slower (137 to 154 s); with a stack that does not overflow
+  the experiment above had marks at 0.3 s against 0.7 to 2.1 s on one core,
+  so `GC_start_mark_threads` is probably worth about 10 s there. Not
+  measured in that combination.
 - sunfish's frontend allocates 2.05 GiB before FA starts, and msp_ss, doom,
   sha and minpng 1.3 to 1.4 GiB, against 0.3 GiB for a small program. Seen
   in the survey, not looked at.
