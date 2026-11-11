@@ -985,8 +985,10 @@ verification is met, with 48 s to spare.** That margin is one sweep on one
 machine.
 
 **What is left.**
-- **After flow analysis.** Alone, othello3 is 348 s, of which FA is 138 s.
-  The other 210 s has not been profiled, and it is now the larger half.
+- **After flow analysis.** Alone, othello3 was 348 s, of which FA is
+  138 s. **Done the same day:** the stages after FA went from 172 s to
+  25 s, and othello3 compiles alone in 163 s. See
+  [186](186-FA-pass-one-confluence-through-shared-builtins.md#after-flow-analysis-2026-11-10).
 - **othello3's matching, 46 s.** Pass 1 is 28 s. The probe's bands after
   the change: 15.4 s in 239 395 matches of 10–100 µs, 14.6 s in 2 343
   matches of 1–10 ms, 6.5 s in 45 576 matches of 0.1–1 ms. The 1–10 ms

@@ -243,8 +243,28 @@ static int reaching_var(Var *v, Var *vv) {
   return 0;
 }
 
+// check_invariants walks the whole function, and it ran before and after
+// every splice. A function with n inlined sites paid O(n) for each, and each
+// walk allocates its two node sets, so most of the time was collections:
+// 67 s of othello3's compile. So the splices mark the function, and it is
+// checked once when its sites are done (inline_check_flush). The check
+// still fails on a broken CFG; IFA_DBG_INLINE_CHECK=1 restores the per-splice
+// check, which says WHICH splice broke it.
+static Fun *inline_check_pending = nullptr;
+static void inline_check_flush() {
+  if (inline_check_pending) check_invariants(inline_check_pending);
+  inline_check_pending = nullptr;
+}
+static void inline_check(Fun *f) {
+  static int eager = -1;
+  if (eager < 0) eager = getenv("IFA_DBG_INLINE_CHECK") ? atoi(getenv("IFA_DBG_INLINE_CHECK")) : 0;
+  if (eager) return check_invariants(f);
+  if (inline_check_pending != f) inline_check_flush();
+  inline_check_pending = f;
+}
+
 static void insert_move_before(Fun *f, PNode *p, Var *rhs, Var *lhs) {
-  check_invariants(f);
+  inline_check(f);
   // ifa/204 row 2: the splice below rewires every pred of `p` to the new
   // MOVE and leaves `p` with exactly one. At a join that would leave `p`'s
   // phi rvals sized to the old pred count. The callers insert before a SEND,
@@ -266,7 +286,7 @@ static void insert_move_before(Fun *f, PNode *p, Var *rhs, Var *lhs) {
   n->rvals.add(rhs);
   n->live = 1;
   n->fa_live = 1;
-  check_invariants(f);
+  inline_check(f);
 }
 
 static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
@@ -331,7 +351,7 @@ static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
       p->rvals.add(vv);
     }
   }
-  check_invariants(f);
+  inline_check(f);
 }
 
 // ifa/121: the send is gone, so is its call. Its `f->calls` entry used to
@@ -538,7 +558,7 @@ static void inline_prim_chain(Fun *f, PNode *p, Fun *fn, Vec<PNode *> *chain) {
     subst_rvals(n, chain->v[i], i);
     prev = n;
   }
-  check_invariants(f);
+  inline_check(f);
 }
 
 static int inline_single_sends(FA *fa) {
@@ -721,6 +741,7 @@ static int inline_single_sends(FA *fa) {
         }
       }
     }
+    inline_check_flush();
     f->collect_Vars(f->fa_all_Vars, &f->fa_all_PNodes);
   }
   for (Fun *f : fa->funs) {

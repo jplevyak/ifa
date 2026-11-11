@@ -2242,8 +2242,15 @@ static void cg_cast_members(Sym *cast_to, Sym *actual, int slot, Vec<Sym *> &out
 
 // `actual` is often a union: the cast has to be sound for every member
 // the receiver can ACTUALLY hold at this access (cg_cast_members).
+//
+// What it records is a function of (cast_to, actual, slot), so a triple is
+// expanded once. A slot call on othello3's 894-class union notes the whole
+// union once per class at every `.go()` site, and each note walked the 894
+// members' fields: 40 s of writing the C.
 void cg_note_blind_cast(Sym *cast_to, Sym *actual, int slot) {
   if (!actual || !cast_to) return;
+  static std::set<std::tuple<int, int, int>> expanded;
+  if (!expanded.insert({cast_to->id, actual->id, slot}).second) return;
   Vec<Sym *> members;
   cg_cast_members(cast_to, actual, slot, members);
   for (Sym *m : members) cg_note_blind_cast_1(cast_to, m, slot);

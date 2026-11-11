@@ -38,7 +38,24 @@ void ifa_reset() {
   pdb = NULL;
 }
 
+// PYC_DBG_PHASES=1: print the wall-clock time each pipeline stage took.
+// Call it AFTER a stage, with the stage's name.
+void ifa_phase(cchar *tag) {
+  static int on = -1;
+  static struct timespec last;
+  if (on < 0) on = getenv("PYC_DBG_PHASES") ? atoi(getenv("PYC_DBG_PHASES")) : 0;
+  if (!on) return;
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  static struct timespec first = now;
+  if (!last.tv_sec) last = first;
+  fprintf(stderr, "PHASE %-22s %8.2f s  (at %8.2f)\n", tag, (now.tv_sec - last.tv_sec) + (now.tv_nsec - last.tv_nsec) * 1e-9,
+          (now.tv_sec - first.tv_sec) + (now.tv_nsec - first.tv_nsec) * 1e-9);
+  last = now;
+}
+
 int ifa_analyze(cchar *fn) {
+  ifa_phase("frontend");
   if1_finalize(if1);
   if1_write_log();
   if (!fdce_if1) fail("unable to translate dead code");
@@ -49,7 +66,9 @@ int ifa_analyze(cchar *fn) {
   }
   FA *fa = pdb->fa;
   fa->fn = fn;
+  ifa_phase("if1-finalize");
   if (fa->analyze(if1->top->fun) < 0) return -1;
+  ifa_phase("flow-analysis");
   // ESCAPE_PLAN.md Phases 2-4: intra+inter-procedural escape
   // lattice.  Runs BEFORE clone so the per-EntrySet escape
   // signature is available to ES_FN::equivalent — that lets
@@ -60,13 +79,18 @@ int ifa_analyze(cchar *fn) {
   dbg_trace_avar("after-analyze");   // ifa/issues/112
   dbg_trace_fa_state("after-analyze");
   compute_escape(fa);
+  ifa_phase("escape");
   dbg_trace_avar("after-escape");
   dbg_trace_fa_state("after-escape");
   if (clone(fa) < 0) return -1;
+  ifa_phase("clone");
   for (Fun *f : fa->funs) build_cfg_dominators(f);
+  ifa_phase("dominators");
   if (mark_live_code(fa) < 0) return -1;
+  ifa_phase("mark-live-code");
   if (get_int_config("alog.test.fa") > 0) log_test_fa(fa);
   frequency_estimation(fa);
+  ifa_phase("frequency");
   sum_audit_check("after-clone");  // ifa/120
   ifa_dbg_bodies("after-clone");
   return 0;
@@ -249,7 +273,9 @@ void ifa_code(cchar *fn) {
 
 int ifa_optimize() {
   mark_live_funs(fa);
+  ifa_phase("mark-live-funs");
   if (simple_inlining(pdb->fa) < 0) return -1;
+  ifa_phase("inlining");
   mark_live_types(pdb->fa);
   mark_live_funs(pdb->fa);
   return 0;

@@ -187,6 +187,7 @@ void ifa_init(IFACallbacks *callbacks);
 void ifa_reset();
 int ifa_analyze(cchar *fn);
 int ifa_optimize();
+void ifa_phase(cchar *tag);  // PYC_DBG_PHASES=1: wall seconds since the last call, per pipeline stage
 void ifa_dbg_bodies(cchar *tag);  // ifa/issues/112: per-Fun body-membership fingerprint
 void ifa_cg(cchar *fn);
 void ifa_compile(cchar *fn);
