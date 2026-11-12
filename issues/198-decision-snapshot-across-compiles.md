@@ -43,6 +43,59 @@ precision and never correctness.
    That is the consumer `frequency_estimation` never had
    ([204](204-optimize-pass-fixes.md)).
 
+## Measured 2026-11-11: how much of flow analysis runs library code
+
+**Probe** (temporary, removed). Every item the worklist loop processes was
+timed and charged to the function whose code it interprets: a call edge to
+its callee, a send and a contour's constraints to the function that
+contains them. Functions are classed by source file: `__pyc__` (the
+builtin library), `pyc_lib/` (the standard-library modules), or the
+program. All 77 corpus programs. The loop is about half of flow analysis;
+the split stages, `complete_pass` and the per-pass reset are outside it
+and were not attributed.
+
+| | worklist time | in `__pyc__` | in `pyc_lib` | in the program |
+| --- | --- | --- | --- | --- |
+| corpus, all passes | 168.6 s | 40% | 2% | 57% |
+| corpus, passes 0–3 | 70.6 s | 41% | 2% | 57% |
+| sunfish | 18.6 s | 81% | 4% | 16% |
+| plcfrs | 19.5 s | 56% | 1% | 42% |
+| othello3 | 59.5 s | 21% | 0% | 78% |
+| hq2x | 8.8 s | 2% | 0% | 98% |
+| the median program | | 53% | | |
+
+- **Half of a typical program's analysis is the library's.** The corpus
+  total is 40% because othello3 and hq2x, which are the two largest and
+  are dominated by their own code, pull it down.
+- **It is the same share in the first four passes as overall.** The
+  library is not a start-up cost that splitting then removes. It is
+  re-analysed, contour by contour, in every pass.
+- **Inside the library the time is contour construction**
+  (`add_es_constraints`): 8.5 s of sunfish's 15 s there, 8.5 s of
+  othello3's 12.3 s. A send that sits in user code and dispatches into the
+  library is charged to the user here, so the library's share of
+  *matching* is understated.
+
+**What it means for this issue.**
+- **Scope the first snapshot to `__pyc__`.** Its functions' bodies are the
+  same in every compile, so step 1's edit-stable names and body hashes
+  are trivially stable, and the snapshot can be built once, when pyc is
+  built, from a corpus run. It is then a warm start for every program on
+  its first compile, which the per-program snapshot cannot be.
+- **The bound is the median program's 53%, and the snapshot reaches less
+  than that.** A decision snapshot removes passes (the re-derivation that
+  places a split the library always needs), not the cost of analysing a
+  library contour once. What it can save is the library's share of the
+  passes after the first, on programs whose pass count is set by library
+  splits. That was not measured: the probe did not record which function
+  each split was in. **Count splits per pass by library and program
+  before building anything.**
+- **Summaries are the other consumer of this number.** A library function
+  whose result is a function of its arguments' types does not need a
+  contour at all ([GENERICS.md](../../GENERICS.md), G1). The 40% is the
+  upper bound for that too, and GENERICS.md's own estimate for othello3
+  (20% of FA) is close to othello3's 21% here.
+
 ## Stop condition
 
 A second compile of an unchanged program converges in one pass with

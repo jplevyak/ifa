@@ -13,6 +13,14 @@ hashed; othello3's matching went 356 s → 104 s with identical output
 **Also 2026-11-10:** `find_best_matches` groups members by verdict key;
 matching 104 s → 46 s, and othello3 compiles inside the sweep's cap for
 the first time ([last section](#landed-2026-11-10-find_best_matches-collapses-by-verdict-key)).
+**2026-11-11:** standing dispatch (`IFA_STANDING`) is on by default, with a
+cutoff for sends that never use it, and `find_arg_matches` no longer walks
+the members of an argument when few can be admitted. sunfish's flow analysis
+33.2 s to 21.3 s, plcfrs 31.2 s to 24.3 s, othello3 124.7 s to 103.5 s. The
+measurements, and a stale `sym_match_cache` entry that explains the kmeanspp
+difference below, are in
+[208](208-whole-compile-time-where-it-goes.md#2-call-matching-207-done)
+item 2. What is left of matching is 5 s on sunfish and 20 s on othello3.
 Filed 2026-11-08 from
 [203](203-shrink-the-graph-fa-walks.md)'s re-scoping. That measurement
 put FA's time in call matching, not flow, on every program where FA takes

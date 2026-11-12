@@ -105,6 +105,7 @@ Frontend-side items from the same work are in the top-level `issues/`:
 
 | issue | what |
 | --- | --- |
+| [208](208-whole-compile-time-where-it-goes.md) | **the whole compile, profiled 2026-11-11**: by stage on all 77 and by sampling on the heavy ones. Done: `controlling_ifs` (ac_encode 54.7 s to 4.2 s); matching no longer walks an argument's members, and standing dispatch is on (othello3 FA 124.7 s to 103.5 s, sunfish 33.2 to 21.3). Left, ranked: pass count, the collector, clone's pairwise compare, the C compiler (37% of a small compile), the builtin library re-parsed every compile, `getenv` in hot loops. |
 | [207](207-FA-call-matching-re-matches-a-whole-union-per-member.md) | call matching: the match cache keys on exact argument ATypes, so each member added to a union is a miss and a full re-match (quadratic in width). Measured on sunfish, plcfrs, chess. |
 | [186](186-FA-pass-one-confluence-through-shared-builtins.md) | othello3: pass 1 carries a ~2,000-CS union through the shared builtins; deferred connection and a wide-union AType are the directions. |
 | [203](203-shrink-the-graph-fa-walks.md) | demand-placed phy renames, copy propagation before FA, dead arms as a decision table, what mid-FA inlining is, liveness fed forward. Measure first. |

@@ -73,6 +73,65 @@ incremental matching. othello3 stays this issue's witness.
 3. **Shrink what each pass walks**: [203](203-shrink-the-graph-fa-walks.md).
 4. **Do not walk it again next compile**: [198](198-decision-snapshot-across-compiles.md).
 
+## Measured 2026-11-11: the wide union is a cone
+
+**Question.** Direction 2 above proposes a bitset for wide unions. Is a
+wide union instead *a class and its subclasses*, which is one lattice
+element however many subclasses there are?
+
+**Probe** (temporary, removed). At the end of every pass, for every
+distinct type held by an AVar: its classes, and its **cone cover**, the
+fewest ancestors that name it exactly. A member class is replaced by its
+highest ancestor all of whose instantiated subclasses are in the union.
+The ancestor itself may be absent: a base class has a CreationSet of its
+own (the class object) and no instances. "Mass" is classes times the
+AVars holding the type, which is what propagation and matching pay for.
+All 77 corpus programs.
+
+| union width, in classes | programs | types | AVars | class mass | cover mass | |
+| --- | --- | --- | --- | --- | --- | --- |
+| end of pass 0: 2–7 | 77 | 4 280 | 147 777 | 501 817 | 488 180 | 1.0× |
+| end of pass 0: 8–31 | 41 | 305 | 32 188 | 362 299 | 324 367 | 1.1× |
+| end of pass 0: 32–127 | 1 (pygasus) | 9 | 2 160 | 205 133 | 19 373 | 10.6× |
+| end of pass 0: 512+ | 1 (othello3) | 11 | 13 315 | 12 009 971 | 132 991 | **90×** |
+| last pass: 512+ | 1 (othello3) | 1 | 773 | 642 363 | 1 546 | **416×** |
+
+- **othello3's union is `Flip`'s subclasses plus a few others.** At the
+  end of pass 0 its wide types are about 900 classes each with a cover of
+  9 to 11: the cone of `Flip` (830 classes) and eight to ten more. One of
+  them is held by about 13 000 AVars. At convergence the one wide type
+  left is 831 classes and a cover of 2.
+- **Nothing else in the corpus is wide.** One other program (pygasus)
+  has a union over 32 classes, and it is also a cone (11×). Under 32
+  classes, cones do nothing: those unions are a handful of unrelated
+  classes.
+- **By CreationSets it is not a cone.** A member class has all of its
+  live CreationSets in the union for 0.1% of the wide mass at pass 0,
+  because the classes that are not `Flip`s are split. So the cone has to
+  be a statement about classes, with the split classes listed beside it.
+
+**What it means.**
+- **Direction 2 should be a cone, not a bitset.** A bitset makes a
+  900-member operation cost 15 words. A cone makes it cost one, and
+  hash-consing then gives one `AType` for every growth step that today
+  makes a new 900-entry type. It is also the form dispatch wants: a send
+  on `cone(Flip)` resolves through `Flip`'s overrides of the selector,
+  computed once, which is what
+  [208](208-whole-compile-time-where-it-goes.md) item 2's inversion does
+  per call from the candidates' side.
+- **It is one program.** The mechanism buys nothing for the other 76, so
+  it is worth building only if othello3-shaped programs (generated code,
+  one class per case) matter. 208 puts othello3 at 133 s after its
+  changes, with the collector the largest cost left; a cone type would
+  also remove most of what the collector is marking.
+- **Not measured:** how the union is *built*. If members arrive one class
+  at a time, the type is not a cone until the last one arrives, and the
+  representation saves nothing during growth, which is where pass 1's
+  time goes. A closed-world shortcut (treat a union that reaches most of a
+  cone as the cone) would be a widening and is ruled out; the growth has
+  to be shown to be cone-shaped, or deferred until it is (direction 1).
+  **Measure the growth sequence of one such AVar before designing.**
+
 ## Verification
 
 othello3 compiles under the sweep's 400 s cap with output matching
