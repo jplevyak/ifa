@@ -136,6 +136,10 @@ class DispatchMemo : public gc {
 class MatchCache : public Vec<MatchCacheEntry *> {
  public:
   StandingDispatch *standing = nullptr;
+  // ifa/208: how often this send's standing state was built and how often a
+  // firing was answered from it. A send that is recorded and never used
+  // (othello3: 514 648 records, 22 102 uses) stops being recorded.
+  int standing_records = 0, standing_uses = 0;
   // ifa/207: the entries again, by a hash of what match_cache_hit compares
   // first (flags, visibility point, top-level argument types). A send
   // holds one entry per type state it has dispatched on, and a member read
@@ -172,6 +176,7 @@ class Matcher {
   // C++'s manditory redundant declarations, tedious++
   int pattern_match_sym(Sym *, MPosition *, Vec<Fun *> *, Vec<Fun *> &, int);
   void pattern_match_sym_internal(Sym *, MPosition *, Vec<Fun *> &, Vec<Sym *> &);
+  Vec<Fun *> *visible_at(Sym *, MPosition *);
   void pattern_match_arg(Sym *, MPosition *, Vec<Fun *> &, Vec<Fun *> &, int);
   void build_positional_map(MPosition &, int, Vec<Fun *> **);
   void update_match_map(AVar *, CreationSet *, MPosition *, MPosition *, Vec<Fun *> &);
@@ -336,19 +341,7 @@ int Matcher::pattern_match_sym(Sym *type, MPosition *acp, Vec<Fun *> *local_matc
     return funs.n;
   }
   pattern_match_arg(type, acp, function_values, funs, 0);
-  Vec<Sym *> done;
-  Vec<Fun *> new_funs;
-  Map<MPosition *, Vec<Fun *> *> *pfm = sym_match_cache.get(type);
-  Vec<Fun *> *vfn = 0;
-  if (pfm) {
-    vfn = pfm->get(acp);
-    if (vfn) goto Ldone;
-  }
-  vfn = new Vec<Fun *>;
-  pattern_match_sym_internal(type, acp, *vfn, done);
-  if (!pfm) sym_match_cache.put(type, (pfm = new Map<MPosition *, Vec<Fun *> *>));
-  pfm->put(acp, vfn);
-Ldone:
+  Vec<Fun *> *vfn = visible_at(type, acp);
   if (local_matches) {
     if (local_matches->n > vfn->n) {
       for (Fun *f : *vfn) if (f) if (local_matches->set_in(f)) funs.set_add(f);
@@ -358,6 +351,28 @@ Ldone:
   } else
     funs.set_union(*vfn);
   return funs.n;
+}
+
+// The functions whose formal at `acp` is `type` or one of its dispatch types.
+Vec<Fun *> *Matcher::visible_at(Sym *type, MPosition *acp) {
+  Map<MPosition *, Vec<Fun *> *> *pfm = sym_match_cache.get(type);
+  Vec<Fun *> *vfn = 0;
+  if (pfm) {
+    vfn = pfm->get(acp);
+    if (vfn) return vfn;
+  }
+  Vec<Sym *> done;
+  vfn = new Vec<Fun *>;
+  pattern_match_sym_internal(type, acp, *vfn, done);
+  // ifa/208: a type created during flow analysis can be asked about before
+  // build_type_hierarchy has given it its dispatch types. That answer holds
+  // only the type's own functions, and caching it froze it: what a later
+  // dispatch saw then depended on whether an earlier one had asked. timsort's
+  // generated C differed by two temporaries on it. Not cached until built.
+  if (!type->dispatch_types_built) return vfn;
+  if (!pfm) sym_match_cache.put(type, (pfm = new Map<MPosition *, Vec<Fun *> *>));
+  pfm->put(acp, vfn);
+  return vfn;
 }
 
 Matcher::Matcher(AVar *asend, AVar *aarg0, int ais_closure, Partial_kind apartial) {
@@ -438,12 +453,95 @@ static void add_all_args(MapMPositionAType &m, MPosition *cp, AType *t) {
     m.put(cp, type_union(tt, t));
 }
 
+// ifa/208 item 2: do not walk the members. A candidate admits a member only
+// if the member's Sym is a specializer of the candidate's formal type, and a
+// Sym knows its CreationSets (`creators`). So when the candidates' formal
+// types have few specializers, the members any candidate could admit are
+// found from the candidates, by probing the argument's type, and the walk
+// over the argument is skipped. othello3's member loop dispatches one method
+// against a 950-class receiver union 235 640 times, and about ten members
+// are admitted each time.
+//
+// It finds a SUPERSET of what is admitted. A member with at most one
+// candidate is then confirmed by one probe of its visible-function set; one
+// with several goes to pattern_match_sym as before. The work is bounded by
+// INVERT_BUDGET probes per member, after which the members are walked: a
+// candidate with an untyped formal has every Sym as a specializer.
+// IFA_ARGINVERT=0 turns it off; =2 walks every member as well and compares.
+static int arginvert_mode() {
+  static int m = -1;
+  if (m < 0) { cchar *v = getenv("IFA_ARGINVERT"); m = v ? atoi(v) : 1; }
+  return m;
+}
+static long arginvert_calls = 0, arginvert_used = 0, arginvert_checked = 0, arginvert_mismatch = 0;
+static void arginvert_report() {
+  fprintf(stderr, "ARGINVERT calls=%ld inverted=%ld members_checked=%ld mismatches=%ld\n", arginvert_calls,
+          arginvert_used, arginvert_checked, arginvert_mismatch);
+}
+
 void Matcher::find_arg_matches(AVar *a, MPosition &ap, MPosition *acp, MPosition *acpp, Vec<Fun *> **partial_matches,
                                int recurse, int out_of_position) {
   a->arg_of_send.add(send);
   Vec<Fun *> funs;
   add_all_args(all_args, acpp, a->out);
-  for (CreationSet *cs : a->out->sorted) {
+  enum { INVERT_MIN_WIDTH = 16, INVERT_BUDGET = 4 };
+  static Fun *const SEVERAL = (Fun *)(uintptr_t)1;
+  Vec<CreationSet *> hit_set, hits;
+  Map<CreationSet *, Fun *> one;  // a hit member's only candidate, or SEVERAL
+  bool inverted = false;
+  const int mode = arginvert_mode();
+  if (mode && !out_of_position && *partial_matches && !a->var->sym->aspect && a->out->sorted.n >= INVERT_MIN_WIDTH) {
+    long budget = (long)INVERT_BUDGET * a->out->sorted.n;
+    inverted = true;
+    int from_candidates = 1;
+    for (Vec<Fun *> *fs : {*partial_matches, &function_values}) {
+      for (Fun *f : *fs) if (f && inverted) {
+        Sym *fa = f->arg_syms.get(acp);
+        if (!fa) {
+          // A candidate with no formal here is never admitted; a function
+          // value with none is admitted for every member if it is varargs.
+          if (!from_candidates && f->is_varargs) inverted = false;
+          continue;
+        }
+        for (Sym *s : dispatch_type(fa)->specializers) if (s && inverted) {
+          if ((budget -= 1 + s->creators.n) < 0) { inverted = false; break; }
+          auto probe = [&](CreationSet *c) {
+            if (!c || !a->out->set_in(c)) return;
+            hit_set.set_add(c);
+            if (from_candidates) {
+              Fun *o = one.get(c);
+              one.put(c, o && o != f ? SEVERAL : f);
+            }
+          };
+          for (CreationSet *c : s->creators) probe(c);
+          // A Sym's abstract CreationSet (make_abstract_type) is not among its creators.
+          if (s->abstract_type && s->abstract_type->sorted.n == 1) probe(s->abstract_type->sorted[0]);
+        }
+      }
+      from_candidates = 0;
+    }
+    if (mode == 2) {
+      static bool registered = false;
+      if (!registered) registered = true, atexit(arginvert_report);
+    }
+    arginvert_calls++;
+    if (inverted) {
+      arginvert_used++;
+      for (CreationSet *c : hit_set) if (c) hits.add(c);
+      std::sort(hits.v, hits.v + hits.n, [](CreationSet *x, CreationSet *y) { return x->id < y->id; });
+    }
+  }
+  // What the inversion gives for one member: exactly what pattern_match_sym
+  // gives, or nothing for a member that is not a hit.
+  auto inverted_match = [&](CreationSet *cs, Vec<Fun *> &out) {
+    Fun *o = one.get(cs);
+    if (o == SEVERAL) return pattern_match_sym(cs->sym, acp, *partial_matches, out, 0);
+    pattern_match_arg(cs->sym, acp, function_values, out, 0);
+    if (o && visible_at(cs->sym, acp)->set_in(o)) out.set_add(o);
+    return out.n;
+  };
+  const bool walk = !inverted || mode == 2;
+  for (CreationSet *cs : (walk ? a->out->sorted : hits)) {
     Sym *sym = cs->sym;
     if (a->var->sym->aspect) {
       if (!a->var->sym->aspect->specializers.set_in(cs->sym) &&
@@ -452,7 +550,22 @@ void Matcher::find_arg_matches(AVar *a, MPosition &ap, MPosition *acp, MPosition
       sym = a->var->sym->aspect;
     }
     Vec<Fun *> new_funs;
-    if (!pattern_match_sym(sym, acp, *partial_matches, new_funs, out_of_position)) continue;
+    if (inverted && !walk) {
+      if (!inverted_match(cs, new_funs)) continue;
+    } else {
+      if (inverted) {  // check mode
+        Vec<Fun *> fast, general;
+        if (hit_set.set_in(cs)) inverted_match(cs, fast);
+        pattern_match_sym(sym, acp, *partial_matches, general, 0);
+        bool same = fast.set_count() == general.set_count();
+        for (Fun *f : general) if (f && !fast.set_in(f)) same = false;
+        arginvert_checked++;
+        if (!same && ++arginvert_mismatch <= 10)
+          fprintf(stderr, "ARGINVERT mismatch: member %s id %d (cs %d): inverted %d, walked %d\n",
+                  sym->name ? sym->name : "?", sym->id, cs->id, fast.set_count(), general.set_count());
+      }
+      if (!pattern_match_sym(sym, acp, *partial_matches, new_funs, out_of_position)) continue;
+    }
     update_match_map(a, cs, acp, acpp, new_funs);
     if (recurse && cs->vars.n) {  // for recursive ap == app
       Vec<Fun *> rec_funs, tfuns, *rec_funs_p = &rec_funs;
@@ -2687,7 +2800,7 @@ static void vk_check(Matcher &m, VerdictKeys &vk, Vec<AVar *> &args, Vec<Match *
 int standing_generation = 0;
 int standing_mode() {
   static int e = -1;
-  if (e < 0) e = getenv("IFA_STANDING") ? atoi(getenv("IFA_STANDING")) : 0;
+  if (e < 0) e = getenv("IFA_STANDING") ? atoi(getenv("IFA_STANDING")) : 1;
   return e;
 }
 class StandingRoute : public gc {
@@ -2715,16 +2828,18 @@ class StandingDispatch : public gc {
   Vec<StandingRoute *> all_routes;
 };
 static long st_fires, st_used, st_used_empty, st_no_state, st_stale, st_new_key, st_selector, st_shrunk, st_recorded,
-    st_refused, st_checked, st_mismatch;
+    st_refused, st_unused, st_checked, st_mismatch;
 static void standing_report() {
   fprintf(stderr,
           "STANDING fires=%ld used=%ld used_no_delta=%ld no_state=%ld stale=%ld new_key=%ld selector=%ld shrunk=%ld "
-          "recorded=%ld refused=%ld checked=%ld MISMATCH=%ld\n",
+          "recorded=%ld refused=%ld unused=%ld checked=%ld MISMATCH=%ld\n",
           st_fires, st_used, st_used_empty, st_no_state, st_stale, st_new_key, st_selector, st_shrunk, st_recorded,
-          st_refused, st_checked, st_mismatch);
+          st_refused, st_unused, st_checked, st_mismatch);
 }
 static void standing_register() {
   static bool registered = false;
+  // The counters print in check mode, or when asked for (IFA_DBG_STANDING).
+  if (standing_mode() != 2 && !getenv("IFA_DBG_STANDING")) registered = true;
   if (!registered) registered = true, atexit(standing_report);
 }
 static inline void *st_key(uint64_t k) { return (void *)(uintptr_t)(k | 1); }
@@ -2746,6 +2861,8 @@ void standing_record(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_
   for (Match *mm : matches) if (mm->is_partial) covered = false;
   if (!covered) return (void)++st_refused;
   if (!mc) mc = send->match_cache = new MatchCache;
+  if (mc->standing_records >= 8 && mc->standing_uses * 8 < mc->standing_records) return (void)++st_unused;
+  mc->standing_records++;
   StandingDispatch *st = new StandingDispatch;
   st->generation = standing_generation;
   st->arity_epoch = dispatch_arity_epoch;
@@ -2828,12 +2945,12 @@ int standing_try(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind par
   for (int i = 1; i < args.n; i++) {
     if (args[i]->out == st->seen[i]) continue;
     for (CreationSet *cs : st->seen[i]->sorted)
-      if (cs && !args[i]->out->in(cs)) return ++st_shrunk, 0;
+      if (cs && !args[i]->out->set_in(cs)) return ++st_shrunk, 0;
   }
   for (int i = 1; i < args.n && !unknown; i++) {
     if (args[i]->out == st->seen[i]) continue;
     for (CreationSet *cs : args[i]->out->sorted) {
-      if (!cs || st->seen[i]->in(cs)) continue;
+      if (!cs || st->seen[i]->set_in(cs)) continue;
       Vec<StandingRoute *> *v = st->routes[i]->get(st_key(st_member_key(m, st, i, cs)));
       if (!v) { unknown = true; break; }
       any = true;
@@ -2898,6 +3015,7 @@ int standing_try(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind par
     admitted.add(mm);
   }
   ++st_used;
+  send->match_cache->standing_uses++;
   if (!any) ++st_used_empty;
   return 1;
 }
