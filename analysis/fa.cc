@@ -11154,7 +11154,13 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
   for (int i = 0; i < work.n && i < 20000; i++)
     for (PNode *p : work.v[i]->cfg_pred)
       if (p && seen.set_add(p)) work.add(p);
+  // `seen` is every node that reaches `site`, so when the backward walk was
+  // not cut short, "does this successor reach the site" is membership. The
+  // forward walk per successor was a fresh node set per branch arm: 78% of
+  // ac_encode's compile and 54 GiB allocated (ifa/208).
+  const bool whole = work.n < 20000;
   auto reaches = [&](PNode *from) {
+    if (whole) return seen.set_in(from) != nullptr;
     Vec<PNode *> s2, w2;
     s2.set_add(from);
     w2.add(from);
