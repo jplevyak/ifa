@@ -21,9 +21,11 @@ shared resolver is `poly_dispatch_classtag_targets` /
 `poly_dispatch_directly_owned` / `poly_dispatch_is_nil_receiver`
 (`codegen_common.cc`). Both backends call it and must not reimplement it.
 
-Two backend divergences are known, with no failing repro: the
-classtag-eligibility filter (`cg.cc` vs `cg_emit_llvm.cc`), and unnamed
-(lambda) candidates, where LLVM bails the whole call site.
+Two backend divergences were recorded here: the classtag-eligibility
+filter, and unnamed (lambda) candidates, where LLVM bailed the whole call
+site. [200](../200-llvm-backend-parity.md) A3 closed both on 2026-11-14:
+the filters were the same test, and the bail was a silent `0` under `-b`
+(fixture `tests/dispatch_lambda_with_function.py`).
 
 ## What is open
 

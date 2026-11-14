@@ -283,6 +283,12 @@ are triggered from `Vec::set_expand` under `Matcher::prune_uncoverable`,
 short-lived sets built per dispatch. Item 2 removes some of that. A
 per-`Matcher` scratch arena would remove more.
 
+The ceiling was measured on 2026-11-12 with collection off
+(`GC_DONT_GC=1`): othello3 152.3 s to 107.1 s at 20 GiB, and no change
+for the 72 programs that never collect. The table, and what arenas by
+lifetime would cost, are in
+[209](209-compiler-memory-arenas-instead-of-the-collector.md).
+
 ### 5. Clone is quadratic in CreationSets per Sym
 
 rubik: clone is 6.7 s of 16.0 s, more than its flow analysis. othello3:

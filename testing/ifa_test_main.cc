@@ -21,6 +21,8 @@
 #include "if1.h"
 #include "ifa.h"
 #include "pdb.h"
+#include "prim.h"
+#include "fa.h"
 #include "sym.h"
 #include "testing/parse_ir.h"
 #include "ast.h"
@@ -83,6 +85,16 @@ static void phase_argpos_run(IF1 *p) { if1_finalize(p); }
 // default builtin type Syms (sym_int32 / sym_float64 / etc.) so the
 // .ir fixture can reference them via @int32-style refs.
 static void pre_parse_builtin_types(IF1 *) { init_default_builtin_types(); }
+// The codegen phases also register `observe`, a visible (hence never
+// dead) primitive returning int: `(send @primitive #observe %x => %o)`
+// keeps %x's computation alive through DCE. Without a root every
+// codegen fixture body was dead and both backends emitted an empty
+// __main__ (ifa/issues/200 D3). Each backend emits it as a call to an
+// external helper, which the goldens only read as text.
+static void pre_parse_codegen(IF1 *p) {
+  pre_parse_builtin_types(p);
+  prim_reg("observe", return_int_transfer_function, 0)->is_visible = 1;
+}
 
 static void phase_patterns_run(IF1 *p) { if1_finalize(p); }
 // fa_setup_environment synthesizes sym___main__ as a stub closure,
@@ -105,10 +117,10 @@ static void phase_freq_run(IF1 *p) { fa_setup_environment(p); }
 // `codegen-c` — the printer runs the full ifa_analyze + ifa_optimize
 // pipeline and then captures c_codegen_print_c output.
 static void phase_codegen_c_run(IF1 *p) { fa_setup_environment(p); }
-// `codegen-llvm` / `cg-normalize` phases retired alongside v1
-// LLVM (issue 014).  v2 LLVM goes through cg_normalize_v2 +
-// cg_v2_emit_llvm_module, which have their own unit-test
-// coverage in ifa/testing/cg_ir_v2_test.cc.
+// `codegen-llvm` — the same pipeline into the LLVM emitter
+// (cg_emit_llvm via llvm_codegen_print_ir), on the codegen-c programs
+// (ifa/issues/200 D3).
+static void phase_codegen_llvm_run(IF1 *p) { fa_setup_environment(p); }
 // `inline` — enables the InlineEvent sidecar around simple_inlining
 // to record per-call-site inliner actions.
 static void phase_inline_run(IF1 *p) { fa_setup_environment(p); }
@@ -132,8 +144,8 @@ static Phase phases[] = {
     {"clone",    pre_parse_builtin_types, phase_clone_run,    print_clone_normalized},
     {"dce",      pre_parse_builtin_types, phase_dce_run,      print_dce_normalized},
     {"freq",     pre_parse_builtin_types, phase_freq_run,     print_freq_normalized},
-    {"codegen-c", pre_parse_builtin_types, phase_codegen_c_run, print_codegen_c_normalized},
-    // codegen-llvm and cg-normalize retired with v1 LLVM (issue 014).
+    {"codegen-c", pre_parse_codegen, phase_codegen_c_run, print_codegen_c_normalized},
+    {"codegen-llvm", pre_parse_codegen, phase_codegen_llvm_run, print_codegen_llvm_normalized},
     {"inline",    pre_parse_builtin_types, phase_inline_run,    print_inline_normalized},
     {"escape",    pre_parse_builtin_types, phase_escape_run,    print_escape_normalized},
     {"fa-converge", pre_parse_builtin_types, phase_fa_converge_run, print_fa_converge_normalized},
@@ -411,7 +423,7 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
   // The test harness exercises violation-stage fixtures by design;
   // FA's per-pass `show_violations(stderr)` dump would drown out
   // the test results. Suppress it for the duration of this test.
-  if (pdb && pdb->fa) pdb->fa->show_violation_output = false;
+  if (pdb && pdb->fa) pdb->fa->show_violation_output = getenv("IFA_TEST_SHOW_VIOLATIONS") != 0;
 
   // Match the production frontend default. With Partial_OK, every
   // SEND constructed by the .ir parser is treated as a partial

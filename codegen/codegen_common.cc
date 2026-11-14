@@ -12,6 +12,7 @@
 
 #include "builtin.h"
 #include "codegen_common.h"
+#include "clone.h"
 #include "fa.h"
 #include "fail.h"
 #include "fun.h"
@@ -36,7 +37,7 @@ cchar *c_type(Var *v) {
 }
 
 cchar *c_type(Sym *s) {
-  // Callers pass null deliberately: write_c_prim's index-store path
+  // Callers pass null deliberately: cg.cc's index-store path (c_prim_index_store)
   // computes `Sym *e = t && t->element ? t->element->type : nullptr` and
   // hands the result straight here, so null means "this container has no
   // element type" -- which is exactly the `_CG_void` the `!s->type` case
@@ -100,6 +101,120 @@ cchar *num_string(Sym *s) {
   }
   fail("num_string: unhandled num_kind %d num_index %d", s->num_kind, s->num_index);
   return 0;
+}
+
+// -------------------------------------------------------------
+// ifa/201: the representation oracle
+// -------------------------------------------------------------
+
+// The builtin types, and each builtin primitive by its meta type. clone.cc
+// gives a container group its own COPY of a builtin's type sym (`list` ->
+// a new `list`, ifa/124); a copy keeps the builtin's meta type, which is
+// how it is recognised as the same class and so the same representation.
+static Vec<Sym *> cg_builtin_type_set;
+static Map<Sym *, Sym *> cg_builtin_primitive_of_meta;
+
+void cg_name_builtin_types(FA *fa) {
+  cg_builtin_type_set.clear();
+  cg_builtin_primitive_of_meta.clear();
+#define S(_n)                                         \
+  {                                                   \
+    Sym *b = if1_get_builtin(fa->pdb->if1, #_n);      \
+    cg_set_string(b, "_CG_" #_n);                     \
+    cg_builtin_type_set.set_add(b);                   \
+  }
+#include "builtin_symbols.h"
+#undef S
+  for (Sym *b : cg_builtin_type_set)
+    if (b && b->type_kind == Type_PRIMITIVE && !b->num_kind && b->meta_type)
+      cg_builtin_primitive_of_meta.put(b->meta_type, b);
+}
+
+CGRepr cg_repr(Sym *t) {
+  const CGRepr untyped = {CGRepr::UNTYPED, 8}, pointer = {CGRepr::POINTER, 8};
+  if (!t) return untyped;
+  switch (t->num_kind) {
+    case IF1_NUM_KIND_UINT:
+    case IF1_NUM_KIND_INT:
+      switch (t->num_index) {
+        case IF1_INT_TYPE_1:
+        case IF1_INT_TYPE_8: return {CGRepr::INT, 1};
+        case IF1_INT_TYPE_16: return {CGRepr::INT, 2};
+        case IF1_INT_TYPE_32: return {CGRepr::INT, 4};
+        default: return {CGRepr::INT, 8};
+      }
+    case IF1_NUM_KIND_FLOAT:
+      switch (t->num_index) {
+        case IF1_FLOAT_TYPE_32: return {CGRepr::FLOAT, 4};
+        case IF1_FLOAT_TYPE_128: return {CGRepr::FLOAT, 16};
+        default: return {CGRepr::FLOAT, 8};
+      }
+    default: break;
+  }
+  if (t->is_symbol) return pointer;
+  // A function value is a function pointer when its function is emitted. One
+  // with no emitted body has no such type: its value is only an identity.
+  if (t->fun) return t->fun->live ? pointer : untyped;
+  // `{None, T}` is T: a pointer T takes null for None, and a scalar T has
+  // no None at all (the union is refused where it matters, issues/048).
+  if (t->type_kind == Type_SUM && t->has.n == 2 && (t->has[0] == sym_nil_type || t->has[1] == sym_nil_type))
+    return cg_repr(t->has[0] == sym_nil_type ? t->has[1] : t->has[0]);
+  if (t == sym_void || t == sym_void_type || t == sym_any) return untyped;
+  if (cg_builtin_type_set.set_in(t)) return pointer;
+  switch (t->type_kind) {
+    case Type_RECORD:
+    case Type_FUN: return t->has.n ? pointer : untyped;
+    case Type_PRIMITIVE:
+      if (Sym *b = t->meta_type ? cg_builtin_primitive_of_meta.get(t->meta_type) : nullptr) return cg_repr(b);
+      return untyped;
+    default: return untyped;  // any other union: a pointer-sized cell
+  }
+}
+
+bool cg_voidish(Sym *t) { return t == sym_nil_type || cg_repr(t).untyped(); }
+
+// The void and nil values are named differently by each frontend: pyc types
+// `sym_void` as `sym_void_type`, while the V prelude's `void : 0` makes
+// `sym_void` its own type, and its value's CreationSet then carries
+// `sym_void->meta_type`. Any of those is the unit, not a pointer. The meta
+// type counts only for a self-typed value: pyc's `sym_nil->meta_type` is
+// `type(None)`, a real object.
+bool repr_is_unit(Sym *s) {
+  if (!s) return false;
+  if (s == sym_nil_type || s == sym_void_type) return true;
+  for (Sym *u : {sym_void, sym_nil})
+    if (u && (s == u || s == u->type || (u->type == u && s == u->meta_type))) return true;
+  return false;
+}
+
+ATypeRepr atype_repr(AType *t) {
+  ATypeRepr r;
+  if (!t) return r;
+  Vec<Sym *> basics, numerics;
+  for (CreationSet *cs : *t) {
+    if (!cs || !cs->sym) continue;
+    Sym *ty = cs->sym->type;
+    if (repr_is_unit(cs->sym) || repr_is_unit(ty)) {
+      r.unit = true;
+      continue;
+    }
+    if (Sym *b = ty ? to_basic_type(ty) : nullptr) {
+      basics.set_add(b);
+      if (b->num_kind) numerics.set_add(b);
+    } else
+      ++r.objects;
+  }
+  r.basics = basics.set_count();
+  r.numerics = numerics.set_count();
+  return r;
+}
+
+int cg_member_width(Sym *s, int i, CGRepr *r) {
+  if (!s || i < 0 || i >= s->has.n || !s->has[i]) return -2;  // not emitted
+  if (!s->has[i]->type) return 0;                             // `char eN[0]`
+  CGRepr m = cg_repr(s->has[i]->type);
+  if (r) *r = m;
+  return m.width;
 }
 
 // -------------------------------------------------------------
@@ -262,12 +377,34 @@ int cg_field_live(Sym *s, int i) {
   return 1;
 }
 
+// ifa/issues/123: record every (class, slot) codegen actually EMITS an
+// access for. This is the ground truth the name-based analysis was
+// proxying: a call the precise call graph resolved to one target is
+// emitted as a DIRECT call and touches no slot at all, so counting
+// every `x.f()` as a slot read (which matching on P_prim_period
+// selectors does) massively overstates what is needed.
+// Reads and writes tracked separately: a slot only has to EXIST if
+// something reads it. The polymorphic-slot store writes a vtable entry
+// whether or not any dispatch ever goes through it, so counting a write
+// as "used" makes every stored slot justify itself.
+Vec<Sym *> cg_slot_use_cls;
+Vec<int> cg_slot_use_idx;
+Vec<int> cg_slot_use_rd;
+void cg_note_slot_use(Sym *t, int i, int is_read) {
+  if (!t || i < 0) return;
+  for (int k = 0; k < cg_slot_use_cls.n; k++)
+    if (cg_slot_use_cls.v[k] == t && cg_slot_use_idx.v[k] == i) {
+      if (is_read) cg_slot_use_rd.v[k] = 1;
+      return;
+    }
+  cg_slot_use_cls.add(t);
+  cg_slot_use_idx.add(i);
+  cg_slot_use_rd.add(is_read);
+}
+
 static bool clones_same_class(Fun *a, Fun *b);  // ifa/121, below
 Map<Fun *, Vec<PolymorphicSlot> *> cg_new_to_val_map;
 Vec<cchar *> poly_names;  // ifa/123: filled by cg_build_new_to_val_map, read by cg_report_slot_use
-extern Vec<Sym *> cg_slot_use_cls;
-extern Vec<int> cg_slot_use_idx;
-extern Vec<int> cg_slot_use_rd;
 
 // See codegen_common.h. For each live function that appears at any
 // poly call site (method name with fns->n > 1 anywhere), find its
@@ -1963,6 +2100,41 @@ void assign_type_cg_strings_pass2(Vec<Sym *> &allsyms) {
   }
 }
 
+// issue 077: the binary operators emit_send_binop owns, on both backends.
+// Needed up front (not just as the hook's own dispatch) because LLVM's
+// type-mismatch guard must only fire for operators that hook is
+// responsible for -- emit_send_binop is called for EVERY prim send
+// (virtual_cg_emit_send's chain), and an unrelated one (e.g.
+// P_prim_primitive, a generic "call this by name" node whose "operands"
+// aren't a same-typed pair by design) reaches it too, on its way to the
+// emitter that owns it. Checking types before confirming membership
+// false-positived on ~200 corpus programs in testing.
+bool cg_binop_family(int idx) {
+  switch (idx) {
+    case P_prim_add:
+    case P_prim_subtract:
+    case P_prim_mult:
+    case P_prim_div:
+    case P_prim_mod:
+    case P_prim_lsh:
+    case P_prim_rsh:
+    case P_prim_and:
+    case P_prim_or:
+    case P_prim_xor:
+    case P_prim_less:
+    case P_prim_lessorequal:
+    case P_prim_greater:
+    case P_prim_greaterorequal:
+    case P_prim_equal:
+    case P_prim_notequal:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool cg_unaryop_prim(int idx) { return idx == P_prim_lnot || idx == P_prim_minus || idx == P_prim_not; }
+
 bool virtual_cg_is_const_folded_send(PNode *pn) {
   if (!pn || !pn->code || pn->code->kind != Code_SEND) return false;
   if (!pn->prim || (pn->prim->nonfunctional && pn->prim->index != P_prim_await)) return false;
@@ -2448,11 +2620,6 @@ static cchar *cg_reaching_types(Fun *f, int pos, Vec<Sym *> *&out) {
   return nullptr;
 }
 
-// ifa/206: at the slot a field access reads or writes, the bits are
-// interpreted as `a`'s member, so equal width is not enough: an int64 read
-// as a float64 is the same 8 bytes and the wrong number.
-static bool cg_float_ctype(cchar *t) { return t && (!strcmp(t, "_CG_float64") || !strcmp(t, "_CG_float32")); }
-
 // The C type of `s`'s emitted member `i` -- exactly what the struct
 // emitter writes. nullptr means the member is not emitted at all.
 cchar *cg_member_ctype(Sym *s, int i) {
@@ -2466,27 +2633,15 @@ cchar *cg_member_ctype(Sym *s, int i) {
 // function-pointer typedefs; `_CG_float64` and `_CG_ps15822` are a
 // double and a pointer. All four are 8 bytes, so everything after them
 // sits at the same offset and none of it is a layout problem. Comparing
-// spellings reported 81 false violations on pygmy alone.
+// spellings reported 81 false violations on pygmy alone. The widths come
+// from the representation oracle (ifa/201), which knows every type's.
 //
-// Mirrors pyc_c_runtime.h:353-384. An unrecognised spelling returns -1
-// and falls back to comparing names, which over-reports rather than
-// under-reports.
-int cg_ctype_width(cchar *t) {
-  if (!t) return -2;  // member absent
-  if (!strcmp(t, "<placeholder>")) return 0;
-  if (strchr(t, '*')) return 8;
-  if (!strncmp(t, "_CG_pf", 6) || !strncmp(t, "_CG_ps", 6)) return 8;
-  struct { cchar *n; int w; } kW[] = {
-      {"_CG_void", 8},   {"_CG_void_type", 8}, {"_CG_any", 8},    {"_CG_list", 8},
-      {"_CG_string", 8}, {"_CG_bytes", 8},     {"_CG_function", 8}, {"_CG_nil_type", 8},
-      {"_CG_tuple", 8},  {"_CG_vector", 8},  // void * in both runtimes (ifa/124: list-layout clones now name them)
-      {"_CG_int64", 8},  {"_CG_uint64", 8},    {"_CG_float64", 8},
-      {"_CG_int32", 4},  {"_CG_uint32", 4},    {"_CG_float32", 4}, {"_CG_int", 4},
-      {"_CG_int16", 2},  {"_CG_uint16", 2},
-      {"_CG_int8", 1},   {"_CG_uint8", 1},     {"_CG_bool", 1},    {nullptr, 0}};
-  for (int i = 0; kW[i].n; i++)
-    if (!strcmp(t, kW[i].n)) return kW[i].w;
-  return -1;  // unknown
+// ifa/206: at the slot a field access reads or writes, the bits are
+// interpreted as `a`'s member, so equal width is not enough: an int64 read
+// as a float64 is the same 8 bytes and the wrong number.
+static bool cg_member_is_float(Sym *s, int i) {
+  CGRepr r = {CGRepr::UNTYPED, 8};
+  return cg_member_width(s, i, &r) > 0 && r.is_float();
 }
 
 // Why reading `b` through `a`'s layout at `slot` is unsound, or nullptr if
@@ -2495,14 +2650,10 @@ cchar *cg_layout_mismatch(Sym *a, Sym *b, int slot, int *at) {
   *at = -1;
   if (cg_has_classtag(a) != cg_has_classtag(b)) return "classtag header present in one and not the other";
   for (int i = 0; i <= slot; i++) {
-    cchar *ta = cg_member_ctype(a, i), *tb = cg_member_ctype(b, i);
-    int wa = cg_ctype_width(ta), wb = cg_ctype_width(tb);
+    int wa = cg_member_width(a, i), wb = cg_member_width(b, i);
     *at = i;
     if (wa == -2 || wb == -2) return "member absent";
-    if (wa == -1 || wb == -1) {
-      if (strcmp(ta, tb)) return "member type differs (width unknown)";
-    } else if (wa != wb)
-      return "member width differs";
+    if (wa != wb) return "member width differs";
   }
   *at = -1;
   return nullptr;
@@ -2527,7 +2678,7 @@ static void cg_union_field_members(Sym *recv, cchar *symbol, Vec<Sym *> &members
 static bool cg_field_compatible(Sym *a, int sa, Sym *b, int sb) {
   int at;
   if (sa != sb || cg_layout_mismatch(a, b, sa, &at)) return false;
-  return cg_float_ctype(cg_member_ctype(a, sa)) == cg_float_ctype(cg_member_ctype(b, sb));
+  return cg_member_is_float(a, sa) == cg_member_is_float(b, sb);
 }
 
 // Members that can be tag-tested, and that disagree somewhere.
@@ -2653,7 +2804,7 @@ void cg_check_layout_contract() {
     int slot = cg_bc_slot.v[k];
     int at = -1;
     cchar *why = a == b ? nullptr : cg_layout_mismatch(a, b, slot, &at);
-    if (!why && cg_bc_field.v[k] && cg_float_ctype(cg_member_ctype(a, slot)) != cg_float_ctype(cg_member_ctype(b, slot))) {
+    if (!why && cg_bc_field.v[k] && cg_member_is_float(a, slot) != cg_member_is_float(b, slot)) {
       why = "the accessed member is a float in one and not the other";
       at = slot;
     }
@@ -2718,3 +2869,570 @@ cchar *cg_trap_c_at(cchar *s, int line) {
   cg_trap_census("c", kind, cg_census_fun);
   return s;
 }
+
+// Issue 028 Bug A — pick a non-nil component of a union
+// receiver for getter/setter codegen.
+//
+// pyc's `is None` narrowing in IFA only attaches a
+// type-predicate restrict to the SSU view of the
+// conditional's operand temp.  A fresh re-read of the
+// same property in the body (e.g. `self.min.next` after
+// `if self.min is None`) creates a NEW period SEND whose
+// receiver var has the full union type (None | Node).
+//
+// At codegen time, getter/setter resolved the field via
+// `obj = recv->type; if (obj->type_kind == Type_SUM)
+// obj = obj->has[0]` — i.e. blindly took the first union
+// component, which for typical orderings is `nil_type`.
+// `nil_type` has no fields; the result was a cast to
+// `_CG_nil_type` (a `void *` typedef) followed by
+// `->eN`, which fails to compile.
+//
+// Soundness: at runtime, the receiver's value in the
+// narrowed branch is non-None (the IF guarded it), so
+// emitting code assuming the non-None component is the
+// correct semantic.  Picking it here matches what
+// `assign_type_cg_strings_pass2` does at the SUM-sym
+// level for cg_string assignment (the 2-element
+// `None | T` shortcut).
+//
+// Strategy: search the union for a component whose
+// `has` list contains a field named `symbol`.  If none
+// found, fall back to the historical `obj->has[0]` so
+// the getter's "not a field" refusal still fires for
+// genuinely-unresolvable cases.
+Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
+  if (!obj || obj->type_kind != Type_SUM) return obj;
+  if (symbol) {
+    for (Sym *component : obj->has) {
+      if (!component || component == sym_nil_type) continue;
+      for (Sym *field : component->has) {
+        if (field && field->name == symbol) return component;
+      }
+    }
+  }
+  if (obj->has.n > 0) {
+    for (Sym *component : obj->has) {
+      if (component && component != sym_nil_type) return component;
+    }
+    return obj->has[0];
+  }
+  return obj;
+}
+
+// See codegen_common.h (ifa/200 A3).
+int cg_const_if_successor(FA *fa, PNode *n) {
+  if (!fa || !n || n->rvals.n == 0 || !n->rvals.v[0]) return -1;
+  Sym *s = n->rvals.v[0]->sym;
+  if (fa->type_world.true_type && s == fa->type_world.true_type->v[0]->sym) return 0;
+  if (fa->type_world.false_type && s == fa->type_world.false_type->v[0]->sym) return 1;
+  return -1;
+}
+
+// issues/085, confirmed with instrumentation since removed: a condition
+// that never resolved has exactly void_type's Sym as its type, while a
+// constant fold that is not Sym-identical to true/false (`a and b and c`
+// folded one layer early) has a real type (`bool`; tests/my_bool4.py).
+bool cg_is_unresolved_condition(FA *fa, Var *cond) {
+  if (!cond) return false;
+  if (!cond->type) return true;  // ifa/102: NOTYPE is no longer voided
+  return fa && fa->type_world.void_type && fa->type_world.void_type->n > 0 &&
+         cond->type == fa->type_world.void_type->v[0]->type;
+}
+
+bool cg_if_traps_unresolved(FA *fa, PNode *n) {
+  if (!n || !n->code || n->code->kind != Code_IF || !n->live || !n->fa_live || n->rvals.n == 0) return false;
+  if (cg_const_if_successor(fa, n) >= 0) return false;
+  bool succ_live = false;
+  for (PNode *s : n->cfg_succ)
+    if (s && s->live && s->fa_live) succ_live = true;
+  return succ_live && cg_is_unresolved_condition(fa, n->rvals.v[0]);
+}
+
+bool poly_dispatch_tag_arm(Sym *rt) { return rt && cg_has_classtag(rt) && cg_get_string(rt); }
+
+// ifa/200 A3: was one loop in each backend.
+Sym *poly_dispatch_closure_carrier(Fun *candidate, int *rval_idx) {
+  if (!candidate || !candidate->sym) return nullptr;
+  MPosition p;
+  p.push(1);
+  for (int pi = 0; pi < candidate->sym->has.n + 2; pi++) {
+    MPosition *cp = cannonicalize_mposition(p);
+    p.inc();
+    Var *argv = candidate->args.get(cp);
+    if (!argv || !argv->type) continue;
+    // The first typed formal decides. By NAME, which AGENTS.md forbids:
+    // the frontend marks a carrier only by naming its class `__closure__`
+    // (python_ifa_build_syms.cc). Kept in this one place until it carries
+    // a structural mark.
+    if (argv->type->name && !strcmp(argv->type->name, "__closure__") && cg_has_classtag(argv->type)) {
+      if (rval_idx) *rval_idx = (int)Position2int(cp->pos[0]) - 1;
+      return argv->type;
+    }
+    return nullptr;
+  }
+  return nullptr;
+}
+
+// -------------------------------------------------------------
+// Slot elision (ifa/123), shared by both backends since ifa/201
+// -------------------------------------------------------------
+
+// ifa/issues/123: drop method slots nothing ever READS.
+//
+// FA's call graph is precise, so a call it resolves to one target is
+// emitted as a DIRECT call and touches no slot. Measured: 93-98% of
+// method slots are written into the vtable and never read
+// (IFA_DBG_SLOTUSE). Those cost 8 bytes per instance plus the store that
+// initialises them.
+//
+// Readership can only be known by EMITTING, so this makes a throwaway
+// pass first -- every body into a memstream that is immediately
+// discarded -- purely to populate cg_slot_use_*. The bodies are already
+// buffered this way for function DCE further down, so the cost is one
+// extra emission of each function.
+//
+// The elision itself is `has[i]->type = nullptr`, which is the existing
+// issues/055 + issues/121 placeholder path, not a new mechanism: the
+// struct emitter then writes a ZERO-WIDTH `char eN[0]`, keeping the eN
+// numbering dense (issues/055 measured that removing the slot outright
+// breaks bh/block/chull/doom/rubik/softrender), and `cg_field_live`
+// becomes false so the polymorphic-slot store, the getter and the setter
+// all elide it by the tests they already apply.
+// ifa/issues/123: compute which (class, slot) pairs are READ, WITHOUT
+// emitting.
+//
+// The first attempt discovered readership by emitting every body into a
+// throwaway buffer. That does not work: `write_c` is not idempotent, and
+// a second emission corrupts compiler state -- measured, 218 of 327
+// tests fail with the discovery pass alone and the elision suppressed.
+//
+// So compute it directly, reusing the SAME helpers codegen uses at each
+// read site rather than restating their logic, which is what makes this
+// safe from drift (the objection that retired the earlier name-matching
+// analysis). There are exactly two ways a class member is read:
+//
+//   1. the P_prim_period getter, whose receiver class is
+//      `resolve_union_receiver(n->rvals[1]->type, selector)` and whose
+//      selector comes from `symbol_info` -- both called here verbatim;
+//   2. the classtag dispatch, whose (class, slot) pairs come from
+//      `poly_dispatch_classtag_targets` -- called here verbatim, on the
+//      same `f->calls.get(pn)` candidate set with the same
+//      `poly_dispatch_directly_owned` filter.
+Vec<Vec<Sym *> *> cg_recv_groups;  // classes sharing one receiver
+
+static void cg_compute_slot_reads(FA *fa) {
+  cg_recv_groups.clear();
+  cg_slot_use_cls.clear();
+  cg_slot_use_idx.clear();
+  cg_slot_use_rd.clear();
+  for (Fun *f : fa->funs) {
+    if (!f->live) continue;
+    for (PNode *pn : f->fa_all_PNodes) {
+      if (!pn || !pn->live) continue;
+      if (pn->prim && pn->prim->index == P_prim_period && pn->rvals.n > 3) {
+        Vec<Sym *> symbols;
+        symbol_info(pn->rvals[3], symbols);
+        cchar *symbol = nullptr;
+        if (symbols.n == 1)
+          symbol = symbols[0]->name;
+        else if (pn->rvals[3]->sym && pn->rvals[3]->sym->is_symbol)
+          symbol = pn->rvals[3]->sym->name;
+        // Classes reached through ONE receiver must agree on which slots
+        // exist: eliding a name on one and not its sibling changes the
+        // byte offsets and breaks the blind cast (measured -- richards:
+        // "'HandlerTaskRec' is blind-cast to 'IdleTaskRec' ... member
+        // width differs at e12 (_CG_void vs <placeholder>)"). Record the
+        // co-occurring sets so readership can be unioned over them.
+        if (symbol && pn->rvals[1]->type && pn->rvals[1]->type->type_kind == Type_SUM) {
+          Vec<Sym *> *grp = new Vec<Sym *>;
+          for (Sym *mem : pn->rvals[1]->type->has) if (mem && mem->type_kind == Type_RECORD) {
+            bool dup = false;
+            for (Sym *x : *grp) if (x == mem) { dup = true; break; }
+            if (!dup) grp->add(mem);
+          }
+          if (grp->n > 1) cg_recv_groups.add(grp);
+        }
+        if (symbol && pn->rvals[1]->type) {
+          Sym *obj = resolve_union_receiver(pn->rvals[1]->type, symbol);
+          if (obj)
+            for (int i = 0; i < obj->has.n; i++)
+              if (obj->has[i] && obj->has[i]->name && symbol == obj->has[i]->name && cg_field_live(obj, i)) {
+                cg_note_slot_use(obj, i, 1);
+                break;
+              }
+        }
+      }
+      // Writes, computed the same way: the setter resolves its receiver
+      // with the very same symbol_info + resolve_union_receiver pair.
+      if (pn->prim && pn->prim->index == P_prim_setter && pn->rvals.n > 3) {
+        cchar *symbol = pn->rvals[3]->sym && pn->rvals[3]->sym->is_symbol ? pn->rvals[3]->sym->name : nullptr;
+        if (!symbol) {
+          Vec<Sym *> symbols;
+          symbol_info(pn->rvals[3], symbols);
+          if (symbols.n == 1) symbol = symbols[0]->name;
+        }
+        if (symbol && pn->rvals[1]->type) {
+          Sym *obj = resolve_union_receiver(pn->rvals[1]->type, symbol);
+          if (obj)
+            for (int i = 0; i < obj->has.n; i++)
+              if (obj->has[i] && symbol == obj->has[i]->name) { cg_note_slot_use(obj, i, 0); break; }
+        }
+      }
+      // Record construction writes every live field positionally.
+      if (pn->prim && pn->prim->index == P_prim_make && pn->lvals.n && pn->lvals[0]->type) {
+        Sym *rec = pn->lvals[0]->type;
+        if (rec->type_kind == Type_RECORD && rec->has.n)
+          for (int i = 3; i < pn->rvals.n; i++) cg_note_slot_use(rec, i - 3, 0);
+      }
+      // ifa/153: and a record is also READ POSITIONALLY. The comment above
+      // this scan claims "both sides are computed structurally above", but
+      // only NAMED access was: the getter's `resolve_union_receiver` needs a
+      // symbol, and a tuple has none. `x, y, z = a, b, c` lowers to a
+      // P_prim_index_object per element with a CONSTANT index, and none of
+      // them was ever counted as a read.
+      //
+      // That is not a missed optimisation, it is a wrong answer. Elision
+      // groups on `cs->sym`, which is `sym_tuple` for EVERY tuple in the
+      // program, so one verdict per slot index covers all of them: a
+      // 2-tuple's leftover `has[2]` is bottom, nothing recorded a read, and
+      // slot 2 was elided on every tuple -- including `chull`'s
+      // `x,y,z = 2*random()-1, ...`, whose z then stayed 0 so every sphere
+      // point was coplanar and the program raised
+      // "DoubleTriangle: All points are coplanar!".
+      //
+      // A NON-constant index can reach any slot, so it marks them all.
+      if (pn->prim && pn->prim->index == P_prim_index_object) {
+        int o = (pn->rvals.n && pn->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+        if (pn->rvals.n > o) {
+          Sym *t = pn->rvals[o]->type;
+          if (t && t->type_kind == Type_RECORD && t->has.n) {
+            cchar *k = (pn->rvals.n > o + 1 && pn->rvals[o + 1]->sym) ? pn->rvals[o + 1]->sym->constant : nullptr;
+            if (k) {
+              int fidx = atoi(k);
+              if (fidx < 0) fidx += t->has.n;
+              if (fidx >= 0 && fidx < t->has.n) cg_note_slot_use(t, fidx, 1);
+            } else
+              for (int i = 0; i < t->has.n; i++) cg_note_slot_use(t, i, 1);
+          }
+        }
+      }
+      Vec<Fun *> *fns = f->calls.get(pn);
+      if (fns && fns->n > 1) {
+        Vec<cchar *> directly_owned;
+        poly_dispatch_directly_owned(fns, directly_owned);
+        for (Fun *cand : *fns) {
+          if (!cand || !cand->sym) continue;
+          Vec<Sym *> rts;
+          Vec<int> rt_slots, rt_ridxs;
+          poly_dispatch_classtag_targets(cand, pn, directly_owned, rts, rt_slots, rt_ridxs);
+          for (int ri = 0; ri < rts.n; ri++) cg_note_slot_use(rts[ri], rt_slots[ri], 1);
+          // The classes one dispatch spans are blind-cast to each other,
+          // so they must agree on which slots exist. clone.cc's
+          // collect_prefix_groups only inspects P_prim_period receivers
+          // and therefore misses a DISPATCH-only union -- measured:
+          // `PREFIX groups=0` on tests/list_index_type_mismatch_salvage,
+          // whose whole subject is a Basic_block|Union_find_node union.
+          if (rts.n > 1) {
+            Vec<Sym *> *grp = new Vec<Sym *>;
+            for (int ri = 0; ri < rts.n; ri++) {
+              bool dup = false;
+              for (Sym *x : *grp) if (x == rts[ri]) { dup = true; break; }
+              if (!dup && rts[ri]) grp->add(rts[ri]);
+            }
+            if (grp->n > 1) cg_recv_groups.add(grp);
+          }
+        }
+      }
+    }
+  }
+}
+
+// ifa/issues/123: drop method slots nothing ever READS.
+//
+// The elision is `has[i]->type = nullptr`, which is the existing
+// issues/055 + issues/121 placeholder path rather than a new mechanism:
+// the struct emitter then writes a ZERO-WIDTH `char eN[0]`, keeping the
+// eN numbering dense (issues/055 measured that removing a slot outright
+// breaks bh/block/chull/doom/rubik/softrender), and `cg_field_live`
+// becomes false so the polymorphic-slot store, the getter and the setter
+// all elide it by tests they already apply. The struct emitter does NOT
+// consult cg_field_live -- it checks `!has[i]->type` -- so nulling the
+// type is the only lever that reaches it.
+extern Vec<Vec<Sym *> *> ifa_prefix_groups;
+
+// ifa/issues/123: ON BY DEFAULT since 2026-09-03. Corpus `-m check` A/B
+// against the defaults baseline (`check__PYC_CLASSEQ_2_PYC_PREFIX_LAYOUT_1__d2742efa`):
+// compile_fail 2 -> 2, run_fail 43 -> 40, stdout_differs 24 -> 24. Three
+// programs that timed out now complete (chaos, path_tracing, score4),
+// consistent with structs shrinking 80%. `PYC_ELIDE_SLOTS=0` disables.
+static int elide_slots_enabled() {
+  static int e = -1;
+  if (e < 0) e = getenv("PYC_ELIDE_SLOTS") ? atoi(getenv("PYC_ELIDE_SLOTS")) : 1;
+  return e;
+}
+
+void cg_elide_unread_slots(FA *fa) {
+  if (!elide_slots_enabled()) return;
+  cg_compute_slot_reads(fa);
+  // No name matching anywhere here (CLAUDE.md, "Never analyse or decide
+  // by NAME"). The old filter asked "does some function share this
+  // member's name?" to guess method-vs-data, which counts a data field
+  // whose name coincides with a function and misses the converse. The
+  // method/data question does not need answering: a member that is
+  // NEITHER READ NOR WRITTEN is dead whichever it is, and both sides are
+  // computed structurally above -- reads from the getter's own
+  // resolve_union_receiver and from poly_dispatch_classtag_targets over
+  // the call graph's candidate sets, writes from the setter's identical
+  // resolution and from record construction.
+  // Clones of ONE class must agree. `compute_member_types` gives each
+  // clone its own member types, so a field that is bottom (sym_void) in
+  // one contour is `_CG_int64` in another -- eliding the first and not
+  // the second makes their layouts differ at that slot, which the
+  // contract check reports as "'T' is blind-cast to 'T' ... member width
+  // differs" (tests/deepcopy_objects). Grouped on `cs->sym`, the
+  // original class, which is CreationSet identity rather than a name.
+  // Decided per CLASS and applied to every clone, rather than requiring
+  // every clone to be independently elidable.
+  //
+  // Root cause of why that distinction matters (tests/deepcopy_objects):
+  // slot e15 of `T` is named `v` -- and `class T` has no field `v`. It
+  // is `Node`'s, promoted onto T as a PHANTOM by a union receiver
+  // reaching `.v` through the synthesized __deepcopy__. The same
+  // mechanism as bh's Cell.acc/vel (issues/039) and go's UCTNode.color.
+  // The clones then disagree only because the phantom is typed in the
+  // contours that saw the write and bottom in the others.
+  //
+  // So requiring all clones to agree was papering over an imprecision:
+  // it collapsed the elided count ~425 -> 5-28 to accommodate a field
+  // that should not exist. Eliding uniformly when NO clone reads the
+  // slot keeps every clone's layout identical -- which is what the
+  // blind cast needs -- and does not care whether the phantom happened
+  // to acquire a type.
+  // Is this member FUNCTION-VALUED, structurally?
+  //
+  // Measured on richards: only 26 of 1719 members are literally Type_FUN
+  // or sym_void, which is why the first filter elided almost nothing.
+  // The real shapes are a monomorphic method slot, whose type is the
+  // Fun's own Sym (type_kind Type_NONE, `fun` set), and a slot holding
+  // several clones, whose type is a Type_SUM of those -- 1194 and 60 of
+  // richards' members respectively.
+  auto is_fn_sym = [](Sym *x) { return x && (x->is_fun || x->fun || x->type_kind == Type_FUN); };
+  auto fn_valued = [&](Sym *t) {
+    if (!t) return false;
+    if (t == sym_void) return true;
+    if (is_fn_sym(t)) return true;
+    if (t->type_kind == Type_SUM && t->has.n) {
+      for (Sym *x : t->has)
+        if (!is_fn_sym(x)) return false;
+      return true;
+    }
+    return false;
+  };
+  // One verdict per (class, slot), applied to EVERY clone -- the type
+  // test included. Testing the type per clone is what left the last
+  // divergence: `v` is int64 in the clones that saw the write and void
+  // in the others, so a per-clone type filter elided it in some and not
+  // others, which is the very layout split being fixed.
+  //
+  // A slot qualifies when no clone reads it AND some clone has it
+  // function-typed or bottom. Bottom in SOME clone but not others is
+  // the phantom's own signature: a field the class really declares is
+  // observed in every contour, whereas one promoted onto it by a union
+  // receiver is not.
+  // Elidable for ONE class, ignoring the union constraint.
+  auto elidable_bare = [&](Sym *csym, int i) {
+    bool any_voidish = false;
+    for (CreationSet *o : fa->css) {
+      if (!o || o->sym != csym || !o->type || i >= o->type->has.n) continue;
+      Sym *m = o->type->has[i];
+      if (!m || !m->type) continue;
+      if (fn_valued(m->type)) any_voidish = true;
+      for (int k = 0; k < cg_slot_use_cls.n; k++)
+        if (cg_slot_use_cls.v[k] == o->type && cg_slot_use_idx.v[k] == i && cg_slot_use_rd.v[k]) return false;
+    }
+    return any_voidish;
+  };
+  // A blind cast requires the classes it spans to AGREE on which slots
+  // exist. That relation is exactly the union receiver: resolving a
+  // Type_SUM to one member casts from every other member to it, so all
+  // record members of any such receiver must reach the same verdict at
+  // a given index. Without this, `Basic_block` was elided at e0 and
+  // `Union_find_node` was not, and the contract check reported the
+  // width mismatch (tests/list_index_type_mismatch_salvage).
+  // NOTE: a union-receiver group constraint was tried here twice (one
+  // group at a time, then merged into connected components) and made
+  // things WORSE both times -- 302/7 against 308/1 -- while introducing
+  // fresh generator/exception failures, because building the components
+  // mixes plib's set-mode and vector-mode Vec. Left out; the single
+  // remaining failure is root-caused below instead.
+  // The cross-class group constraint is NOT applied. Three attempts --
+  // per group, merged into connected components, and with plain vector
+  // ops after suspecting plib's set/vector duality -- all made things
+  // WORSE than none (302/7, 302/7, 300/9 against 308/1), which is not
+  // what a purely restrictive rule can do and means the constraint is
+  // not modelling the real relation. Recorded in ifa/issues/123; the
+  // one remaining failure is root-caused there rather than papered over.
+  // Classes reached through one union receiver must agree on which slots
+  // exist, or eliding on one and not another splits their layouts --
+  // richards: "'HandlerTaskRec' is blind-cast to 'IdleTaskRec' ... member
+  // width differs at e13". The grouping comes from clone.cc's
+  // collect_prefix_groups, the analysis that already computes exactly
+  // this relation; three attempts at rebuilding it here from receivers
+  // were all wrong (302/7, 302/7, 300/9 against 308/1).
+  auto elidable_for_class = [&](Sym *csym, int i) {
+    if (!elidable_bare(csym, i)) return false;
+    for (Vec<Sym *> *g : ifa_prefix_groups) {
+      if (!g) continue;
+      bool member = false;
+      for (Sym *x : *g) if (x == csym) { member = true; break; }
+      if (!member) continue;
+      for (Sym *o : *g)
+        if (o && o != csym && !elidable_bare(o, i)) return false;
+    }
+    return true;
+  };
+  // DECIDE, then APPLY. Nulling `m->type` while still deciding makes a
+  // class's verdict depend on whether its group-mates were processed
+  // first: `elidable_bare` reads `m->type`, so a group-mate already
+  // nulled reads as not-elidable and the constraint answers differently
+  // depending on iteration order. That is how `Exception` kept e0 while
+  // `StopIteration` -- same prefix group, same slot -- lost it
+  // ("member width differs at e0, _CG_void vs <placeholder>"). Collect
+  // every (member Sym) to null first, mutate nothing until the whole
+  // decision is made.
+  Vec<Sym *> to_null;
+  Vec<Sym *> to_null_owner;  // parallel: the class each member belongs to
+  long elided = 0;
+  Vec<Sym *> seen;
+  for (CreationSet *cs : fa->css) {
+    if (!cs || !cs->type || !seen.set_add(cs->type)) continue;
+    Sym *t = cs->type;
+    // A CLOSURE is not a vtable user. Its slots are read positionally by
+    // `write_c_apply_arg` (`->e0` chains and `->e1`) and written by the
+    // `P_prim_period`-creates-a-closure path -- neither goes through the
+    // getter or the classtag dispatch, so this analysis cannot see them
+    // and would elide the closure's own function slot. Measured: doing
+    // so breaks all seven closure tests. Excluded structurally on
+    // type_kind, not by name.
+    // Only USER RECORDS. A builtin container (`list`, `dict`, `set`,
+    // `str` -- Type_PRIMITIVE) has a layout the C RUNTIME knows
+    // independently: `pyc_c_runtime.h`'s `_CG_list_ptr` and friends index
+    // the structure directly, so removing a member corrupts the heap
+    // rather than merely shrinking a struct. Bisecting kanoodle
+    // per class landed exactly there -- classes 0-163 (all Type_RECORD)
+    // elide cleanly and the 164th, `list`, is the one that segfaults.
+    // A closure (Type_FUN) is excluded for the separate reason that
+    // `write_c_apply_arg` reads its slots positionally.
+    // Exclude only the types whose layout the C RUNTIME knows
+    // independently: `pyc_c_runtime.h`'s `_CG_list_ptr` and friends index
+    // a list's structure directly, so removing a member there corrupts
+    // the heap rather than shrinking a struct. Bisecting kanoodle per
+    // class landed on exactly `list`.
+    //
+    // NOT "records only": eliding the other non-record classes turns out
+    // to be NECESSARY, not merely harmless. Excluding all 109 of them
+    // (leaving 56 records) crashes, while excluding `list` alone -- 164
+    // of 165 classes elided -- runs. Partial elision leaves layouts
+    // mutually inconsistent, so the safe configurations are "everything
+    // except what the runtime indexes", not "only what looks like a user
+    // class".
+    if (cs->sym == sym_list || cs->sym->is_vector || sym_list->specializers.set_in(cs->sym)) continue;
+    if (t->type_kind == Type_FUN) continue;
+    // PYC_ELIDE_SLOTS=2 (experiment): skip any class that participates
+    // in a union receiver at all. Eliding shrinks a struct, and a blind
+    // cast to a LARGER sibling then writes past the allocation -- the
+    // layout contract only validates slots that are READ, so a write
+    // through the cast is uncovered. Tests whether that is what corrupts
+    // the GC free list on kanoodle and richards.
+    if (elide_slots_enabled() == 2) {
+      bool grouped = false;
+      for (Vec<Sym *> *g : ifa_prefix_groups) {
+        if (!g) continue;
+        for (Sym *x : *g) if (x == cs->sym) { grouped = true; break; }
+        if (grouped) break;
+      }
+      if (grouped) continue;
+    }
+    for (int i = 0; i < t->has.n; i++) {
+      Sym *m = t->has[i];
+      if (!m || !m->type) continue;
+      // Structural, not by name: only a member whose inferred TYPE is a
+      // function (a populated dispatch slot) or `void` (a slot the
+      // registry declared and never stored into) is a candidate. A data
+      // field has a concrete data type and is excluded by that alone --
+      // no need to ask the unanswerable "is this name a method", which
+      // counted data fields whose name coincided with a function.
+      //
+      // "Neither read nor written" was tried instead, to drop the
+      // method/data question entirely, and is too aggressive: 50 of 327
+      // tests fail, because the WRITE side has paths not modelled here
+      // (closure construction, the tuple-list stores, destruct_prim).
+      bool read = !elidable_for_class(cs->sym, i);
+      if (read) continue;
+      to_null.add(m);  // applied below, after every verdict is decided
+      to_null_owner.add(cs->sym);
+      elided++;
+    }
+  }
+  if (getenv("IFA_DBG_STRUCT")) {
+    Vec<Sym *> seen2;
+    for (CreationSet *cs : fa->css) {
+      if (!cs || !cs->type || !cs->sym || !seen2.set_add(cs->type)) continue;
+      if (!cs->sym->name || strcmp(cs->sym->name, getenv("IFA_DBG_STRUCT"))) continue;
+      fprintf(stderr, "[struct] --- clone of %s (cs#%d) ---\n", cs->sym->name, cs->id);
+      for (int i = 12; i < cs->type->has.n && i < 20; i++) {
+        Sym *cl = cs->type->has[i];
+        Sym *orig = (i < cs->sym->has.n) ? cs->sym->has[i] : nullptr;
+        fprintf(stderr, "[struct] e%-2d %-16s clone(is_fun=%d fun=%d in=%s) orig(is_fun=%d fun=%d)\n", i,
+                cl && cl->name ? cl->name : "?", cl ? cl->is_fun : -1, cl && cl->fun ? 1 : 0,
+                cl && cl->in && cl->in->name ? cl->in->name : "-", orig ? orig->is_fun : -1,
+                orig && orig->fun ? 1 : 0);
+      }
+    }
+  }
+  // PYC_ELIDE_LIMIT=N: apply only the first N elisions, to bisect which
+  // one introduces a runtime fault.
+  // Bisect PER CLASS, all-or-nothing. Cutting the flat member list at N
+  // leaves classes half-elided, and the layout contract then fails the
+  // COMPILE (rc=127, no binary) -- which made a by-count bisect useless:
+  // limit=800 ran, 900 and 1000 failed to build, and the full 1063
+  // compiled and then segfaulted.
+  int limit = getenv("PYC_ELIDE_LIMIT") ? atoi(getenv("PYC_ELIDE_LIMIT")) : -1;
+  Vec<Sym *> owners;
+  for (Sym *o : to_null_owner) {
+    bool dup = false;
+    for (Sym *x : owners) if (x == o) { dup = true; break; }
+    if (!dup) owners.add(o);
+  }
+  int applied = 0;
+  for (int k = 0; k < to_null.n; k++) {
+    if (limit >= 0) {
+      int oi = -1;
+      for (int j = 0; j < owners.n; j++) if (owners.v[j] == to_null_owner.v[k]) { oi = j; break; }
+      if (oi >= limit) continue;
+    }
+    if (to_null.v[k]) { to_null.v[k]->type = nullptr; applied++; }
+  }
+  if (getenv("IFA_DBG_SLOTUSE"))
+    {
+      fprintf(stderr, "[slotuse] classes=%d applied=%d of %d\n", owners.n, applied, to_null.n);
+      if (getenv("IFA_DBG_OWNER")) {
+        int want = atoi(getenv("IFA_DBG_OWNER"));
+        for (int j = 0; j < owners.n; j++)
+          if (j >= want) {
+            int cnt = 0;
+            for (int k = 0; k < to_null_owner.n; k++) if (to_null_owner.v[k] == owners.v[j]) cnt++;
+            fprintf(stderr, "[owner] %d: %s (kind=%d, %d slots)\n", j,
+                    owners.v[j] && owners.v[j]->name ? owners.v[j]->name : "?",
+                    owners.v[j] ? (int)owners.v[j]->type_kind : -1, cnt);
+          }
+      }
+    }
+  if (getenv("IFA_DBG_SLOTUSE")) fprintf(stderr, "[slotuse] ELIDED %ld slots (neither read nor written)\n", elided);
+  cg_slot_use_cls.clear();
+  cg_slot_use_idx.clear();
+  cg_slot_use_rd.clear();
+}
+
+

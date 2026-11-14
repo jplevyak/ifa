@@ -12,6 +12,7 @@
 #include "ast.h"
 #include "builtin.h"
 #include "clone.h"
+#include "repr.h"
 #include "dead.h"
 #include "fail.h"
 #include "fun.h"
@@ -2572,13 +2573,11 @@ static bool nil_member_is_representable(AVar *arg, AType *diff, AType *legal) {
   // the nil" -- which is true exactly when no num_kind scalar is present
   // (issue 060). It is the same rule, but stated so it does not depend on
   // whether `->type` carries nil (ifa/178's keep-nil experiment does).
+  // {None, scalar} stays an error (issue 060), and so does a pure `None`.
+  if (!atype_repr(t).nullable_pointer()) return false;
   Vec<CreationSet *> pointee;
-  for (CreationSet *c : t->sorted) if (c && c->sym) {
-    if (c->sym->type == sym_nil_type) continue;
-    if (c->sym->type && c->sym->type->num_kind) return false;  // {None, scalar}: 060, stays an error
-    pointee.add(c);
-  }
-  if (!pointee.n) return false;  // a pure `None` argument is still an error
+  for (CreationSet *c : t->sorted)
+    if (c && c->sym && c->sym->type != sym_nil_type) pointee.add(c);
   return type_diff(make_AType(pointee), legal) == fa->type_world.bottom_type;  // ... and the pointee is legal
 }
 
@@ -4161,14 +4160,9 @@ static void collect_member_violations() {
   }
 }
 
-bool mixed_basics(AVar *av) {
-  Vec<Sym *> basics;
-  for (CreationSet *cs : *av->out) if (cs) {
-    Sym *b = to_basic_type(cs->sym->type);
-    if (b) basics.set_add(b);
-  }
-  return basics.n > 1;
-}
+// ifa/201: these three are views of one census, `atype_repr` (repr.h), which
+// is the only place that decides what a union's members are.
+bool mixed_basics(AVar *av) { return atype_repr(av->out).mixed_basics(); }
 
 // ifa/188: a numeric scalar in one union with a pointer-shaped value (an
 // instance, a bound method, a list) has no representation either. Codegen
@@ -4179,31 +4173,8 @@ bool mixed_basics(AVar *av) {
 // pointer-shaped here -- {None, scalar} has its own rule (issues/048), since a
 // null test separates it except at a dispatch.
 //
-// The void and nil values are named differently by each frontend: pyc types
-// `sym_void` as `sym_void_type`, while the V prelude's `void : 0` makes
-// `sym_void` its own type, and its value's CreationSet then carries
-// `sym_void->meta_type`. Any of those is the unit, not a pointer. The meta
-// type counts only for a self-typed value: pyc's `sym_nil->meta_type` is
-// `type(None)`, a real object.
-static bool is_unit_value_sym(Sym *s) {
-  if (s == sym_nil_type || s == sym_void_type) return true;
-  for (Sym *u : {sym_void, sym_nil})
-    if (u && (s == u || s == u->type || (u->type == u && s == u->meta_type))) return true;
-  return false;
-}
-
-bool scalar_with_pointer(AType *t) {
-  bool scalar = false, pointer = false;
-  for (CreationSet *cs : *t) {
-    if (!cs || !cs->sym || !cs->sym->type) continue;
-    Sym *ty = cs->sym->type;
-    if (is_unit_value_sym(cs->sym) || is_unit_value_sym(ty)) continue;
-    Sym *b = to_basic_type(ty);
-    if (b) scalar |= b->num_kind != 0;
-    else pointer = true;
-  }
-  return scalar && pointer;
-}
+// What counts as None here is `repr_is_unit`.
+bool scalar_with_pointer(AType *t) { return atype_repr(t).scalar_with_pointer(); }
 
 static bool is_only_used_by_phy_or_phi(Var *v) {
   if (!v) return false;
@@ -4751,21 +4722,7 @@ static int conflevel_probe() {
 // The level question, over a CONVERGED AType. Same shape as
 // `elem_irrepresentable`, which asks it of a container's element channel;
 // this asks it of any AVar.
-bool atype_irrepresentable(AType *t) {
-  if (!t) return false;
-  Vec<Sym *> basics;
-  int nonbasics = 0;
-  for (CreationSet *c : t->sorted) {
-    if (!c || !c->sym || c->sym == sym_nil_type) continue;
-    if (Sym *b = to_basic_type(c->sym->type))
-      basics.set_add(b);
-    else
-      ++nonbasics;
-  }
-  const int nb = basics.set_count();
-  if (nb >= 1 && nonbasics > 0) return true;  // scalar + object: no representation
-  return nb > 1;
-}
+bool atype_irrepresentable(AType *t) { return atype_repr(t).irrepresentable(); }
 
 // ifa/157 probe (IFA_DBG_SEED): where is a mixed-basic union CREATED?
 //
@@ -8757,21 +8714,9 @@ bool classes_are_related(Vec<Sym *> &classes) {
 
 static bool elem_irrepresentable(AVar *elem) {
   if (!elem || !elem->out) return false;
-  Vec<Sym *> basics;
-  int nonbasics = 0, all_num = 1;
-  for (CreationSet *e : *elem->out) {
-    if (!e || !e->sym || e->sym == sym_nil_type) continue;
-    if (Sym *b = to_basic_type(e->sym->type)) {
-      basics.set_add(b);
-      if (!b->num_kind) all_num = 0;
-    } else
-      ++nonbasics;
-  }
-  const int nb = basics.set_count();
   // A {container-or-class, scalar} union: pyc does not box, so it has no
   // representation (issues/018, and the message
   // `cg_fail_unrepresentable_container_union` emits downstream).
-  if (nb >= 1 && nonbasics > 0) return true;
   // Two distinct non-numeric basics, e.g. {int64, str}.
   //
   // ifa/156, author's directive 2026-09-15: SPLIT int FROM float WHERE
@@ -8785,7 +8730,7 @@ static bool elem_irrepresentable(AVar *elem) {
   // targets are ENTRYSET-contoured locals and formals (fysphun 283 ES / 15
   // CS, softrender 513 ES / 15 CS) and this predicate only ever sees
   // CreationSets. See ifa/156 for what the directive actually needs.
-  return nb > 1 && !all_num;
+  return atype_repr(elem->out).element_irrepresentable();
 }
 
 

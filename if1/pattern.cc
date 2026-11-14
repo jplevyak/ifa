@@ -1,3 +1,4 @@
+#include <string>
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
@@ -168,6 +169,7 @@ class Matcher {
   Partial_kind partial;
   PMatchMap match_map;
   Vec<Fun *> function_values;  // functions passed in directly and varargs functions
+  Vec<cchar *> *top_names = nullptr;  // the top-level actuals' keyword names
   Map<MPosition *, int> mapped_positions;
   MapMPositionAType all_args;
   bool uses_dispatch_arity = false;  // ifa/185: some candidate formal had an arity constraint
@@ -217,12 +219,15 @@ static ChainHash<MPosition *, MPositionHashFuns> cannonical_mposition;
 // ROADMAP 6.1: every `*args` Fun, collected in build_arg_positions.
 static Vec<Fun *> varargs_funs;
 static Map<Sym *, Map<MPosition *, Vec<Fun *> *> *> sym_match_cache;
+// Per function, its signature wrappers by call shape ("npositional|kw|kw").
+static Map<Fun *, Map<cchar *, Fun *> *> signature_cache;
 
 // Reset pattern.cc module-level state. Called by ifa_reset().
 void pattern_reset() {
   cannonical_mposition.clear();
   varargs_funs.clear();
   sym_match_cache.clear();
+  signature_cache.clear();
   vk_clear();
   pattern_match_hits = 0;
   pattern_match_complete = 0;
@@ -628,6 +633,10 @@ void Matcher::build_positional_map(MPosition &app, int nactuals, Vec<Fun *> **fu
           MPosition *fcnp = cannonicalize_mposition(fnp);
           MPosition *acpp = m->actual_named_to_positional.get(acnp);
           MPosition *fcpp = f->named_to_positional.get(fcnp);
+          // A keyword no formal has, in a call of a `**kw` function: it
+          // takes a place among the positionals, and the signature wrapper
+          // binds it.
+          if (!fcpp && f->kw_pos) continue;
           acpps_for_acnps.set_add(acpp);
           fcpps_for_fcnps.set_add(fcpp);
           m->actual_to_formal_position.put(acpp, fcpp);
@@ -707,8 +716,16 @@ void Matcher::find_all_matches(CreationSet *cs, Vec<AVar *> &args, Vec<cchar *> 
 
 static int subsumes_arg(PMatch *x, PMatch *y, MPosition *acpp, CreationSet *cs, int *identical) {
   MPosition *xp = to_formal(acpp, x), *yp = to_formal(acpp, y);
-  Sym *xtype = dispatch_type(x->fun->arg_syms.get(xp));
-  Sym *ytype = dispatch_type(y->fun->arg_syms.get(yp));
+  // A surplus actual of a varargs candidate has no formal, so it gives no
+  // preference: two overrides that both take `*args` are told apart by the
+  // formals they do have (the receiver).
+  Sym *xformal = x->fun->arg_syms.get(xp), *yformal = y->fun->arg_syms.get(yp);
+  if (!xformal || !yformal) {
+    if (xformal || yformal) *identical = 0;
+    return 0;
+  }
+  Sym *xtype = dispatch_type(xformal);
+  Sym *ytype = dispatch_type(yformal);
   Sym *atype = cs->sym;
   if (xtype != ytype) *identical = 0;
 
@@ -995,6 +1012,8 @@ static void fixup_maps_for_defaults(PMatch *m, Fun *oldf, Vec<MPosition *> &defa
   fixup_maps(m, formal_to_formal);
 }
 
+static bool is_rest_actual(AVar *a) { return a && a->var && a->var->sym && a->var->sym->is_rest; }
+
 Fun *Matcher::build(PMatch *m, Vec<Fun *> &done_matches) {
   Fun *f = m->fun, *fnew;
   if (m->generic_substitutions.n) {
@@ -1010,31 +1029,50 @@ Fun *Matcher::build(PMatch *m, Vec<Fun *> &done_matches) {
     m->generic_substitutions.clear();
     m = build_PMatch(f, m);
   }
-  // ROADMAP 6.1: a `*args` function. Route the call through a wrapper that
-  // packs the surplus positionals into a tuple, unless this IS the
-  // wrapper's own call (its rest-position actual is the wrapper's tuple,
-  // marked Sym::is_rest). Keyword actuals with *args are not supported.
-  if (f->is_varargs && f->sym->has.n) {
-    int nrest = f->sym->has.n, nactuals = 0;
-    bool named = false;
-    AVar *at_rest = nullptr;
+  // ROADMAP 6.1, issues/182: a function with `*args` or `**kw`. Route the
+  // call through a wrapper for its shape -- how many positionals, which
+  // keywords -- unless this IS the wrapper's own call: one positional
+  // actual per formal, the rest and keyword-dict ones marked Sym::is_rest.
+  if (f->is_varargs) {
+    int nactuals = 0, nmarked = 0;
+    AVar *at_rest = nullptr, *at_kw = nullptr;
     form_MPositionAVar(x, m->actuals) {
       MPosition *p = x->key;
-      if (!p || p->pos.n != 1) continue;
-      if (!p->last_is_positional()) { named = true; continue; }
+      if (!p || p->pos.n != 1 || !p->last_is_positional()) continue;
       int i = (int)Position2int(p->pos[0]);
       if (i > nactuals) nactuals = i;
-      if (i == nrest) at_rest = x->value;
+      if (i == f->rest_pos) at_rest = x->value;
+      if (i == f->kw_pos) at_kw = x->value;
+      if (is_rest_actual(x->value)) nmarked++;
     }
-    bool direct = nactuals == nrest && at_rest && at_rest->var && at_rest->var->sym && at_rest->var->sym->is_rest;
-    if (!direct && !named && nactuals >= nrest - 1) {
-      static Map<Fun *, Map<int, Fun *> *> rest_cache;
-      Map<int, Fun *> *c = rest_cache.get(f);
-      if (!c) rest_cache.put(f, (c = new Map<int, Fun *>));
-      Fun *w = c->get(nactuals);
+    int npositional = 0;
+    Vec<cchar *> keywords;
+    std::string key;
+    for (int i = 0; i < nactuals; i++) {
+      cchar *name = top_names && i < top_names->n ? top_names->v[i] : nullptr;
+      if (name) {
+        keywords.add(name);
+        key += "|";
+        key += name;
+      } else if (keywords.n)
+        return 0;  // a positional after a keyword
+      else
+        npositional++;
+    }
+    bool direct = !keywords.n && nactuals == f->sym->has.n && (!f->rest_pos || is_rest_actual(at_rest)) &&
+                  (!f->kw_pos || is_rest_actual(at_kw));
+    // An already-packed actual (the caller's `*t` or `**d`) is the whole
+    // rest tuple or keyword dict: it binds nothing else, in no other call.
+    if (direct ? nmarked != (f->rest_pos ? 1 : 0) + (f->kw_pos ? 1 : 0) : nmarked != 0) return 0;
+    if (!direct) {
+      key = std::to_string(npositional) + key;
+      cchar *k = if1_cannonicalize_string(if1, key.c_str());
+      Map<cchar *, Fun *> *c = signature_cache.get(f);
+      if (!c) signature_cache.put(f, (c = new Map<cchar *, Fun *>));
+      Fun *w = c->get(k);
       if (!w) {
-        w = if1->callback->rest_wrapper(f, nactuals);
-        if (w) c->put(nactuals, w);
+        w = if1->callback->signature_wrapper(f, npositional, keywords);
+        if (w) c->put(k, w);
       }
       if (!w || done_matches.set_in(w)) return 0;
       done_matches.set_add(w);
@@ -1050,6 +1088,21 @@ Fun *Matcher::build(PMatch *m, Vec<Fun *> &done_matches) {
       }
       m->default_args.clear();
       f = w;
+    }
+  } else {
+    form_MPositionAVar(x, m->actuals)
+      if (x->key && x->key->pos.n == 1 && is_rest_actual(x->value)) return 0;
+  }
+  if (!f->is_varargs && f->kwonly_pos) {
+    // issues/182: a keyword-only formal takes no positional actual.
+    form_MPositionAVar(x, m->actuals) {
+      MPosition *acpp = x->key;
+      if (!acpp || acpp->pos.n != 1 || !acpp->last_is_positional()) continue;
+      int i = (int)Position2int(acpp->pos[0]) - 1;
+      if (top_names && i < top_names->n && top_names->v[i]) continue;
+      MPosition *fcpp = to_formal(acpp, m);
+      if (fcpp->pos.n == 1 && fcpp->last_is_positional() && (int)Position2int(fcpp->last()) >= f->kwonly_pos)
+        return 0;
     }
   }
   if (m->default_args.n) {
@@ -1162,7 +1215,10 @@ int Matcher::covers_formals(Fun *f, Vec<CreationSet *> &csargs, MPosition &p, in
   // show(self) was invoked on the spot and the later `c.show("b", 1, 2)`
   // had no closure to apply. It also skipped the `x.y` -> closure rule
   // below.
-  int rest_pos = f->is_varargs ? f->sym->has.n : 0;
+  // issues/182: so is every formal from the first starred one on: a
+  // keyword-only formal and the `**kw` dict are bound by the signature
+  // wrapper, which is what refuses a call that leaves one unbound.
+  int star_pos = f->is_varargs ? f->star_pos() : 0;
   int result = 1;
   PMatch *m = match_map.get(f);
   Vec<MPosition *> formals;
@@ -1177,7 +1233,7 @@ int Matcher::covers_formals(Fun *f, Vec<CreationSet *> &csargs, MPosition &p, in
     MPosition *pp = f->arg_positions[i];
     if (pp->prefix_to_last(p) && pp->last_is_positional()) {
       if (formals.set_in(pp)) continue;
-      if (rest_pos && pp->pos.n == 1 && (int)Position2int(pp->last()) == rest_pos) continue;
+      if (star_pos && pp->pos.n == 1 && (int)Position2int(pp->last()) >= star_pos) continue;
       if (f->default_args.get(pp)) {
         m->default_args.add(pp);
         continue;
@@ -3124,6 +3180,7 @@ static int pattern_match_full_(Vec<AVar *> &args, Vec<cchar *> &names, AVar *sen
   bool vk_all_visible = !partial_matches;
   if (vk_mode() && partial_matches) vk_visible.copy(*partial_matches);
   MPosition app;
+  matcher.top_names = &names;
   matcher.find_all_matches(0, args, names, &partial_matches, app, 0);
   // issues/103: a candidate with no formal of a given actual's NAME is
   // not a match. Without this the named actual keeps its positional slot
@@ -3160,7 +3217,8 @@ static int pattern_match_full_(Vec<AVar *> &args, Vec<cchar *> &names, AVar *sen
     cchar *bad = nullptr;
     for (Fun *f : *partial_matches) if (f) {
       bool ok = true;
-      for (int i = 0; i < names.n; i++) {
+      // A `**kw` formal takes the keywords no formal is named for.
+      for (int i = 0; i < names.n && !f->kw_pos; i++) {
         if (!names[i]) continue;
         MPosition fnp;
         fnp.push(names[i]);

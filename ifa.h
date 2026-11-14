@@ -111,13 +111,17 @@ class IFACallbacks : public gc {
   virtual Sym *coerce(Sym *actual, Sym *formal) { return NULL; }
   virtual Fun *coercion_wrapper(Fun *, Map<MPosition *, Sym *> &substitutions) { return 0; }
   virtual Fun *default_wrapper(Fun *, Vec<MPosition *> &defaults) { return 0; }
-  // A call of a `*args` function (Fun::is_varargs, its last formal the rest
-  // parameter) with `nactuals` top-level positional actuals: a wrapper
-  // taking exactly those actuals that packs the surplus into a tuple (the
-  // tuple's sym marked Sym::is_rest) and calls the function with it. The
-  // matcher binds a call whose rest-position actual is such a tuple
-  // directly, so the wrapper's own call does not wrap again.
-  virtual Fun *rest_wrapper(Fun *, int nactuals) { return 0; }
+  // A call of a function with a rest formal (`*args`, Fun::rest_pos) or a
+  // keyword-dict formal (`**kw`, Fun::kw_pos), made with `npositional`
+  // top-level positional actuals (the callee is the first) followed by one
+  // keyword actual per name in `keywords`. Returns a wrapper taking exactly
+  // those actuals, in that order, which binds them as the language does --
+  // surplus positionals into a tuple, unmatched keywords into a dict,
+  // defaults for the rest -- and calls the function with one positional
+  // actual per formal. The tuple's and the dict's syms are marked
+  // Sym::is_rest: the matcher binds such a call directly, so the wrapper's
+  // own call does not wrap again. Returns 0 when the call does not bind.
+  virtual Fun *signature_wrapper(Fun *, int npositional, Vec<cchar *> &keywords) { return 0; }
   virtual Fun *instantiate_generic(Fun *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual bool reanalyze(Vec<ATypeViolation *> &type_violations) { return false; }
   // issues/128 step 2: take back frontend decisions that the CONVERGED

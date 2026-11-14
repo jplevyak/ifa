@@ -114,9 +114,10 @@ void llvm_codegen_initialize(FA *fa) {
 
 
 void llvm_build_type_strings(FA *fa) {
-#define S(_n) cg_set_string(if1_get_builtin(fa->pdb->if1, #_n), "_CG_" #_n);
-#include "builtin_symbols.h"
-#undef S
+  // ifa/201: the same members exist on both backends. Before the names,
+  // the slot map and any struct type, as in c_codegen_print_c.
+  cg_elide_unread_slots(fa);
+  cg_name_builtin_types(fa);
   // Annotate=false: LLVM IR identifiers can't carry comments. No
   // globals collection: the LLVM backend discovers globals separately
   // via createGlobalVariables. See codegen_common.{h,cc}.

@@ -78,10 +78,6 @@ static void write_c_fun_proto(FILE *fp, Fun *f, int type = 0) {
 
 static void write_c_type(FILE *fp, Var *v) { fprintf(fp, "%s", c_type(v)); }
 
-static inline bool scalar_ct(cchar *t) {
-  return t && (!strncmp(t, "_CG_int", 7) || !strncmp(t, "_CG_uint", 8) || !strncmp(t, "_CG_float", 9) ||
-               !strcmp(t, "_CG_bool"));
-}
 
 // ifa/issues/182: do two TYPES have different C representations, scalar
 // against pointer? The element/field guards below asked this with
@@ -89,10 +85,13 @@ static inline bool scalar_ct(cchar *t) {
 // is an int64 in C -- so storing an int into a `{None, int}` list element
 // tripped "list element type mismatch" (pisang). Ask about the emitted C
 // type instead, which is what the cast those guards protect actually sees.
-static inline bool cg_repr_mismatch(Sym *a, Sym *b) { return scalar_ct(c_type(a)) != scalar_ct(c_type(b)); }
+//
+// ifa/201: "the emitted C type" is the representation oracle's answer for
+// the type, not a parse of its C name.
+static inline bool cg_repr_mismatch(Sym *a, Sym *b) { return cg_value_repr(a).scalar() != cg_value_repr(b).scalar(); }
 
-// issues/048: a FLOATING-POINT C type. Narrower than scalar_ct on
-// purpose. An integer and a pointer round-trip through each other
+// issues/048: a FLOATING-POINT representation (CGRepr::is_float). Narrower
+// than scalar() on purpose. An integer and a pointer round-trip through each other
 // bit-for-bit -- `(void*)(int64)x` back to `(int64)(void*)y` is legal C
 // and preserves the value, which is exactly how a `{None, int}` field
 // works today (tests/polymorphic_list.py stores small int tags into a
@@ -100,7 +99,11 @@ static inline bool cg_repr_mismatch(Sym *a, Sym *b) { return scalar_ct(c_type(a)
 // `(void*)2.5` is not even legal C. So only the float/pointer crossing is
 // a representation failure at the store or load itself; the int/pointer
 // one only fails later, at a dispatch that has to tell 0 from None.
-static inline bool float_ct(cchar *t) { return t && !strncmp(t, "_CG_float", 9); }
+// Is a value of type `from` moved into a cell of type `to` across the
+// float/pointer line -- the crossing no C cast expresses?
+static inline bool cg_float_crossing(CGRepr to, CGRepr from) {
+  return to.is_float() != from.is_float() && (!to.scalar() || !from.scalar());
+}
 
 // ifa/issues/055: a container subscript must be integral in C. FA can
 // give an index formal a float type -- softrender's `src.components[
@@ -114,7 +117,7 @@ static inline bool float_ct(cchar *t) { return t && !strncmp(t, "_CG_float", 9);
 // Casting here is not a new policy -- it is the same coercion the call
 // boundary already performs, applied at the one place that reads the
 // index instead of the one that passes it.
-static inline cchar *index_cast(Var *idx) { return float_ct(c_type(idx)) ? "(_CG_int64)" : ""; }
+static inline cchar *index_cast(Var *idx) { return cg_repr(idx).is_float() ? "(_CG_int64)" : ""; }
 
 static int application_depth(PNode *n) {
   if (n->rvals[0]->type->fun)
@@ -181,72 +184,8 @@ static void cg_register_print_cgfns() {
 
 // num_string(Sym*) — moved to codegen_common.{h,cc}.
 
-// Issue 026: dead-field aware slot lookup.
-//
-// pyc's liveness analysis marks a field's Var dead if no
-// downstream code reads it.  The C struct codegen elides
-// dead fields entirely (no slot emitted).  For consistency
-// across struct emission, setter, getter, and other
-// field-access codegen, the slot index `N` in `obj->eN` is
-// derived from this helper: live fields get a sequential
-// 0-based index in their order within `s->has`; dead
-// fields return -1 so callers can elide the access
-// altogether.
-//
-// Without this, the struct definition and the field-access
-// codegen drift: the struct skips a dead field at has[k]
-// (numbering goes ... e(k-1); e(k+1) ...), while the
-// setter / getter emit `obj->eK` referencing the missing
-// slot.  Issue 026 documents the symptom.
-// Issue 028 Bug A — pick a non-nil component of a union
-// receiver for getter/setter codegen.
-//
-// pyc's `is None` narrowing in IFA only attaches a
-// type-predicate restrict to the SSU view of the
-// conditional's operand temp.  A fresh re-read of the
-// same property in the body (e.g. `self.min.next` after
-// `if self.min is None`) creates a NEW period SEND whose
-// receiver var has the full union type (None | Node).
-//
-// At codegen time, getter/setter resolved the field via
-// `obj = recv->type; if (obj->type_kind == Type_SUM)
-// obj = obj->has[0]` — i.e. blindly took the first union
-// component, which for typical orderings is `nil_type`.
-// `nil_type` has no fields; the result was a cast to
-// `_CG_nil_type` (a `void *` typedef) followed by
-// `->eN`, which fails to compile.
-//
-// Soundness: at runtime, the receiver's value in the
-// narrowed branch is non-None (the IF guarded it), so
-// emitting code assuming the non-None component is the
-// correct semantic.  Picking it here matches what
-// `assign_type_cg_strings_pass2` does at the SUM-sym
-// level for cg_string assignment (the 2-element
-// `None | T` shortcut).
-//
-// Strategy: search the union for a component whose
-// `has` list contains a field named `symbol`.  If none
-// found, fall back to the historical `obj->has[0]` so
-// the getter's "not a field" refusal still fires for
-// genuinely-unresolvable cases.
-static Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
-  if (!obj || obj->type_kind != Type_SUM) return obj;
-  if (symbol) {
-    for (Sym *component : obj->has) {
-      if (!component || component == sym_nil_type) continue;
-      for (Sym *field : component->has) {
-        if (field && field->name == symbol) return component;
-      }
-    }
-  }
-  if (obj->has.n > 0) {
-    for (Sym *component : obj->has) {
-      if (component && component != sym_nil_type) return component;
-    }
-    return obj->has[0];
-  }
-  return obj;
-}
+// resolve_union_receiver moved to codegen_common.{h,cc} (ifa/201: one copy
+// for both backends).
 
 // ifa/122 / ifa/200 A1: the blind-cast layout contract (cg_note_blind_cast,
 // cg_check_layout_contract) lives in codegen_common.cc, shared with the
@@ -300,15 +239,6 @@ static void cg_emit_record_index_base(FILE *fp, Sym *t, cchar *rec) {
     fprintf(fp, ")(%s))", rec);
 }
 
-static bool cg_ptrish_ct(cchar *t) {
-  if (!t) return false;
-  if (strchr(t, '*')) return true;
-  if (!strncmp(t, "_CG_ps", 6) || !strncmp(t, "_CG_pf", 6)) return true;
-  return !strcmp(t, "_CG_any") || !strcmp(t, "_CG_void") || !strcmp(t, "_CG_nil_type") ||
-         !strcmp(t, "_CG_list") || !strcmp(t, "_CG_string") || !strcmp(t, "_CG_bytes") ||
-         !strcmp(t, "_CG_function") || !strcmp(t, "_CG_tuple") || !strcmp(t, "_CG_vector");
-}
-
 // ifa/153: a list literal's element store needs the same cast the RECORD path
 // above and the field-store path below already emit. `MakeConeFace`'s
 // `[None, None]`, later filled with Edges, has element type `_CG_ps16972`
@@ -316,11 +246,11 @@ static bool cg_ptrish_ct(cchar *t) {
 // `((_CG_ps16972*)(_CG_list_ptr(t)))[0] = g1`. This went unnoticed while the
 // element type was `_CG_void` for unrelated reasons -- see
 // `csclasseq_enabled` in clone.cc.
-static bool cg_needs_elem_cast(cchar *dst_t, Var *src) {
+static bool cg_needs_elem_cast(Sym *dst_type, cchar *dst_t, Var *src) {
   if (!dst_t || !src) return false;
   cchar *src_t = c_type(src);
-  if (!src_t || !strcmp(dst_t, src_t)) return false;
-  return cg_ptrish_ct(dst_t) && cg_ptrish_ct(src_t);
+  if (!src_t || !strcmp(dst_t, src_t)) return false;  // one spelling: nothing to write
+  return cg_repr(dst_type).pointer_like() && cg_repr(src).pointer_like();
 }
 
 // ifa/126 (PYC_CLASSEQ=2) merges two contours whose formals hold
@@ -345,12 +275,10 @@ static bool cg_needs_sibling_record_cast(Var *formal, Var *src) {
   return true;
 }
 
-static bool cg_needs_nil_union_cast(cchar *dst_t, Var *src) {
+static bool cg_needs_nil_union_cast(Sym *dst_type, cchar *dst_t, Var *src) {
   if (!dst_t || !src || !cg_is_nil_union(src->type)) return false;
-  bool dst_voidish =
-      !strcmp(dst_t, "_CG_any") || !strcmp(dst_t, "_CG_void") || !strcmp(dst_t, "_CG_nil_type");
   cchar *src_t = c_type(src);
-  return dst_voidish && src_t && strcmp(dst_t, src_t);
+  return cg_voidish(dst_type) && src_t && strcmp(dst_t, src_t);
 }
 
 // cg_has_classtag / cg_field_live moved to codegen_common.{h,cc}
@@ -448,31 +376,6 @@ static int resolve_uniform_size(Sym *t) {
   return common;
 }
 
-// ifa/issues/123: record every (class, slot) codegen actually EMITS an
-// access for. This is the ground truth the name-based analysis was
-// proxying: a call the precise call graph resolved to one target is
-// emitted as a DIRECT call and touches no slot at all, so counting
-// every `x.f()` as a slot read (which matching on P_prim_period
-// selectors does) massively overstates what is needed.
-// Reads and writes tracked separately: a slot only has to EXIST if
-// something reads it. The polymorphic-slot store writes a vtable entry
-// whether or not any dispatch ever goes through it, so counting a write
-// as "used" makes every stored slot justify itself.
-Vec<Sym *> cg_slot_use_cls;
-Vec<int> cg_slot_use_idx;
-Vec<int> cg_slot_use_rd;
-void cg_note_slot_use(Sym *t, int i, int is_read) {
-  if (!t || i < 0) return;
-  for (int k = 0; k < cg_slot_use_cls.n; k++)
-    if (cg_slot_use_cls.v[k] == t && cg_slot_use_idx.v[k] == i) {
-      if (is_read) cg_slot_use_rd.v[k] = 1;
-      return;
-    }
-  cg_slot_use_cls.add(t);
-  cg_slot_use_idx.add(i);
-  cg_slot_use_rd.add(is_read);
-}
-
 static void destruct_prim(FILE *fp, Var *l, Var *r) {
   int is_tuple = sym_tuple->specializers.set_in(l->sym) != 0;
   for (int i = 0; i < l->sym->has.n; i++) {
@@ -521,10 +424,6 @@ static void destruct_prim(FILE *fp, Var *l, Var *r) {
 // -------------------------------------------------------------
 
 static int cg_imprecise_count = 0;
-
-bool cg_type_is_untyped(cchar *t) {
-  return t && (!strcmp(t, "_CG_void") || !strcmp(t, "_CG_any") || !strcmp(t, "_CG_void_type"));
-}
 
 static void cg_note_imprecise(PNode *n, cchar *what, cchar *detail) {
   cg_imprecise_count++;
@@ -575,17 +474,17 @@ void cg_scan_imprecise(FA *fa) {
       // The list route only. A true tuple (Type_RECORD) stores its
       // elements as separate `->eN` fields and has no single element
       // type, so "untyped element" is not a signal there -- this
-      // mirrors the Ltuple/Llist split in write_c_prim's P_prim_make.
+      // mirrors the Ltuple/Llist split in c_prim_make's P_prim_make.
       Sym *lt = n->lvals.v[0]->type;
       if (!lt || !lt->element || lt->type_kind == Type_RECORD) continue;
-      cchar *ety = c_type(lt->element->type);
-      if (cg_type_is_untyped(ety)) cg_note_imprecise(n, "a list's element type", ety);
+      if (cg_value_repr(lt->element->type).untyped())
+        cg_note_imprecise(n, "a list's element type", c_type(lt->element->type));
     }
     for (MPosition *mp : fn->positional_arg_positions) {
       Var *av = fn->args.get(mp);
       if (!av || !av->live || !av->type) continue;
       if (av->sym && av->sym->is_symbol) continue;  // the method-name selector, never a value
-      if (cg_type_is_untyped(c_type(av)))
+      if (cg_repr(av).untyped())
         cg_note_imprecise(fn->entry, "a function parameter", fn->sym && fn->sym->name ? fn->sym->name : "?");
     }
   }
@@ -610,8 +509,8 @@ static void warn_no_representation_ct(PNode *n, cchar *kind, cchar *name, cchar 
              n->code->ast, what, val ? val : "?", dest ? dest : "?");
 }
 
-static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
-  int o = (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+// The `make` hook (`make`, `make_seq`: a tuple or list display). (ifa/issues/200 D2)
+static int c_prim_make(FILE *fp, FA *fa, Fun *f, PNode *n) {
   switch (n->prim->index) {
     default:
       return 0;
@@ -693,7 +592,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         // indirection on `void *`. Same remedy as the element-side case
         // below it: size with `int*`, cast the result to the
         // destination.
-        bool t_voidish = t && (!strcmp(t, "_CG_void") || !strcmp(t, "_CG_any") || !strcmp(t, "_CG_nil_type"));
+        bool t_voidish = cg_voidish(n->lvals[0]->type);
         if (voidish || t_voidish)
           fprintf(fp, "%s = (%s)_CG_prim_tuple_list(int*, %d);\n", cg_get_string(n->lvals[0]), t, n->rvals.n - 3);
         else
@@ -721,7 +620,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
           if (rec_fields && !cg_field_live(rec, i - 3)) continue;
           cg_note_slot_use(rec, i - 3, 0);
           cchar *mt = rec_fields ? cg_member_ctype(rec, i - 3) : nullptr;
-          if (cg_needs_nil_union_cast(mt, n->rvals.v[i]))
+          if (cg_needs_nil_union_cast(rec_fields ? rec->has[i - 3]->type : nullptr, mt, n->rvals.v[i]))
             fprintf(fp, "  %s->e%d = (%s)%s;\n", cg_get_string(n->lvals[0]), i - 3, mt,
                     cg_get_string(n->rvals.v[i]));
           else
@@ -748,7 +647,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         (void)lt;
         for (int i = 3; i < n->rvals.n; i++) {
           fprintf(fp, "  ((%s*)(_CG_list_ptr(%s)))[%d] = ", ety, cg_get_string(n->lvals[0]), i - 3);
-          if (cg_needs_elem_cast(ety, n->rvals.v[i])) fprintf(fp, "(%s)", ety);
+          if (cg_needs_elem_cast(le ? le->type : nullptr, ety, n->rvals.v[i])) fprintf(fp, "(%s)", ety);
           fputs(cg_get_string(n->rvals[i]), fp);
           fprintf(fp, ";\n");
         }
@@ -758,6 +657,15 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       break;
     }
+  }
+  return 1;
+}
+
+// The `period` hook (an attribute read). (ifa/issues/200 D2)
+static int c_prim_period(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  switch (n->prim->index) {
+    default:
+      return 0;
     case P_prim_period: {
       cchar *t = c_type(n->lvals[0]);
       cchar *symbol = 0;
@@ -800,7 +708,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         cchar *rv = cg_get_string(n->rvals[1]);
         for (int k = 0; k < arms.n; k++) {
           cchar *fct = c_type(arms[k]->has[arm_slots[k]]);
-          if (float_ct(t) != float_ct(fct) && (!scalar_ct(t) || !scalar_ct(fct))) {
+          if (cg_float_crossing(cg_repr(n->lvals[0]), cg_value_repr(arms[k]->has[arm_slots[k]]))) {
             warn_no_representation_ct(n, "field", symbol, t, fct);
             codegen_fail(n, "field type mismatch reading a '%s' field into a '%s' (ifa/102)", fct, t);
           }
@@ -846,7 +754,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             // narrowed destination the cast targets, which is exactly
             // where the illegality is.
             cchar *fct = c_type(obj->has[i]);
-            if (float_ct(t) != float_ct(fct) && (!scalar_ct(t) || !scalar_ct(fct))) {
+            if (cg_float_crossing(cg_repr(n->lvals[0]), cg_value_repr(obj->has[i]))) {
               warn_no_representation_ct(n, "field", symbol, t, fct);
               codegen_fail(n, "field type mismatch reading a '%s' field into a '%s' (ifa/102)", fct, t);
             } else
@@ -874,6 +782,15 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       break;
     }
+  }
+  return 1;
+}
+
+// The `setter` hook (an attribute write). (ifa/issues/200 D2)
+static int c_prim_setter(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  switch (n->prim->index) {
+    default:
+      return 0;
     case P_prim_setter: {
       cchar *symbol = n->rvals[3]->sym->is_symbol ? n->rvals[3]->sym->name : 0;
       if (!symbol) {
@@ -902,7 +819,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
             // pointer is legal) and aborted later at dispatch instead;
             // both now fail here, in one place, with a message.
             cchar *fct = c_type(obj->has[i]), *vct = c_type(n->rvals.v[4]);
-            if (float_ct(fct) != float_ct(vct) && (!scalar_ct(fct) || !scalar_ct(vct))) {
+            if (cg_float_crossing(cg_value_repr(obj->has[i]), cg_repr(n->rvals.v[4]))) {
               warn_no_representation_ct(n, "field", obj->has[i]->name, fct, vct);
               codegen_fail(n, "field type mismatch storing a '%s' into a '%s' field (ifa/102)", vct, fct);
             } else
@@ -929,33 +846,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
     Lsetter_found:
       break;
     }
-    case P_prim_apply: {
-      assert(!"unimplemented");
-      fputs("  ", fp);
-      int incomplete = 0;  // n->lvals.n && n->lvals[0]->type->var &&
-                           // n->lvals.v[0]->type->var->def == n;
-      if (incomplete) {
-        fprintf(fp, "Fmake_apply(%s, ", cg_get_string(n->lvals[0]));
-        write_c_type(fp, n->lvals[0]);
-        fprintf(fp, ", %s, %s);\n", cg_get_string(n->rvals[0]), cg_get_string(n->rvals.v[2]));
-      } else {
-        if (n->lvals.n) {
-          assert(n->lvals.n == 1);
-          fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
-        }
-        int depth = application_depth(n);
-        write_c_apply_arg(fp, cg_get_string(n->rvals[0]), depth, 0);
-        fputs("((T__symbol) 0", fp);
-        for (int i = 1; i < depth; i++) {
-          fputs(", ", fp);
-          write_c_apply_arg(fp, cg_get_string(n->rvals[0]), depth, i);
-        }
-        fputs(", ", fp);
-        fputs(cg_get_string(n->rvals[2]), fp);
-        fputs(");\n", fp);
-      }
-      break;
-    }
+  }
+  return 1;
+}
+
+// The `index_load` hook (`index_object`). (ifa/issues/200 D2)
+static int c_prim_index_load(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  int o = (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+  switch (n->prim->index) {
+    default:
+      return 0;
     case P_prim_index_object: {
       fputs("  ", fp);
       assert(n->lvals.n == 1);
@@ -968,7 +868,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         bool single_idx = n->rvals.n - (o + 1) == 1;
         bool index_mismatch = false;
         for (int i = o + 1; i < n->rvals.n; i++) {
-          if (!scalar_ct(c_type(n->rvals[i]))) { index_mismatch = true; break; }
+          if (!cg_repr(n->rvals[i]).scalar()) { index_mismatch = true; break; }
         }
         // NOTE (issue 035, read side): this branch deliberately gets NO
         // element-vs-destination guard, unlike its writer sibling. The two
@@ -1130,6 +1030,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       break;
     }
+  }
+  return 1;
+}
+
+// The `index_store` hook (`set_index_object`). (ifa/issues/200 D2)
+static int c_prim_index_store(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  int o = (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+  switch (n->prim->index) {
+    default:
+      return 0;
     case P_prim_set_index_object: {
       fputs("  ", fp);
       Sym *t = n->rvals[o]->type;
@@ -1160,7 +1070,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         bool value_mismatch = e && val_v->type && cg_repr_mismatch(e, val_v->type);
         bool index_mismatch = false;
         for (int i = o + 1; i < n->rvals.n - 1; i++) {
-          if (!scalar_ct(c_type(n->rvals[i]))) { index_mismatch = true; break; }
+          if (!cg_repr(n->rvals[i]).scalar()) { index_mismatch = true; break; }
         }
         if (value_mismatch) {
           codegen_fail(n, "list element type mismatch storing a '%s' into a '%s' element (ifa/102)", c_type(val_v),
@@ -1211,73 +1121,15 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       break;
     }
-    case P_prim_await: {
-      // issues/022: co_await's result (_CG_Coroutine::await_resume,
-      // pyc_c_runtime.h) is void*; assigning it into a non-pointer
-      // lval (the common case -- pyc's `int` is _CG_int64) is not an
-      // implicit conversion in C++. Same latent gap P_prim_yield
-      // documented and fixed for itself below -- an explicit
-      // (T)(uintptr_t)(...) cast, identical shape. Never hit by any
-      // existing test: async_simple.py/async_suspend.py's single
-      // `val = await ...` compiles fine standalone (uncalled,
-      // never-driven main() never gets FA-forced through this path
-      // meaningfully), but two or more sequential `x = await ...`
-      // assignments in one function (only exercised by an actually
-      // -driven coroutine, e.g. `_CG_run_coro(main())`) fails outright
-      // with "incompatible pointer to integer conversion".
-      if (virtual_cg_is_const_folded_send(n)) return 1;
-      fputs("  ", fp);
-      if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
-        assert(n->lvals.n == 1);
-        fprintf(fp, "%s = (%s)(uintptr_t)(co_await %s);\n", cg_get_string(n->lvals[0]), c_type(n->lvals[0]),
-                cg_get_string(n->rvals[o]));
-      } else {
-        fprintf(fp, "co_await %s;\n", cg_get_string(n->rvals[o]));
-      }
-      return 1;
-    }
-    case P_prim_yield: {
-      // issues/014: `co_yield expr` is itself a C++ expression whose
-      // value is whatever the *next* resume delivers (pyc_c_runtime.h's
-      // _CG_Generator::promise_type::yield_awaiter -- None for a bare
-      // advance, or .send(v)'s v). Mirrors P_prim_await immediately
-      // above: assign into the lval when `x = yield foo` has one
-      // (PY_yield_expr), otherwise emit a bare statement (PY_yield_stmt,
-      // `yield foo` alone -- the delivered value has no consumer).
-      // Unlike P_prim_await, an explicit cast to the lval's own type is
-      // required: `co_yield`'s value is `void*`, and assigning a
-      // void* into an integer-typed local (the common case -- pyc's
-      // `int` is `_CG_int64`) is not an implicit conversion in C++
-      // (confirmed: the analogous uncast `t = co_await ...;` pattern
-      // fails to compile for a non-constant int-typed await result;
-      // P_prim_await has this same latent gap, just never hit by an
-      // existing test). `co_yield` also binds looser than a C-style
-      // cast -- `(T)(uintptr_t)co_yield x` is a syntax error (the
-      // cast operator wants a unary-expression operand, and
-      // `co_yield x` isn't one) -- so the whole `co_yield` expression
-      // must be parenthesized before casting it.
-      if (virtual_cg_is_const_folded_send(n)) return 1;
-      fputs("  ", fp);
-      if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
-        assert(n->lvals.n == 1);
-        fprintf(fp, "%s = (%s)(uintptr_t)(co_yield (void*)(uintptr_t)%s);\n", cg_get_string(n->lvals[0]),
-                c_type(n->lvals[0]), cg_get_string(n->rvals[o]));
-      } else {
-        fprintf(fp, "co_yield (void*)(uintptr_t)%s;\n", cg_get_string(n->rvals[o]));
-      }
-      return 1;
-    }
-    case P_prim_id: {
-      // id(x): address (heap objects) or value bits (unboxed
-      // scalars) as int64. uintptr_t round-trip keeps the compiler
-      // quiet for both pointer- and integer-typed operands.
-      if (virtual_cg_is_const_folded_send(n)) return 1;
-      if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
-        assert(n->lvals.n == 1);
-        fprintf(fp, "  %s = (_CG_int64)(uintptr_t)%s;\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]));
-      }
-      return 1;
-    }
+  }
+  return 1;
+}
+
+// The `new` hook. (ifa/issues/200 D2)
+static int c_prim_new(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  switch (n->prim->index) {
+    default:
+      return 0;
     case P_prim_new: {
       fputs("  ", fp);
       assert(n->lvals.n == 1);
@@ -1295,12 +1147,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       break;
     }
-    case P_prim_assign: {
-      fputs("  ", fp);
-      fprintf(fp, "%s = (%s)", cg_get_string(n->lvals[0]), num_string(n->lvals.v[0]->type));
-      fprintf(fp, "%s;\n", cg_get_string(n->rvals[3]));
-      break;
-    }
+  }
+  return 1;
+}
+
+// The `len` hook. (ifa/issues/200 D2)
+static int c_prim_len(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  int o = (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+  switch (n->prim->index) {
+    default:
+      return 0;
     case P_prim_len: {
       fputs("  ", fp);
       if (n->lvals.n && cg_get_string(n->lvals[0])) fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
@@ -1313,6 +1169,15 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       break;
     }
+  }
+  return 1;
+}
+
+// The `clone` hook (`copy`, `clone`, `clone_vector`). (ifa/issues/200 D2)
+static int c_prim_clone(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  switch (n->prim->index) {
+    default:
+      return 0;
     case P_prim_copy: {
       fputs("  ", fp);
       assert(n->lvals.n == 1);
@@ -1335,7 +1200,7 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       // _CG_any and sizeof is unavailable at compile time. Copy by
       // the allocation's runtime size instead (GC_size, see
       // _CG_prim_copy_any in pyc_c_runtime.h).
-      if (!dst_t || !strcmp(dst_t, "_CG_any") || !src_t || !strcmp(src_t, "_CG_any")) {
+      if (!dst_t || !src_t || cg_repr(dt).untyped() || cg_repr(n->rvals[n->rvals.n - 1]).untyped()) {
         if (cg_get_string(n->lvals[0]))
           fprintf(fp, "%s = (%s)", cg_get_string(n->lvals[0]), c_type(n->lvals[0]));
         fprintf(fp, "_CG_prim_copy_any((void*)%s);\n", cg_get_string(n->rvals[n->rvals.n - 1]));
@@ -1395,6 +1260,16 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       }
       break;
     }
+  }
+  return 1;
+}
+
+// The `sizeof` hook (`sizeof`, `sizeof_element`). (ifa/issues/200 D2)
+static int c_prim_sizeof(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  int o = (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+  switch (n->prim->index) {
+    default:
+      return 0;
     case P_prim_sizeof: {
       if (n->lvals.n) {
         assert(n->lvals.n == 1);
@@ -1556,6 +1431,15 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       fprintf(fp, "%d;\n", sz);
       break;
     }
+  }
+  return 1;
+}
+
+// The `primitive` hook (a registered primitive, by its name operand). (ifa/issues/200 D2)
+static int c_prim_primitive(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  switch (n->prim->index) {
+    default:
+      return 0;
     case P_prim_primitive: {
       if (n->lvals.n) {
         assert(n->lvals.n == 1);
@@ -1582,6 +1466,118 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
         }
         fputs(");\n", fp);
       }
+      break;
+    }
+  }
+  return 1;
+}
+
+// `emit_send_any_prim`: `await`, `yield` and `id`, as on LLVM; and
+// `apply`, `assign` and `destruct`, which only the V frontend emits and
+// LLVM has no handler for. (ifa/issues/200 D2)
+static int c_prim_any(FILE *fp, FA *fa, Fun *f, PNode *n) {
+  int o = (n->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
+  switch (n->prim->index) {
+    default:
+      return 0;
+    case P_prim_apply: {
+      assert(!"unimplemented");
+      fputs("  ", fp);
+      int incomplete = 0;  // n->lvals.n && n->lvals[0]->type->var &&
+                           // n->lvals.v[0]->type->var->def == n;
+      if (incomplete) {
+        fprintf(fp, "Fmake_apply(%s, ", cg_get_string(n->lvals[0]));
+        write_c_type(fp, n->lvals[0]);
+        fprintf(fp, ", %s, %s);\n", cg_get_string(n->rvals[0]), cg_get_string(n->rvals.v[2]));
+      } else {
+        if (n->lvals.n) {
+          assert(n->lvals.n == 1);
+          fprintf(fp, "%s = ", cg_get_string(n->lvals[0]));
+        }
+        int depth = application_depth(n);
+        write_c_apply_arg(fp, cg_get_string(n->rvals[0]), depth, 0);
+        fputs("((T__symbol) 0", fp);
+        for (int i = 1; i < depth; i++) {
+          fputs(", ", fp);
+          write_c_apply_arg(fp, cg_get_string(n->rvals[0]), depth, i);
+        }
+        fputs(", ", fp);
+        fputs(cg_get_string(n->rvals[2]), fp);
+        fputs(");\n", fp);
+      }
+      break;
+    }
+    case P_prim_await: {
+      // issues/022: co_await's result (_CG_Coroutine::await_resume,
+      // pyc_c_runtime.h) is void*; assigning it into a non-pointer
+      // lval (the common case -- pyc's `int` is _CG_int64) is not an
+      // implicit conversion in C++. Same latent gap P_prim_yield
+      // documented and fixed for itself below -- an explicit
+      // (T)(uintptr_t)(...) cast, identical shape. Never hit by any
+      // existing test: async_simple.py/async_suspend.py's single
+      // `val = await ...` compiles fine standalone (uncalled,
+      // never-driven main() never gets FA-forced through this path
+      // meaningfully), but two or more sequential `x = await ...`
+      // assignments in one function (only exercised by an actually
+      // -driven coroutine, e.g. `_CG_run_coro(main())`) fails outright
+      // with "incompatible pointer to integer conversion".
+      if (virtual_cg_is_const_folded_send(n)) return 1;
+      fputs("  ", fp);
+      if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
+        assert(n->lvals.n == 1);
+        fprintf(fp, "%s = (%s)(uintptr_t)(co_await %s);\n", cg_get_string(n->lvals[0]), c_type(n->lvals[0]),
+                cg_get_string(n->rvals[o]));
+      } else {
+        fprintf(fp, "co_await %s;\n", cg_get_string(n->rvals[o]));
+      }
+      return 1;
+    }
+    case P_prim_yield: {
+      // issues/014: `co_yield expr` is itself a C++ expression whose
+      // value is whatever the *next* resume delivers (pyc_c_runtime.h's
+      // _CG_Generator::promise_type::yield_awaiter -- None for a bare
+      // advance, or .send(v)'s v). Mirrors P_prim_await immediately
+      // above: assign into the lval when `x = yield foo` has one
+      // (PY_yield_expr), otherwise emit a bare statement (PY_yield_stmt,
+      // `yield foo` alone -- the delivered value has no consumer).
+      // Unlike P_prim_await, an explicit cast to the lval's own type is
+      // required: `co_yield`'s value is `void*`, and assigning a
+      // void* into an integer-typed local (the common case -- pyc's
+      // `int` is `_CG_int64`) is not an implicit conversion in C++
+      // (confirmed: the analogous uncast `t = co_await ...;` pattern
+      // fails to compile for a non-constant int-typed await result;
+      // P_prim_await has this same latent gap, just never hit by an
+      // existing test). `co_yield` also binds looser than a C-style
+      // cast -- `(T)(uintptr_t)co_yield x` is a syntax error (the
+      // cast operator wants a unary-expression operand, and
+      // `co_yield x` isn't one) -- so the whole `co_yield` expression
+      // must be parenthesized before casting it.
+      if (virtual_cg_is_const_folded_send(n)) return 1;
+      fputs("  ", fp);
+      if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
+        assert(n->lvals.n == 1);
+        fprintf(fp, "%s = (%s)(uintptr_t)(co_yield (void*)(uintptr_t)%s);\n", cg_get_string(n->lvals[0]),
+                c_type(n->lvals[0]), cg_get_string(n->rvals[o]));
+      } else {
+        fprintf(fp, "co_yield (void*)(uintptr_t)%s;\n", cg_get_string(n->rvals[o]));
+      }
+      return 1;
+    }
+    case P_prim_id: {
+      // id(x): address (heap objects) or value bits (unboxed
+      // scalars) as int64. uintptr_t round-trip keeps the compiler
+      // quiet for both pointer- and integer-typed operands.
+      if (virtual_cg_is_const_folded_send(n)) return 1;
+      if (n->lvals.n && cg_get_string(n->lvals[0]) && strcmp(cg_get_string(n->lvals[0]), "(null)") != 0) {
+        assert(n->lvals.n == 1);
+        fprintf(fp, "  %s = (_CG_int64)(uintptr_t)%s;\n", cg_get_string(n->lvals[0]), cg_get_string(n->rvals[o]));
+      }
+      return 1;
+    }
+    case P_prim_assign: {
+      fputs("  ", fp);
+      fprintf(fp, "%s = (%s)", cg_get_string(n->lvals[0]), num_string(n->lvals.v[0]->type));
+      fprintf(fp, "%s;\n", cg_get_string(n->rvals[3]));
       break;
     }
     case P_prim_destruct:
@@ -1665,7 +1661,8 @@ static void simple_move(FILE *fp, Var *lhs, Var *rhs) {
       // __assert_fail is noreturn, so downstream reads of `lhs` stay
       // unreachable.
       cchar *lt = c_type(lhs), *rt = c_type(rhs);
-      if (!strcmp(rt, "_CG_nil_type") && (!strncmp(lt, "_CG_float", 9) || !strncmp(lt, "_CG_complex", 11)))
+      (void)rt;
+      if (rhs->type == sym_nil_type && cg_repr(lhs).is_float())
         codegen_fail(rhs, "None coerced to a floating-point '%s' (ifa/102)", lt);
       else
         fprintf(fp, "  %s = (%s)%s;\n", cg_get_string(lhs), lt, cg_get_string(rhs));
@@ -1755,13 +1752,9 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
     cchar *formal_t = formal ? c_type(formal) : nullptr;
     cchar *arg_cg = c_rhs(v);
     cchar *arg_t = c_type(v);
-    bool arg_is_voidish = (v->sym == sym_nil) ||
-                          (arg_t && (!strcmp(arg_t, "_CG_any") ||
-                                     !strcmp(arg_t, "_CG_void") ||
-                                     !strcmp(arg_t, "_CG_nil_type")));
-    bool formal_is_voidish = formal_t && (!strcmp(formal_t, "_CG_any") ||
-                                          !strcmp(formal_t, "_CG_void") ||
-                                          !strcmp(formal_t, "_CG_nil_type"));
+    (void)arg_t;
+    bool arg_is_voidish = v->sym == sym_nil || cg_voidish(v->type);
+    bool formal_is_voidish = formal && cg_voidish(formal->type);
     // issues/048: a union CONTAINING nil -- `{None, int64}` -- is
     // represented as its scalar member and round-trips bit-for-bit, and
     // codegen already casts it that way at non-call sites (`t1 =
@@ -1777,7 +1770,7 @@ static void write_send_arg(FILE *fp, Fun *f, PNode *n, MPosition *p, int &wrote_
     // would be silently wrong, and that guard's comment says so.
     if (arg_is_voidish && !formal_is_voidish) {
       fprintf(fp, "(%s)%s", formal_t, arg_cg);
-    } else if (cg_needs_nil_union_cast(formal_t, v)) {
+    } else if (cg_needs_nil_union_cast(formal ? formal->type : nullptr, formal_t, v)) {
       fprintf(fp, "(%s)%s", formal_t, arg_cg);
     } else if (cg_needs_sibling_record_cast(formal, v)) {
       fprintf(fp, "(%s)%s", formal_t, arg_cg);
@@ -1854,10 +1847,29 @@ class CBackendEmitter : public VirtualCGEmitter {
     for (int i = 0; i < pn->lvals.n; i++) simple_move(fp, pn->lvals[i], pn->rvals.v[i]);
   }
 
-  // Route all primitives through write_c_prim's switch in one shot.
-  // Primitives not in the switch (is, isinstance) return false here and
-  // fall through to emit_send_is below.
-  bool emit_send_any_prim(PNode *pn) override { return write_c_prim(fp, fa, f, pn) != 0; }
+  // ifa/issues/200 D2: each primitive goes to the hook that owns it on
+  // the LLVM backend too, so the two emitters can be read side by side.
+  // The cases are write_c_prim's, which is gone; each c_prim_* holds its
+  // hook's share of them.
+  bool emit_send_any_prim(PNode *pn) override { return c_prim_any(fp, fa, f, pn) != 0; }
+  bool emit_send_unaryop(PNode *pn) override {
+    return cg_unaryop_prim(pn->prim->index) && write_cg_macro_call(pn);
+  }
+  bool emit_send_binop(PNode *pn) override {
+    int idx = pn->prim->index;
+    return (idx == P_prim_pow || cg_binop_family(idx)) && write_cg_macro_call(pn);
+  }
+  bool emit_send_period(PNode *pn) override { return c_prim_period(fp, fa, f, pn) != 0; }
+  bool emit_send_setter(PNode *pn) override { return c_prim_setter(fp, fa, f, pn) != 0; }
+  bool emit_send_new(PNode *pn) override { return c_prim_new(fp, fa, f, pn) != 0; }
+  bool emit_send_clone(PNode *pn) override { return c_prim_clone(fp, fa, f, pn) != 0; }
+  bool emit_send_len(PNode *pn) override { return c_prim_len(fp, fa, f, pn) != 0; }
+  bool emit_send_strcat(PNode *pn) override { return pn->prim->index == P_prim_strcat && write_cg_macro_call(pn); }
+  bool emit_send_make(PNode *pn) override { return c_prim_make(fp, fa, f, pn) != 0; }
+  bool emit_send_index_load(PNode *pn) override { return c_prim_index_load(fp, fa, f, pn) != 0; }
+  bool emit_send_index_store(PNode *pn) override { return c_prim_index_store(fp, fa, f, pn) != 0; }
+  bool emit_send_sizeof(PNode *pn) override { return c_prim_sizeof(fp, fa, f, pn) != 0; }
+  bool emit_send_primitive(PNode *pn) override { return c_prim_primitive(fp, fa, f, pn) != 0; }
 
   bool emit_send_is(PNode *pn) override {
     if (pn->prim->index == P_prim_is && pn->rvals.n >= 4) {
@@ -2014,7 +2026,13 @@ class CBackendEmitter : public VirtualCGEmitter {
             src_s ? src_s : "NULL");
     return true;
   }
-  bool emit_send_default_prim(PNode *pn) override {
+  // Whatever no other hook claimed (`coerce` from a non-string, a
+  // non-None `isinstance`, `land`/`lor`): the `_CG_<name>(...)` runtime
+  // macro, the same form the operator hooks above write.
+  bool emit_send_default_prim(PNode *pn) override { return write_cg_macro_call(pn); }
+
+  // `_CG_<prim name>(operands...)`, assigned to the result when it has one.
+  bool write_cg_macro_call(PNode *pn) {
     // issue 077: dispatch that picked a binary arithmetic/comparison
     // dunder (e.g. numeric __eq__) only checked ONE operand's type
     // (classtag dispatch on the receiver) -- nothing has verified the
@@ -2112,8 +2130,10 @@ class CBackendEmitter : public VirtualCGEmitter {
           // right: for a pointer operand the coercion IS the null test, so
           // `(bool)(uintptr_t)p` is `p != 0` -- which is exactly Python's
           // truthiness for a container.
-          bool v_ptr = vt && !scalar_ct(vt) && cg_ctype_width(vt) == 8;
-          if (v_ptr && scalar_ct(tt)) fputs("(uintptr_t)", fp);
+          bool v_ptr = cg_repr(pn->rvals[i]).pointer_like();
+          if (v_ptr && cg_repr(pn->rvals[i - 1]->sym).scalar()) fputs("(uintptr_t)", fp);
+          (void)vt;
+          (void)tt;
         }
         fputs(s, fp);
       }
@@ -2162,10 +2182,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         if (p->pos.n != 1) continue;  // closure/tuple-projection arg: not handled by this check
         Var *formal = target->args.get(p);
         if (!formal || !formal->live) continue;
-        cchar *formal_t = c_type(formal);
-        bool formal_is_voidish = formal_t && (!strcmp(formal_t, "_CG_any") || !strcmp(formal_t, "_CG_void") ||
-                                               !strcmp(formal_t, "_CG_nil_type"));
-        if (!formal_is_voidish) continue;
+        if (!cg_voidish(formal->type)) continue;
         int i = Position2int(p->pos[0]) - 1;
         if (i < 0 || i >= pn->rvals.n) continue;
         Var *actual = pn->rvals[i];
@@ -2189,8 +2206,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         cchar *lt = c_type(pn->lvals[0]);
         cchar *rt = target->rets.n && target->rets[0] ? c_type(target->rets[0]) : nullptr;
         if (lt && rt && strcmp(lt, rt)) {
-          bool scalar = !strncmp(lt, "_CG_int", 7) || !strncmp(lt, "_CG_uint", 8) ||
-                        !strncmp(lt, "_CG_float", 9) || !strcmp(lt, "_CG_bool");
+          bool scalar = cg_repr(pn->lvals[0]).scalar();
           if (scalar)
             fprintf(fp, "(%s)", lt);
           else
@@ -2225,6 +2241,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         // case tests the length header, after a null test for None.
         cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
         cchar *ret_type_str = (pn->lvals.n && pn->lvals[0]->type) ? c_type(pn->lvals[0]) : "void*";
+        bool ret_scalar = pn->lvals.n && cg_repr(pn->lvals[0]).scalar();
         for (int ci = 0; ci < arity_cases.n; ci++) {
           ArityDispatchCase *c = arity_cases[ci];
           if (c->tests.n) {
@@ -2255,7 +2272,7 @@ class CBackendEmitter : public VirtualCGEmitter {
             fputs(ci ? "  else {\n" : "  {\n", fp);
           fputs("    ", fp);
           if (lhs) {
-            if (scalar_ct(ret_type_str))
+            if (ret_scalar)
               fprintf(fp, "%s = (%s)", lhs, ret_type_str);
             else
               fprintf(fp, "%s = (%s)(void*)", lhs, ret_type_str);
@@ -2271,7 +2288,7 @@ class CBackendEmitter : public VirtualCGEmitter {
             wrote_one = 1;
             if (!strcmp(ft, at))
               fputs(cg_get_string(pn->rvals[i]), fp);
-            else if (scalar_ct(ft))
+            else if (cg_repr(av).scalar())
               fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
             else
               fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
@@ -2401,23 +2418,8 @@ class CBackendEmitter : public VirtualCGEmitter {
             // route above, which exists for genuine runtime
             // polymorphism across several implementations sharing a
             // slot layout).
-            Sym *carrier_recv = nullptr;
             int carrier_ridx = -1;
-            {
-              MPosition cselfp;
-              cselfp.push(1);
-              for (int pi = 0; pi < fun_val->sym->has.n + 2 && !carrier_recv; pi++) {
-                MPosition *cp = cannonicalize_mposition(cselfp);
-                cselfp.inc();
-                Var *argv = fun_val->args.get(cp);
-                if (!argv || !argv->type) continue;
-                if (argv->type->name && !strcmp(argv->type->name, "__closure__") && cg_has_classtag(argv->type)) {
-                  carrier_recv = argv->type;
-                  carrier_ridx = (int)Position2int(cp->pos[0]) - 1;
-                }
-                break;
-              }
-            }
+            Sym *carrier_recv = poly_dispatch_closure_carrier(fun_val, &carrier_ridx);
             if (carrier_recv && cg_get_string(fun_val) && carrier_ridx >= 0 && carrier_ridx < pn->rvals.n &&
                 pn->rvals[carrier_ridx] && cg_get_string(pn->rvals[carrier_ridx])) {
               bool compat = true;
@@ -2427,7 +2429,7 @@ class CBackendEmitter : public VirtualCGEmitter {
                 int i = (int)Position2int(p->pos[0]) - 1;
                 if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) { compat = false; break; }
                 cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
-                if (strcmp(ft, at) && scalar_ct(ft) != scalar_ct(at)) { compat = false; break; }
+                if (strcmp(ft, at) && cg_repr(av).scalar() != cg_repr(pn->rvals[i]).scalar()) { compat = false; break; }
               }
               if (compat) {
                 // All carriers are currently named "__closure__"
@@ -2470,7 +2472,7 @@ class CBackendEmitter : public VirtualCGEmitter {
             bool added_any = false;
             for (int ri = 0; ri < rts.n; ri++) {
               Sym *rt = rts[ri];
-              if (!cg_has_classtag(rt) || !cg_get_string(rt)) continue;
+              if (!poly_dispatch_tag_arm(rt)) continue;
               added_any = true;
               bool found = false;
               for (int ci = 0; ci < classes.n; ci++)
@@ -2497,7 +2499,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               int i = (int)Position2int(p->pos[0]) - 1;
               if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) { compat = false; break; }
               cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
-              if (strcmp(ft, at) && scalar_ct(ft) != scalar_ct(at)) { compat = false; break; }
+              if (strcmp(ft, at) && cg_repr(av).scalar() != cg_repr(pn->rvals[i]).scalar()) { compat = false; break; }
             }
             if (compat) {
               plains.add(fun_val);
@@ -2527,7 +2529,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               int i = (int)Position2int(p->pos[0]) - 1;
               if (i < 0 || i >= pn->rvals.n || !cg_get_string(pn->rvals[i])) { compat = false; break; }
               cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
-              if (strcmp(ft, at) && scalar_ct(ft) != scalar_ct(at)) { compat = false; break; }
+              if (strcmp(ft, at) && cg_repr(av).scalar() != cg_repr(pn->rvals[i]).scalar()) { compat = false; break; }
               if (!drecv) drecv = cg_get_string(pn->rvals[i]);
             }
             if (compat) {
@@ -2572,8 +2574,7 @@ class CBackendEmitter : public VirtualCGEmitter {
           if (!truthiness) {
             for (int i = 1; i < pn->rvals.n; i++) {
               if (pn->rvals[i] && cg_get_string(pn->rvals[i]) && !strcmp(cg_get_string(pn->rvals[i]), recv_str)) {
-                cchar *rt = c_type(pn->rvals[i]);
-                if (scalar_ct(rt)) ok = false;
+                if (cg_repr(pn->rvals[i]).scalar()) ok = false;
                 break;
               }
             }
@@ -2621,6 +2622,7 @@ class CBackendEmitter : public VirtualCGEmitter {
           }
           cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
           cchar *ret_type_str = (pn->lvals.n && pn->lvals[0]->type) ? c_type(pn->lvals[0]) : "void*";
+        bool ret_scalar = pn->lvals.n && cg_repr(pn->lvals[0]).scalar();
           // Each branch's callee returns ITS OWN C type (the nil
           // branch returns _CG_nil_type, an untagged direct returns
           // e.g. _CG_any) while lhs has the UNION's type -- cast the
@@ -2628,7 +2630,7 @@ class CBackendEmitter : public VirtualCGEmitter {
           // through void*).
           auto emit_lhs = [&]() {
             if (!lhs) return;
-            if (scalar_ct(ret_type_str))
+            if (ret_scalar)
               fprintf(fp, "%s = (%s)", lhs, ret_type_str);
             else
               fprintf(fp, "%s = (%s)(void*)", lhs, ret_type_str);
@@ -2651,7 +2653,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               wrote_one = 1;
               if (!strcmp(ft, at))
                 fputs(cg_get_string(pn->rvals[i]), fp);
-              else if (scalar_ct(ft))
+              else if (cg_repr(av).scalar())
                 fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
               else
                 fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
@@ -2679,7 +2681,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               call_args += ", ";
               if (!strcmp(ft, at)) {
                 call_args += cg_get_string(pn->rvals[i]);
-              } else if (scalar_ct(ft)) {
+              } else if (cg_repr(av).scalar()) {
                 call_args += "(";
                 call_args += ft;
                 call_args += ")";
@@ -2748,7 +2750,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               // `lhs = ` prefix.
               Fun *cfun = class_funs[ci];
               if (lhs) {
-                if (scalar_ct(ret_type_str))
+                if (ret_scalar)
                   fprintf(fp, "%s = (%s)", lhs, ret_type_str);
                 else
                   fprintf(fp, "%s = (%s)(void*)", lhs, ret_type_str);
@@ -2764,7 +2766,7 @@ class CBackendEmitter : public VirtualCGEmitter {
                 wrote_one = 1;
                 if (!strcmp(ft, at))
                   fputs(cg_get_string(pn->rvals[i]), fp);
-                else if (scalar_ct(ft))
+                else if (cg_repr(av).scalar())
                   fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
                 else
                   fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
@@ -2811,7 +2813,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               wrote_one = 1;
               if (!strcmp(ft, at))
                 fputs(cg_get_string(pn->rvals[i]), fp);
-              else if (scalar_ct(ft))
+              else if (cg_repr(av).scalar())
                 fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
               else
                 fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
@@ -2837,7 +2839,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               wrote_one = 1;
               if (!strcmp(ft, at))
                 fputs(cg_get_string(pn->rvals[i]), fp);
-              else if (scalar_ct(ft))
+              else if (cg_repr(av).scalar())
                 fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
               else
                 fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
@@ -2907,26 +2909,9 @@ static void emit_goto_or_trap(FILE *fp, PNode *from, PNode *target, int label_id
     codegen_fail(from, "a live jump to a block the analysis found unreachable (ifa/102)");
 }
 
-// issues/085: a Code_IF whose condition genuinely never resolved (FA
-// left it NOTYPE, so clone gives it no type at all -- or the void
-// placeholder, through set_void_lub_types_to_void) is NOT proven
-// unreachable, unlike a
-// provably-dead constant fold (the true_type/false_type identity
-// checks in write_c_pnode's Code_IF case already handle that one).
-// Confirmed empirically (temporary instrumentation, since removed):
-// a genuinely-unresolved condition's Var::type is exactly
-// fa->type_world.void_type's Sym, while a benign constant-folded-but-
-// not-Sym-identical condition (e.g. `a and b and c` folded one layer
-// earlier than the true_type/false_type check normally catches)
-// resolves to a real, distinct type (`bool`, confirmed via
-// tests/my_bool4.py's test_cond).
-static bool is_unresolved_condition(FA *fa, Var *cond) {
-  if (!cond) return false;
-  if (!cond->type) return true;  // ifa/102: NOTYPE is no longer voided
-  return fa->type_world.void_type && fa->type_world.void_type->n > 0 &&
-         cond->type == fa->type_world.void_type->v[0]->type;
-}
-
+// issues/085: the unresolved-condition test and its gate are
+// cg_is_unresolved_condition / cg_if_traps_unresolved, shared with the
+// LLVM backend since ifa/200 A3.
 static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done) {
   if (n->live && n->fa_live) switch (n->code->kind) {
       case Code_LABEL:
@@ -2965,11 +2950,12 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
   switch (n->code->kind) {
     case Code_IF:
       if (n->live && n->fa_live) {
-        if (n->rvals[0]->sym == fa->type_world.true_type->v[0]->sym) {
+        int only_succ = cg_const_if_successor(fa, n);
+        if (only_succ == 0) {
           do_phy_nodes(fp, n, 0);
           do_phi_nodes(fp, n, 0);
           if (done.set_add(n->cfg_succ[0])) write_c_pnode(fp, fa, f, n->cfg_succ[0], done);
-        } else if (n->rvals[0]->sym == fa->type_world.false_type->v[0]->sym) {
+        } else if (only_succ == 1) {
           do_phy_nodes(fp, n, 1);
           do_phi_nodes(fp, n, 1);
           if (done.set_add(n->cfg_succ[1])) write_c_pnode(fp, fa, f, n->cfg_succ[1], done);
@@ -2987,11 +2973,9 @@ static void write_c_pnode(FILE *fp, FA *fa, Fun *f, PNode *n, Vec<PNode *> &done
           // `if False:` body, the untaken arms of an `isinstance(..) or
           // ..` chain) carry the same void_type and are dead text, which
           // is where this check used to sit (ifa/102's census: 1,164
-          // emissions, none surviving -O2). The LLVM backend tests the
-          // same thing in emit_block_terminator.
-          bool succ_live = (n->cfg_succ[0]->live && n->cfg_succ[0]->fa_live) ||
-                           (n->cfg_succ.n > 1 && n->cfg_succ[1]->live && n->cfg_succ[1]->fa_live);
-          if (succ_live && is_unresolved_condition(fa, n->rvals[0]))
+          // emissions, none surviving -O2). One decision for both
+          // backends (ifa/200 A3).
+          if (cg_if_traps_unresolved(fa, n))
             fputs(cg_trap_c("  assert(!\"runtime error: unresolved if condition\");\n"), fp);
           fprintf(fp, "  if (%s) {\n", cg_get_string(n->rvals[0]));
           do_phy_nodes(fp, n, 0);
@@ -3259,469 +3243,9 @@ static inline bool homogeneous_tuple(Sym *s) {
 
 // Returns nothing; failure paths inside use fail() directly.
 // (Historically returned int; the caller's `< 0` check was dead.)
-// ifa/issues/123: drop method slots nothing ever READS.
-//
-// FA's call graph is precise, so a call it resolves to one target is
-// emitted as a DIRECT call and touches no slot. Measured: 93-98% of
-// method slots are written into the vtable and never read
-// (IFA_DBG_SLOTUSE). Those cost 8 bytes per instance plus the store that
-// initialises them.
-//
-// Readership can only be known by EMITTING, so this makes a throwaway
-// pass first -- every body into a memstream that is immediately
-// discarded -- purely to populate cg_slot_use_*. The bodies are already
-// buffered this way for function DCE further down, so the cost is one
-// extra emission of each function.
-//
-// The elision itself is `has[i]->type = nullptr`, which is the existing
-// issues/055 + issues/121 placeholder path, not a new mechanism: the
-// struct emitter then writes a ZERO-WIDTH `char eN[0]`, keeping the eN
-// numbering dense (issues/055 measured that removing the slot outright
-// breaks bh/block/chull/doom/rubik/softrender), and `cg_field_live`
-// becomes false so the polymorphic-slot store, the getter and the setter
-// all elide it by the tests they already apply.
-// ifa/issues/123: compute which (class, slot) pairs are READ, WITHOUT
-// emitting.
-//
-// The first attempt discovered readership by emitting every body into a
-// throwaway buffer. That does not work: `write_c` is not idempotent, and
-// a second emission corrupts compiler state -- measured, 218 of 327
-// tests fail with the discovery pass alone and the elision suppressed.
-//
-// So compute it directly, reusing the SAME helpers codegen uses at each
-// read site rather than restating their logic, which is what makes this
-// safe from drift (the objection that retired the earlier name-matching
-// analysis). There are exactly two ways a class member is read:
-//
-//   1. the P_prim_period getter, whose receiver class is
-//      `resolve_union_receiver(n->rvals[1]->type, selector)` and whose
-//      selector comes from `symbol_info` -- both called here verbatim;
-//   2. the classtag dispatch, whose (class, slot) pairs come from
-//      `poly_dispatch_classtag_targets` -- called here verbatim, on the
-//      same `f->calls.get(pn)` candidate set with the same
-//      `poly_dispatch_directly_owned` filter.
-Vec<Vec<Sym *> *> cg_recv_groups;  // classes sharing one receiver
-
-static void cg_compute_slot_reads(FA *fa) {
-  cg_recv_groups.clear();
-  cg_slot_use_cls.clear();
-  cg_slot_use_idx.clear();
-  cg_slot_use_rd.clear();
-  for (Fun *f : fa->funs) {
-    if (!f->live) continue;
-    for (PNode *pn : f->fa_all_PNodes) {
-      if (!pn || !pn->live) continue;
-      if (pn->prim && pn->prim->index == P_prim_period && pn->rvals.n > 3) {
-        Vec<Sym *> symbols;
-        symbol_info(pn->rvals[3], symbols);
-        cchar *symbol = nullptr;
-        if (symbols.n == 1)
-          symbol = symbols[0]->name;
-        else if (pn->rvals[3]->sym && pn->rvals[3]->sym->is_symbol)
-          symbol = pn->rvals[3]->sym->name;
-        // Classes reached through ONE receiver must agree on which slots
-        // exist: eliding a name on one and not its sibling changes the
-        // byte offsets and breaks the blind cast (measured -- richards:
-        // "'HandlerTaskRec' is blind-cast to 'IdleTaskRec' ... member
-        // width differs at e12 (_CG_void vs <placeholder>)"). Record the
-        // co-occurring sets so readership can be unioned over them.
-        if (symbol && pn->rvals[1]->type && pn->rvals[1]->type->type_kind == Type_SUM) {
-          Vec<Sym *> *grp = new Vec<Sym *>;
-          for (Sym *mem : pn->rvals[1]->type->has) if (mem && mem->type_kind == Type_RECORD) {
-            bool dup = false;
-            for (Sym *x : *grp) if (x == mem) { dup = true; break; }
-            if (!dup) grp->add(mem);
-          }
-          if (grp->n > 1) cg_recv_groups.add(grp);
-        }
-        if (symbol && pn->rvals[1]->type) {
-          Sym *obj = resolve_union_receiver(pn->rvals[1]->type, symbol);
-          if (obj)
-            for (int i = 0; i < obj->has.n; i++)
-              if (obj->has[i] && obj->has[i]->name && symbol == obj->has[i]->name && cg_field_live(obj, i)) {
-                cg_note_slot_use(obj, i, 1);
-                break;
-              }
-        }
-      }
-      // Writes, computed the same way: the setter resolves its receiver
-      // with the very same symbol_info + resolve_union_receiver pair.
-      if (pn->prim && pn->prim->index == P_prim_setter && pn->rvals.n > 3) {
-        cchar *symbol = pn->rvals[3]->sym && pn->rvals[3]->sym->is_symbol ? pn->rvals[3]->sym->name : nullptr;
-        if (!symbol) {
-          Vec<Sym *> symbols;
-          symbol_info(pn->rvals[3], symbols);
-          if (symbols.n == 1) symbol = symbols[0]->name;
-        }
-        if (symbol && pn->rvals[1]->type) {
-          Sym *obj = resolve_union_receiver(pn->rvals[1]->type, symbol);
-          if (obj)
-            for (int i = 0; i < obj->has.n; i++)
-              if (obj->has[i] && symbol == obj->has[i]->name) { cg_note_slot_use(obj, i, 0); break; }
-        }
-      }
-      // Record construction writes every live field positionally.
-      if (pn->prim && pn->prim->index == P_prim_make && pn->lvals.n && pn->lvals[0]->type) {
-        Sym *rec = pn->lvals[0]->type;
-        if (rec->type_kind == Type_RECORD && rec->has.n)
-          for (int i = 3; i < pn->rvals.n; i++) cg_note_slot_use(rec, i - 3, 0);
-      }
-      // ifa/153: and a record is also READ POSITIONALLY. The comment above
-      // this scan claims "both sides are computed structurally above", but
-      // only NAMED access was: the getter's `resolve_union_receiver` needs a
-      // symbol, and a tuple has none. `x, y, z = a, b, c` lowers to a
-      // P_prim_index_object per element with a CONSTANT index, and none of
-      // them was ever counted as a read.
-      //
-      // That is not a missed optimisation, it is a wrong answer. Elision
-      // groups on `cs->sym`, which is `sym_tuple` for EVERY tuple in the
-      // program, so one verdict per slot index covers all of them: a
-      // 2-tuple's leftover `has[2]` is bottom, nothing recorded a read, and
-      // slot 2 was elided on every tuple -- including `chull`'s
-      // `x,y,z = 2*random()-1, ...`, whose z then stayed 0 so every sphere
-      // point was coplanar and the program raised
-      // "DoubleTriangle: All points are coplanar!".
-      //
-      // A NON-constant index can reach any slot, so it marks them all.
-      if (pn->prim && pn->prim->index == P_prim_index_object) {
-        int o = (pn->rvals.n && pn->rvals.v[0]->sym == sym_primitive) ? 2 : 1;
-        if (pn->rvals.n > o) {
-          Sym *t = pn->rvals[o]->type;
-          if (t && t->type_kind == Type_RECORD && t->has.n) {
-            cchar *k = (pn->rvals.n > o + 1 && pn->rvals[o + 1]->sym) ? pn->rvals[o + 1]->sym->constant : nullptr;
-            if (k) {
-              int fidx = atoi(k);
-              if (fidx < 0) fidx += t->has.n;
-              if (fidx >= 0 && fidx < t->has.n) cg_note_slot_use(t, fidx, 1);
-            } else
-              for (int i = 0; i < t->has.n; i++) cg_note_slot_use(t, i, 1);
-          }
-        }
-      }
-      Vec<Fun *> *fns = f->calls.get(pn);
-      if (fns && fns->n > 1) {
-        Vec<cchar *> directly_owned;
-        poly_dispatch_directly_owned(fns, directly_owned);
-        for (Fun *cand : *fns) {
-          if (!cand || !cand->sym) continue;
-          Vec<Sym *> rts;
-          Vec<int> rt_slots, rt_ridxs;
-          poly_dispatch_classtag_targets(cand, pn, directly_owned, rts, rt_slots, rt_ridxs);
-          for (int ri = 0; ri < rts.n; ri++) cg_note_slot_use(rts[ri], rt_slots[ri], 1);
-          // The classes one dispatch spans are blind-cast to each other,
-          // so they must agree on which slots exist. clone.cc's
-          // collect_prefix_groups only inspects P_prim_period receivers
-          // and therefore misses a DISPATCH-only union -- measured:
-          // `PREFIX groups=0` on tests/list_index_type_mismatch_salvage,
-          // whose whole subject is a Basic_block|Union_find_node union.
-          if (rts.n > 1) {
-            Vec<Sym *> *grp = new Vec<Sym *>;
-            for (int ri = 0; ri < rts.n; ri++) {
-              bool dup = false;
-              for (Sym *x : *grp) if (x == rts[ri]) { dup = true; break; }
-              if (!dup && rts[ri]) grp->add(rts[ri]);
-            }
-            if (grp->n > 1) cg_recv_groups.add(grp);
-          }
-        }
-      }
-    }
-  }
-}
-
-// ifa/issues/123: drop method slots nothing ever READS.
-//
-// The elision is `has[i]->type = nullptr`, which is the existing
-// issues/055 + issues/121 placeholder path rather than a new mechanism:
-// the struct emitter then writes a ZERO-WIDTH `char eN[0]`, keeping the
-// eN numbering dense (issues/055 measured that removing a slot outright
-// breaks bh/block/chull/doom/rubik/softrender), and `cg_field_live`
-// becomes false so the polymorphic-slot store, the getter and the setter
-// all elide it by tests they already apply. The struct emitter does NOT
-// consult cg_field_live -- it checks `!has[i]->type` -- so nulling the
-// type is the only lever that reaches it.
-extern Vec<Vec<Sym *> *> ifa_prefix_groups;
-
-// ifa/issues/123: ON BY DEFAULT since 2026-09-03. Corpus `-m check` A/B
-// against the defaults baseline (`check__PYC_CLASSEQ_2_PYC_PREFIX_LAYOUT_1__d2742efa`):
-// compile_fail 2 -> 2, run_fail 43 -> 40, stdout_differs 24 -> 24. Three
-// programs that timed out now complete (chaos, path_tracing, score4),
-// consistent with structs shrinking 80%. `PYC_ELIDE_SLOTS=0` disables.
-static int elide_slots_enabled() {
-  static int e = -1;
-  if (e < 0) e = getenv("PYC_ELIDE_SLOTS") ? atoi(getenv("PYC_ELIDE_SLOTS")) : 1;
-  return e;
-}
-
-static void cg_elide_unread_slots(FA *fa) {
-  if (!elide_slots_enabled()) return;
-  cg_compute_slot_reads(fa);
-  // No name matching anywhere here (CLAUDE.md, "Never analyse or decide
-  // by NAME"). The old filter asked "does some function share this
-  // member's name?" to guess method-vs-data, which counts a data field
-  // whose name coincides with a function and misses the converse. The
-  // method/data question does not need answering: a member that is
-  // NEITHER READ NOR WRITTEN is dead whichever it is, and both sides are
-  // computed structurally above -- reads from the getter's own
-  // resolve_union_receiver and from poly_dispatch_classtag_targets over
-  // the call graph's candidate sets, writes from the setter's identical
-  // resolution and from record construction.
-  // Clones of ONE class must agree. `compute_member_types` gives each
-  // clone its own member types, so a field that is bottom (sym_void) in
-  // one contour is `_CG_int64` in another -- eliding the first and not
-  // the second makes their layouts differ at that slot, which the
-  // contract check reports as "'T' is blind-cast to 'T' ... member width
-  // differs" (tests/deepcopy_objects). Grouped on `cs->sym`, the
-  // original class, which is CreationSet identity rather than a name.
-  // Decided per CLASS and applied to every clone, rather than requiring
-  // every clone to be independently elidable.
-  //
-  // Root cause of why that distinction matters (tests/deepcopy_objects):
-  // slot e15 of `T` is named `v` -- and `class T` has no field `v`. It
-  // is `Node`'s, promoted onto T as a PHANTOM by a union receiver
-  // reaching `.v` through the synthesized __deepcopy__. The same
-  // mechanism as bh's Cell.acc/vel (issues/039) and go's UCTNode.color.
-  // The clones then disagree only because the phantom is typed in the
-  // contours that saw the write and bottom in the others.
-  //
-  // So requiring all clones to agree was papering over an imprecision:
-  // it collapsed the elided count ~425 -> 5-28 to accommodate a field
-  // that should not exist. Eliding uniformly when NO clone reads the
-  // slot keeps every clone's layout identical -- which is what the
-  // blind cast needs -- and does not care whether the phantom happened
-  // to acquire a type.
-  // Is this member FUNCTION-VALUED, structurally?
-  //
-  // Measured on richards: only 26 of 1719 members are literally Type_FUN
-  // or sym_void, which is why the first filter elided almost nothing.
-  // The real shapes are a monomorphic method slot, whose type is the
-  // Fun's own Sym (type_kind Type_NONE, `fun` set), and a slot holding
-  // several clones, whose type is a Type_SUM of those -- 1194 and 60 of
-  // richards' members respectively.
-  auto is_fn_sym = [](Sym *x) { return x && (x->is_fun || x->fun || x->type_kind == Type_FUN); };
-  auto fn_valued = [&](Sym *t) {
-    if (!t) return false;
-    if (t == sym_void) return true;
-    if (is_fn_sym(t)) return true;
-    if (t->type_kind == Type_SUM && t->has.n) {
-      for (Sym *x : t->has)
-        if (!is_fn_sym(x)) return false;
-      return true;
-    }
-    return false;
-  };
-  // One verdict per (class, slot), applied to EVERY clone -- the type
-  // test included. Testing the type per clone is what left the last
-  // divergence: `v` is int64 in the clones that saw the write and void
-  // in the others, so a per-clone type filter elided it in some and not
-  // others, which is the very layout split being fixed.
-  //
-  // A slot qualifies when no clone reads it AND some clone has it
-  // function-typed or bottom. Bottom in SOME clone but not others is
-  // the phantom's own signature: a field the class really declares is
-  // observed in every contour, whereas one promoted onto it by a union
-  // receiver is not.
-  // Elidable for ONE class, ignoring the union constraint.
-  auto elidable_bare = [&](Sym *csym, int i) {
-    bool any_voidish = false;
-    for (CreationSet *o : fa->css) {
-      if (!o || o->sym != csym || !o->type || i >= o->type->has.n) continue;
-      Sym *m = o->type->has[i];
-      if (!m || !m->type) continue;
-      if (fn_valued(m->type)) any_voidish = true;
-      for (int k = 0; k < cg_slot_use_cls.n; k++)
-        if (cg_slot_use_cls.v[k] == o->type && cg_slot_use_idx.v[k] == i && cg_slot_use_rd.v[k]) return false;
-    }
-    return any_voidish;
-  };
-  // A blind cast requires the classes it spans to AGREE on which slots
-  // exist. That relation is exactly the union receiver: resolving a
-  // Type_SUM to one member casts from every other member to it, so all
-  // record members of any such receiver must reach the same verdict at
-  // a given index. Without this, `Basic_block` was elided at e0 and
-  // `Union_find_node` was not, and the contract check reported the
-  // width mismatch (tests/list_index_type_mismatch_salvage).
-  // NOTE: a union-receiver group constraint was tried here twice (one
-  // group at a time, then merged into connected components) and made
-  // things WORSE both times -- 302/7 against 308/1 -- while introducing
-  // fresh generator/exception failures, because building the components
-  // mixes plib's set-mode and vector-mode Vec. Left out; the single
-  // remaining failure is root-caused below instead.
-  // The cross-class group constraint is NOT applied. Three attempts --
-  // per group, merged into connected components, and with plain vector
-  // ops after suspecting plib's set/vector duality -- all made things
-  // WORSE than none (302/7, 302/7, 300/9 against 308/1), which is not
-  // what a purely restrictive rule can do and means the constraint is
-  // not modelling the real relation. Recorded in ifa/issues/123; the
-  // one remaining failure is root-caused there rather than papered over.
-  // Classes reached through one union receiver must agree on which slots
-  // exist, or eliding on one and not another splits their layouts --
-  // richards: "'HandlerTaskRec' is blind-cast to 'IdleTaskRec' ... member
-  // width differs at e13". The grouping comes from clone.cc's
-  // collect_prefix_groups, the analysis that already computes exactly
-  // this relation; three attempts at rebuilding it here from receivers
-  // were all wrong (302/7, 302/7, 300/9 against 308/1).
-  auto elidable_for_class = [&](Sym *csym, int i) {
-    if (!elidable_bare(csym, i)) return false;
-    for (Vec<Sym *> *g : ifa_prefix_groups) {
-      if (!g) continue;
-      bool member = false;
-      for (Sym *x : *g) if (x == csym) { member = true; break; }
-      if (!member) continue;
-      for (Sym *o : *g)
-        if (o && o != csym && !elidable_bare(o, i)) return false;
-    }
-    return true;
-  };
-  // DECIDE, then APPLY. Nulling `m->type` while still deciding makes a
-  // class's verdict depend on whether its group-mates were processed
-  // first: `elidable_bare` reads `m->type`, so a group-mate already
-  // nulled reads as not-elidable and the constraint answers differently
-  // depending on iteration order. That is how `Exception` kept e0 while
-  // `StopIteration` -- same prefix group, same slot -- lost it
-  // ("member width differs at e0, _CG_void vs <placeholder>"). Collect
-  // every (member Sym) to null first, mutate nothing until the whole
-  // decision is made.
-  Vec<Sym *> to_null;
-  Vec<Sym *> to_null_owner;  // parallel: the class each member belongs to
-  long elided = 0;
-  Vec<Sym *> seen;
-  for (CreationSet *cs : fa->css) {
-    if (!cs || !cs->type || !seen.set_add(cs->type)) continue;
-    Sym *t = cs->type;
-    // A CLOSURE is not a vtable user. Its slots are read positionally by
-    // `write_c_apply_arg` (`->e0` chains and `->e1`) and written by the
-    // `P_prim_period`-creates-a-closure path -- neither goes through the
-    // getter or the classtag dispatch, so this analysis cannot see them
-    // and would elide the closure's own function slot. Measured: doing
-    // so breaks all seven closure tests. Excluded structurally on
-    // type_kind, not by name.
-    // Only USER RECORDS. A builtin container (`list`, `dict`, `set`,
-    // `str` -- Type_PRIMITIVE) has a layout the C RUNTIME knows
-    // independently: `pyc_c_runtime.h`'s `_CG_list_ptr` and friends index
-    // the structure directly, so removing a member corrupts the heap
-    // rather than merely shrinking a struct. Bisecting kanoodle
-    // per class landed exactly there -- classes 0-163 (all Type_RECORD)
-    // elide cleanly and the 164th, `list`, is the one that segfaults.
-    // A closure (Type_FUN) is excluded for the separate reason that
-    // `write_c_apply_arg` reads its slots positionally.
-    // Exclude only the types whose layout the C RUNTIME knows
-    // independently: `pyc_c_runtime.h`'s `_CG_list_ptr` and friends index
-    // a list's structure directly, so removing a member there corrupts
-    // the heap rather than shrinking a struct. Bisecting kanoodle per
-    // class landed on exactly `list`.
-    //
-    // NOT "records only": eliding the other non-record classes turns out
-    // to be NECESSARY, not merely harmless. Excluding all 109 of them
-    // (leaving 56 records) crashes, while excluding `list` alone -- 164
-    // of 165 classes elided -- runs. Partial elision leaves layouts
-    // mutually inconsistent, so the safe configurations are "everything
-    // except what the runtime indexes", not "only what looks like a user
-    // class".
-    if (cs->sym == sym_list || cs->sym->is_vector || sym_list->specializers.set_in(cs->sym)) continue;
-    if (t->type_kind == Type_FUN) continue;
-    // PYC_ELIDE_SLOTS=2 (experiment): skip any class that participates
-    // in a union receiver at all. Eliding shrinks a struct, and a blind
-    // cast to a LARGER sibling then writes past the allocation -- the
-    // layout contract only validates slots that are READ, so a write
-    // through the cast is uncovered. Tests whether that is what corrupts
-    // the GC free list on kanoodle and richards.
-    if (elide_slots_enabled() == 2) {
-      bool grouped = false;
-      for (Vec<Sym *> *g : ifa_prefix_groups) {
-        if (!g) continue;
-        for (Sym *x : *g) if (x == cs->sym) { grouped = true; break; }
-        if (grouped) break;
-      }
-      if (grouped) continue;
-    }
-    for (int i = 0; i < t->has.n; i++) {
-      Sym *m = t->has[i];
-      if (!m || !m->type) continue;
-      // Structural, not by name: only a member whose inferred TYPE is a
-      // function (a populated dispatch slot) or `void` (a slot the
-      // registry declared and never stored into) is a candidate. A data
-      // field has a concrete data type and is excluded by that alone --
-      // no need to ask the unanswerable "is this name a method", which
-      // counted data fields whose name coincided with a function.
-      //
-      // "Neither read nor written" was tried instead, to drop the
-      // method/data question entirely, and is too aggressive: 50 of 327
-      // tests fail, because the WRITE side has paths not modelled here
-      // (closure construction, the tuple-list stores, destruct_prim).
-      bool read = !elidable_for_class(cs->sym, i);
-      if (read) continue;
-      to_null.add(m);  // applied below, after every verdict is decided
-      to_null_owner.add(cs->sym);
-      elided++;
-    }
-  }
-  if (getenv("IFA_DBG_STRUCT")) {
-    Vec<Sym *> seen2;
-    for (CreationSet *cs : fa->css) {
-      if (!cs || !cs->type || !cs->sym || !seen2.set_add(cs->type)) continue;
-      if (!cs->sym->name || strcmp(cs->sym->name, getenv("IFA_DBG_STRUCT"))) continue;
-      fprintf(stderr, "[struct] --- clone of %s (cs#%d) ---\n", cs->sym->name, cs->id);
-      for (int i = 12; i < cs->type->has.n && i < 20; i++) {
-        Sym *cl = cs->type->has[i];
-        Sym *orig = (i < cs->sym->has.n) ? cs->sym->has[i] : nullptr;
-        fprintf(stderr, "[struct] e%-2d %-16s clone(is_fun=%d fun=%d in=%s) orig(is_fun=%d fun=%d)\n", i,
-                cl && cl->name ? cl->name : "?", cl ? cl->is_fun : -1, cl && cl->fun ? 1 : 0,
-                cl && cl->in && cl->in->name ? cl->in->name : "-", orig ? orig->is_fun : -1,
-                orig && orig->fun ? 1 : 0);
-      }
-    }
-  }
-  // PYC_ELIDE_LIMIT=N: apply only the first N elisions, to bisect which
-  // one introduces a runtime fault.
-  // Bisect PER CLASS, all-or-nothing. Cutting the flat member list at N
-  // leaves classes half-elided, and the layout contract then fails the
-  // COMPILE (rc=127, no binary) -- which made a by-count bisect useless:
-  // limit=800 ran, 900 and 1000 failed to build, and the full 1063
-  // compiled and then segfaulted.
-  int limit = getenv("PYC_ELIDE_LIMIT") ? atoi(getenv("PYC_ELIDE_LIMIT")) : -1;
-  Vec<Sym *> owners;
-  for (Sym *o : to_null_owner) {
-    bool dup = false;
-    for (Sym *x : owners) if (x == o) { dup = true; break; }
-    if (!dup) owners.add(o);
-  }
-  int applied = 0;
-  for (int k = 0; k < to_null.n; k++) {
-    if (limit >= 0) {
-      int oi = -1;
-      for (int j = 0; j < owners.n; j++) if (owners.v[j] == to_null_owner.v[k]) { oi = j; break; }
-      if (oi >= limit) continue;
-    }
-    if (to_null.v[k]) { to_null.v[k]->type = nullptr; applied++; }
-  }
-  if (getenv("IFA_DBG_SLOTUSE"))
-    {
-      fprintf(stderr, "[slotuse] classes=%d applied=%d of %d\n", owners.n, applied, to_null.n);
-      if (getenv("IFA_DBG_OWNER")) {
-        int want = atoi(getenv("IFA_DBG_OWNER"));
-        for (int j = 0; j < owners.n; j++)
-          if (j >= want) {
-            int cnt = 0;
-            for (int k = 0; k < to_null_owner.n; k++) if (to_null_owner.v[k] == owners.v[j]) cnt++;
-            fprintf(stderr, "[owner] %d: %s (kind=%d, %d slots)\n", j,
-                    owners.v[j] && owners.v[j]->name ? owners.v[j]->name : "?",
-                    owners.v[j] ? (int)owners.v[j]->type_kind : -1, cnt);
-          }
-      }
-    }
-  if (getenv("IFA_DBG_SLOTUSE")) fprintf(stderr, "[slotuse] ELIDED %ld slots (neither read nor written)\n", elided);
-  cg_slot_use_cls.clear();
-  cg_slot_use_idx.clear();
-  cg_slot_use_rd.clear();
-}
-
-
 static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
 // build builtin map
-#define S(_n) cg_set_string(if1_get_builtin(fa->pdb->if1, #_n), "_CG_" #_n);
-#include "builtin_symbols.h"
-#undef S
+  cg_name_builtin_types(fa);
   // assign functions a C type string
   // Assign each live Fun a cg_string (with /*name*/ annotation, the
   // C-backend convention) and collect their sym->var into globals.

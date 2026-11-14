@@ -739,26 +739,27 @@ Two LLVM-side bugs surfaced by phase 1 are now fixed:
   substitution near line 368): replace void field types with i8
   so the struct is well-formed and field indexing is preserved.
 
-### Notes on the codegen-c pinpoint fixtures
+### Notes on the codegen pinpoint fixtures
 
-The codegen-c fixtures (`03_setter.ir`, `04_getter.ir`, `05_clone.ir`,
-`06_sum_type.ir`) all currently produce goldens of `bytes=338` —
-identical-modulo-fn-id to `01_baseline.ir`. The reason: the synthesized
-`__main__` wrapper in `fa_setup_environment` doesn't observe top's
-return, so DCE elides every primitive operation whose result only flows
-to top's return. The fixtures still:
+The six fixtures in `tests/ir/codegen-c/` run through both backends:
+`tests/ir/codegen-llvm/` holds symlinks to them (ifa/issues/200 D3). Each
+ends by passing its result to `observe`, a visible primitive the codegen
+phases register (`ifa_test_main.cc` `pre_parse_codegen`), because a
+visible primitive is never dead.
 
-- Document the `.ir` DSL spelling for each primitive (input).
-- Detect regressions in the framework-level emission (function naming,
-  prototype emission, etc.).
-- Serve as templates for when a future "preserve" mode (a CODEGEN_PLAN
-  phase 4 target) makes operations observable.
+Until 2026-11-14 they had no such root. The synthesized `__main__` does
+not read top's return, so DCE elided every operation and both backends
+emitted an empty `__main__`. Each golden was the same 338 bytes, and the
+"richer" LLVM goldens of the v1 backend held only struct declarations.
+What they lock in now:
 
-The codegen-llvm parallels have richer goldens (3885-4926 bytes) because
-the LLVM backend emits `alloca` instructions and struct type
-definitions regardless of DCE — so the type-emission paths ARE locked
-in by those goldens. See `tests/ir/codegen-llvm/05_setter.ir.codegen-llvm.expected`
-vs `01_baseline.ir.codegen-llvm.expected` for the difference.
+- `03_setter`: the setter's result (the stored value, issue 011);
+- `04_getter`: a field store and the read of it;
+- `05_clone`: a clone;
+- `06_sum_type`: an allocation and its class-tag store.
+
+A field store that nothing reads is still dead, so `03_setter` and
+`05_clone` show none.
 
 ---
 

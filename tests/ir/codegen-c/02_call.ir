@@ -1,13 +1,7 @@
-;; 02_call.ir — typed int32 call.
-;;
-;; %top sends to %add, but %top's return is unused by the synthesized
-;; __main__ wrapper (`fa_setup_environment` wires top in but doesn't
-;; consume its result). The C backend's DCE elides %add as a result,
-;; emitting only an empty __main__. The LLVM backend currently retains
-;; %add even with no observable use — see the parallel
-;; codegen-llvm/02_call.ir golden, which shows `define internal void
-;; @add0()`. Tightening this asymmetry (and adding a real "call-with-
-;; observable-result" fixture) is CODEGEN_PLAN phase 1 work.
+;; 02_call.ir — a typed int32 call. %add replies its first argument;
+;; the inliner folds the call, so the golden shows `t0 = 1` handed to
+;; `observe`. Until 2026-11-14 %add had no `reply`, so its result was
+;; untyped; nothing read it, so nothing noticed.
 
 (sym %k1 :is-constant :immediate (int32 1))
 (sym %k2 :is-constant :immediate (int32 2))
@@ -20,13 +14,18 @@
   :args (%add %a %b)
   :rets (%ar)
   :cont %acont
-  :body (move %a %ar))
+  :body
+    (move %a %ar)
+    (send @primitive @reply %acont %ar))
 
 (sym %r :is-local)
+(sym %o :is-local)
 (sym %tcont)
 (fun %top
   :rets (%r)
   :cont %tcont
-  :body (send %add %k1 %k2 => %r))
+  :body
+    (send %add %k1 %k2 => %r)
+    (send @primitive #observe %r => %o))
 
 (entry %top)

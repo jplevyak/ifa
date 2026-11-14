@@ -919,6 +919,11 @@ int parse_ir_string(cchar *source, cchar *fake_filename) {
   lex_init(L, fake_filename, source);
   while (L.t.kind != TOK_EOF) {
     parse_top_decl(L);
+    // A declaration that errored may leave the lexer where it was (a
+    // stray `)` or `=>` at top level). Retrying it reported the same
+    // error forever -- 5 GB of it before the shell killed ifa-test. One
+    // error is enough to fail the fixture; stop.
+    if (L.errors) break;
   }
   return L.errors ? -1 : 0;
 }

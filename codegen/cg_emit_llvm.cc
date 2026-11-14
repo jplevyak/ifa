@@ -105,6 +105,14 @@ llvm::StructType *sym_to_llvm_struct(Sym *s) {
     if (cg_has_classtag(s))
       fields.push_back(llvm::PointerType::getUnqual(*TheContext));
     for (Sym *f : s->has) {
+      // ifa/201: a member with no type does not exist (a slot nothing
+      // reads, ifa/123; a field no contour typed, issues/055). It keeps
+      // its index and takes no space: the C backend's `char eN[0]`, so
+      // both backends lay a class out the same way.
+      if (!f->type) {
+        fields.push_back(llvm::ArrayType::get(llvm::Type::getInt8Ty(*TheContext), 0));
+        continue;
+      }
       llvm::Type *ft = sym_to_llvm_type(f->type);
       // Substitute opaque ptr for unsized / void fields.
       if (!ft || ft->isVoidTy()) {
@@ -120,6 +128,10 @@ llvm::StructType *sym_to_llvm_struct(Sym *s) {
 // ifa/issues/030: translate a has-index into the LLVM struct slot
 // (tagged class records have the classtag at slot 0).
 static inline int llvm_fld(Sym *s, int i) { return cg_has_classtag(s) ? i + 1 : i; }
+
+// ifa/201: does record `s` have member `i` in its emitted struct? One
+// with no type is a zero-width placeholder: nothing may load or store it.
+static inline bool llvm_member_exists(Sym *s, int i) { return cg_member_width(s, i) > 0; }
 
 // ifa/issues/030: the per-class tag object. Only its ADDRESS
 // matters (identity comparison at dispatch sites), so an internal
@@ -718,34 +730,6 @@ static llvm::Value *fun_identity_token(Sym *f) {
                                   llvm::ConstantInt::get(i8, 0), name);
 }
 
-// -------------------------------------------------------------
-// resolve_union_receiver — port of cg.cc:148.  When the obj's
-// declared type is a Type_SUM (union), pick a concrete
-// component that carries the named field.  This is the cg.cc
-// trick that gets it to 99/0 against materialized's 92/7 —
-// the materialized side doesn't carry this through CGv2Type
-// so emit gets stuck on opaque-typed unions.
-// -------------------------------------------------------------
-
-Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
-  if (!obj || obj->type_kind != Type_SUM) return obj;
-  if (symbol) {
-    for (Sym *component : obj->has) {
-      if (!component || component == sym_nil_type) continue;
-      for (Sym *field : component->has) {
-        if (field && field->name == symbol) return component;
-      }
-    }
-  }
-  if (obj->has.n > 0) {
-    for (Sym *component : obj->has) {
-      if (component && component != sym_nil_type) return component;
-    }
-    return obj->has.v[0];
-  }
-  return obj;
-}
-
 // Get-or-create GC_malloc declaration.
 llvm::Function *get_gc_malloc() {
   return get_runtime_helper(
@@ -993,6 +977,14 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   // its field read (cg.cc), checked by cg_check_layout_contract at the end
   // of cg_emit_llvm.
   cg_note_field_access(ctx.fn, pn->rvals.v[1], obj_sym, field_idx);
+  // ifa/201: a member that does not exist has nothing to load. A read kept
+  // live only for its None check has a dead result (the check is already
+  // emitted); any other read of it is refused, as the C backend refuses it.
+  if (!llvm_member_exists(obj_sym, field_idx)) {
+    if (!dst_var->live) return true;
+    codegen_fail(pn, "the attribute '%s' is not a field of the receiver's type '%s' (ifa/102)", symbol,
+                 obj_sym->name ? obj_sym->name : "?");
+  }
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
   int slot_idx = llvm_fld(obj_sym, field_idx);
@@ -1136,7 +1128,7 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
   // computed from `~x` was silently dropped, so SHA-1's `(~B) & D` round
   // function vanished from shedskin_examples/sha and every digest was
   // wrong on LLVM (the C backend has _CG_prim_not).
-  if (op != P_prim_lnot && op != P_prim_minus && op != P_prim_not) return false;
+  if (!cg_unaryop_prim(op)) return false;
 
   // Return true (claimed) even when operands are missing — these are
   // dead/pruned nodes; falling through to emit_send_default_prim would
@@ -1201,40 +1193,6 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
   return true;
 }
 
-// issue 077: the set of prim indices THIS function's switch below
-// actually handles. Needed up front (not just as the switch's own
-// dispatch) because the type-mismatch guard below must only fire for
-// operators this function is responsible for -- emit_send_binop is
-// called for EVERY prim send (virtual_cg_emit_send's chain), and an
-// unrelated one (e.g. P_prim_primitive, a generic "call this by
-// name" node whose "operands" aren't a same-typed pair by design)
-// reaches here too, on its way to `default: return false` and
-// whatever emitter actually owns it. Checking types before confirming
-// membership false-positived on ~200 corpus programs in testing.
-static bool is_binop_family(int idx) {
-  switch (idx) {
-    case P_prim_add:
-    case P_prim_subtract:
-    case P_prim_mult:
-    case P_prim_div:
-    case P_prim_mod:
-    case P_prim_lsh:
-    case P_prim_rsh:
-    case P_prim_and:
-    case P_prim_or:
-    case P_prim_xor:
-    case P_prim_less:
-    case P_prim_lessorequal:
-    case P_prim_greater:
-    case P_prim_greaterorequal:
-    case P_prim_equal:
-    case P_prim_notequal:
-      return true;
-    default:
-      return false;
-  }
-}
-
 static void emit_salvage_trap(EmitCtx &ctx, cchar *kind, Var *dst_v = nullptr) {
   cg_trap_census("llvm", kind, ctx.fn);
   llvm::Function *trap_fn = get_intrinsic_decl(llvm::Intrinsic::trap);
@@ -1249,7 +1207,7 @@ static void emit_salvage_trap(EmitCtx &ctx, cchar *kind, Var *dst_v = nullptr) {
 
 // `**`, matching pyc_c_runtime.h's _CG_prim_pow: int ** int is exact
 // (_CG_int_pow), and anything else is libm's pow on doubles. There was
-// no handler at all -- `**` is not in is_binop_family, and the default
+// no handler at all -- `**` is not in cg_binop_family, and the default
 // fallback declined it on the operator-symbol operand -- so every power
 // was silently emitted as nothing and read back as 0 (nbody printed
 // 0.000000000 for every energy; ifa/issues/180). The pow call is
@@ -1304,7 +1262,7 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   int idx = pn->prim->index;
   if (idx == P_prim_pow) return emit_send_pow(ctx, pn);
-  if (!is_binop_family(idx)) return false;
+  if (!cg_binop_family(idx)) return false;
   if (pn->rvals.n < 4 || pn->lvals.n < 1) return false;
   Var *lhs_v = pn->rvals.v[pn->rvals.n - 3];
   Var *rhs_v = pn->rvals.v[pn->rvals.n - 1];
@@ -1731,6 +1689,7 @@ static llvm::Value *record_field_gep(Sym *t, llvm::Value *obj, llvm::Value *idx,
   int64_t i = ci->getSExtValue();
   if (i < 0) i += t->has.n;
   if (i < 0 || i >= t->has.n) return nullptr;
+  if (!llvm_member_exists(t, (int)i)) return nullptr;  // ifa/201
   llvm::StructType *st = sym_to_llvm_struct(t);
   if (!st || st->isOpaque()) return nullptr;
   unsigned slot = (unsigned)llvm_fld(t, (int)i);
@@ -2463,6 +2422,7 @@ bool emit_send_make(EmitCtx &ctx, PNode *pn) {
     for (int i = 3; i < pn->rvals.n; i++) {
       int field_idx = i - 3;
       if (field_idx >= n_fields) break;
+      if (!llvm_member_exists(dst_ty, field_idx)) continue;  // ifa/201: no such member to store
       Var *val_var = pn->rvals.v[i];
       if (!val_var) continue;
       llvm::Value *val = value_for_var(ctx, val_var);
@@ -2908,6 +2868,10 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       if (!rec || !rec_ty) return false;
       for (int fi = 0; fi < (int)rec_ty->getNumElements(); fi++) {
         llvm::Type *ft = rec_ty->getElementType(fi);
+        if (ft->isArrayTy()) {  // ifa/201: a member that does not exist
+          args.push_back(llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext)));
+          continue;
+        }
         llvm::Value *gep = Builder->CreateStructGEP(rec_ty, rec, fi);
         llvm::Value *fv = Builder->CreateLoad(ft, gep);
         if (fi < arg_var->type->has.n)
@@ -3135,7 +3099,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
 }
 
 bool emit_send_default_prim(EmitCtx &ctx, PNode *pn) {
-  // Port of write_c_prim's tail fallback (`_CG_<name>` route).
+  // Port of cg.cc's write_cg_macro_call (`_CG_<name>` route).
   // Used for any prim that doesn't have a structural handler.
   // Note: P_prim_primitive goes through emit_send_primitive,
   // not here — it has its own name-from-rvals[1] dispatch.
@@ -3246,7 +3210,7 @@ class LLVMEmitter : public VirtualCGEmitter {
     if (!pn || !pn->prim) return false;
     if (pn->prim->index == P_prim_id) {
       // id(x): address (pointers) or value bits (ints) as i64 --
-      // mirrors write_c_prim's `(_CG_int64)(uintptr_t)x` (cg.cc).
+      // mirrors cg.cc's c_prim_any: `(_CG_int64)(uintptr_t)x`.
       if (pn->lvals.n < 1 || pn->rvals.n < 3) return false;
       Var *dst_var = pn->lvals.v[0];
       llvm::Value *v = value_for_var(ctx, pn->rvals.v[2]);
@@ -3656,7 +3620,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     bool ok = true;
     for (int fi = 0; fi < callees->n && ok; fi++) {
       Fun *fun_val = (*callees)[fi];
-      if (!fun_val || !fun_val->sym || !fun_val->sym->name) { ok = false; break; }
+      if (!fun_val || !fun_val->sym) { ok = false; break; }  // a lambda has no name (ifa/200 A3)
       Vec<Sym *> rts;
       Vec<int> rt_slots;
       Vec<int> rt_ridxs;
@@ -3686,7 +3650,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       if (rts.n) {
         for (int ri = 0; ri < rts.n; ri++) {
           Sym *rt = rts[ri];
-          if (!rt->name || rt->is_system_type || !cg_has_classtag(rt)) continue;
+          if (!poly_dispatch_tag_arm(rt)) continue;
           added_any = true;
           bool found = false;
           for (int ci = 0; ci < classes.n; ci++)
@@ -3733,21 +3697,8 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       // directly: it IS the statically-known implementation for
       // this tag, no stored slot needed.
       {
-        Sym *carrier_recv = nullptr;
         int carrier_ridx = -1;
-        MPosition cselfp;
-        cselfp.push(1);
-        for (int pi = 0; pi < fun_val->sym->has.n + 2 && !carrier_recv; pi++) {
-          MPosition *cp = cannonicalize_mposition(cselfp);
-          cselfp.inc();
-          Var *argv = fun_val->args.get(cp);
-          if (!argv || !argv->type) continue;
-          if (argv->type->name && !strcmp(argv->type->name, "__closure__") && cg_has_classtag(argv->type)) {
-            carrier_recv = argv->type;
-            carrier_ridx = (int)Position2int(cp->pos[0]) - 1;
-          }
-          break;
-        }
+        Sym *carrier_recv = poly_dispatch_closure_carrier(fun_val, &carrier_ridx);
         if (carrier_recv && fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
           if (!recv && carrier_ridx >= 0 && carrier_ridx < pn->rvals.n && pn->rvals[carrier_ridx]) {
             recv = value_for_var(ctx, pn->rvals[carrier_ridx]);
@@ -4051,6 +4002,11 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
         if (class_recv_ridx[ci] >= 0 && class_recv_ridx[ci] < pn->rvals.n && pn->rvals[class_recv_ridx[ci]])
           cg_note_blind_cast(classes[ci], pn->rvals[class_recv_ridx[ci]]->type, slots[ci]);
         llvm::StructType *st = sym_to_llvm_struct(classes[ci]);
+        // ifa/201: cg_elide_unread_slots counted this read from the same
+        // plan, so the slot exists. If the two ever disagree, refuse.
+        if (!llvm_member_exists(classes[ci], slots[ci]))
+          codegen_fail(pn, "dispatch through method slot e%d of '%s', which no read was planned for (ifa/201)",
+                       slots[ci], classes[ci]->name ? classes[ci]->name : "?");
         llvm::Value *slot_gep = Builder->CreateStructGEP(st, recv, llvm_fld(classes[ci], slots[ci]));
         llvm::Value *fnptr = Builder->CreateLoad(ptr_ty, slot_gep, "methodptr");
         // issues/025 kanoodle (this backend's sibling of the C
@@ -4234,10 +4190,20 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           }
           Builder->CreateStore(cv, fres_slot);
         }
+      } else {
+        // ifa/200 A3: this arm used to branch to the merge without
+        // calling anything, so the call read as the slot's zero.
+        codegen_unresolved_send(pn, callees, "a candidate's formals do not match the call's operands");
+        emit_salvage_trap(ctx, "fnid_args_mismatch");
       }
       Builder->CreateBr(fmerge_bb);
       Builder->SetInsertPoint(next_bb);
     }
+    // ifa/200 A3: no candidate's address matched. This fell through to
+    // the merge, so the call silently produced 0 (a capturing lambda
+    // dispatched against a plain function printed 0 for 13); the C
+    // backend's "polymorphic dispatch: no branch matched" trap.
+    emit_salvage_trap(ctx, "poly_no_branch_matched");
     Builder->CreateBr(fmerge_bb);
     Builder->SetInsertPoint(fmerge_bb);
     if (dst_var && fres_slot) {
@@ -4372,38 +4338,11 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
   }
 }
 
-// Given a Code_IF PNode, returns the single cfg_succ index (0 or 1)
-// selected by a compile-time-constant condition -- the condition
-// Var's ->sym is FA's own canonical true_type/false_type Sym, either
-// from FA's ordinary constant folding or fed in by a pass like
-// ifa/optimize/exc_check_fold.cc -- or -1 if the condition is a real
-// runtime value (both successors are potentially live). Shared by
-// discover_blocks (which must not allocate/walk into the dead arm at
-// all) and emit_block_terminator (which must not branch into it),
-// so the two can't drift out of sync.
-static int const_if_successor(EmitCtx &ctx, PNode *n) {
-  if (!n || n->rvals.n == 0) return -1;
-  if (ctx.fa && ctx.fa->type_world.true_type && n->rvals.v[0]->sym == ctx.fa->type_world.true_type->v[0]->sym)
-    return 0;
-  if (ctx.fa && ctx.fa->type_world.false_type && n->rvals.v[0]->sym == ctx.fa->type_world.false_type->v[0]->sym)
-    return 1;
-  return -1;
-}
-
-// issues/085: mirrors is_unresolved_condition in cg.cc (the C
-// backend's own copy of this check -- kept independent, matching how
-// the two backends already duplicate const_if_successor's Sym-identity
-// checks above rather than sharing them). A Code_IF condition whose
-// Var::type is null or fa->type_world.void_type's Sym never resolved
-// at all (FA left it NOTYPE); unlike a provably-dead
-// constant fold (const_if_successor above), this is NOT proven
-// unreachable and must not be branched into/past silently.
-static bool is_unresolved_condition(EmitCtx &ctx, Var *cond) {
-  if (!cond) return false;
-  if (!cond->type) return true;  // ifa/102: NOTYPE is no longer voided
-  return ctx.fa && ctx.fa->type_world.void_type && ctx.fa->type_world.void_type->n > 0 &&
-         cond->type == ctx.fa->type_world.void_type->v[0]->type;
-}
+// ifa/200 A3: a constant IF's one successor, and whether an unresolved IF
+// traps, are cg_const_if_successor / cg_if_traps_unresolved, shared with
+// the C backend. discover_blocks and emit_block_terminator both ask the
+// first, so the two cannot disagree on which arm is dead.
+static int const_if_successor(EmitCtx &ctx, PNode *n) { return cg_const_if_successor(ctx.fa, n); }
 
 // issues/085: a real, controlled trap (an actual abort() call) for the
 // unresolved-condition case -- deliberately not CreateUnreachable(),
@@ -4520,18 +4459,14 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       // (cond is nullptr anyway for this case -- an unresolved value
       // can't be materialized).
       //
-      // Gated on (t_bb || f_bb), same as the C backend's mirrored
-      // successor-liveness check: discover_blocks only allocates a
-      // block for a genuinely live successor, so neither existing
-      // means this Code_IF itself belongs to permanently dead code
-      // that just happened to get visited (e.g. an `if False:` body
-      // whose condition was simply never typed, not attempted and
-      // failed) -- confirmed necessary by this session's own
-      // pre/post-fix regression sweep (astar.py's entire, never-
-      // executed `if False:` module body tripped an earlier,
-      // ungated version of this check on the very first line of its
-      // __main__).
-      if ((t_bb || f_bb) && closer->rvals.n > 0 && is_unresolved_condition(ctx, closer->rvals.v[0])) {
+      //
+      // The gate is the C backend's (ifa/200 A3): the IF and some
+      // successor are live and fa_live. It used to be (t_bb || f_bb),
+      // which also trapped at dead IFs whose successors had blocks: 21
+      // suite and 7 corpus sites the C backend never emitted, every one
+      // dead (astar's `if False:` body behind `br i1 false`, blocks with
+      // no predecessors).
+      if (cg_if_traps_unresolved(ctx.fa, closer)) {
         emit_abort_trap(ctx);
         break;
       }
@@ -5360,6 +5295,7 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
     if (!struct_ty) continue;
     int field_idx = (int)Position2int(p->pos.v[1]) - 1;
     if (field_idx < 0 || field_idx >= (int)struct_ty->getNumElements()) continue;
+    if (struct_ty->getElementType(field_idx)->isArrayTy()) continue;  // ifa/201: no such member
     llvm::Value *gep =
         Builder->CreateStructGEP(struct_ty, parent_val, field_idx, "pat_gep");
     llvm::Type *field_ty = struct_ty->getElementType(field_idx);

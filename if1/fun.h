@@ -63,7 +63,7 @@ class Fun : public gc {
 
   uint is_generic : 1;
   uint is_external : 1;
-  uint is_varargs : 1;
+  uint is_varargs : 1;  // has rest_pos or kw_pos: calls go through a signature_wrapper
   uint is_eager : 1;  // will evaulate for Partial_OK
   uint is_lazy : 1;   // will not match Partial_NEVER
 
@@ -92,6 +92,19 @@ class Fun : public gc {
 
 
   // pattern
+  // 1-based formal positions (0: none) of the rest formal (`*args`), of the
+  // first keyword-only formal, and of the keyword-dict formal (`**kw`).
+  // Keyword-only formals are the ones from kwonly_pos on, less kw_pos.
+  int rest_pos = 0;
+  int kwonly_pos = 0;
+  int kw_pos = 0;
+  // The first formal position a positional actual cannot bind (0: none).
+  int star_pos() const {
+    int p = rest_pos;
+    if (kwonly_pos && (!p || kwonly_pos < p)) p = kwonly_pos;
+    if (kw_pos && (!p || kw_pos < p)) p = kw_pos;
+    return p;
+  }
   Vec<MPosition *> arg_positions;
   Vec<MPosition *> positional_arg_positions;
   Map<MPosition *, MPosition *> named_to_positional;

@@ -9,7 +9,7 @@ struct-slot mechanism (method pointers stored per creation site by
 `__new__`, `cg_build_new_to_val_map`) survives as the clone-
 selection half of 030's design; the receiver-less bare-callable
 shape flagged in "Related" below remains 030's open scope.
-**Related:** `../../issues/007-decorators-not-applied.md` hits the
+**Related:** `../../issues/closed/007-decorators-not-applied.md` hits the
 same `get_target_fun_core` gap for a shape this issue doesn't cover —
 calling a bare polymorphic function-typed *value* directly (e.g. a
 variable reassigned to one of two different closures), with no
