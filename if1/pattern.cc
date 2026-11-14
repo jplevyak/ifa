@@ -221,6 +221,50 @@ static Vec<Fun *> varargs_funs;
 static Map<Sym *, Map<MPosition *, Vec<Fun *> *> *> sym_match_cache;
 // Per function, its signature wrappers by call shape ("npositional|kw|kw").
 static Map<Fun *, Map<cchar *, Fun *> *> signature_cache;
+// issues/189: per function, its unpack wrappers by call shape and arity.
+static Map<Fun *, Map<cchar *, Fun *> *> unpack_cache;
+static Map<PNode *, cchar *> unpacking_refusals;
+cchar *unpacking_refusal_at(PNode *send_pnode) { return send_pnode ? unpacking_refusals.get(send_pnode) : nullptr; }
+static void refuse_unpacking(AVar *send, cchar *fmt, ...) {
+  if (!send || !send->var || !send->var->def) return;
+  char buf[512];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  unpacking_refusals.put(send->var->def, if1_cannonicalize_string(if1, buf));
+}
+static cchar *fun_display_name(Fun *f) { return f && f->sym && f->sym->name ? f->sym->name : "function"; }
+// issues/189: the 1-based top-level position of the call's `*t` actual
+// while it is being matched (0: none). Matching does not nest, and the
+// free functions below (coercion_uses, ...) see no Matcher, so it is
+// file state, set and cleared by pattern_match_full_.
+static int match_star_at = 0;
+
+// issues/189: the 1-based position of the call's `*t` actual, or 0. The
+// frontend marks both a `*t` and a `**d` actual Sym::is_rest; the tuple is
+// the unnamed one whose members are tuples.
+static int star_actual_at(Vec<AVar *> &args, Vec<cchar *> &names) {
+  for (int i = 0; i < args.n; i++) {
+    AVar *a = args[i];
+    if (!a || !a->var || !a->var->sym || !a->var->sym->is_rest) continue;
+    if (i < names.n && names[i]) continue;
+    if (!a->out) continue;
+    for (CreationSet *cs : a->out->sorted)
+      if (cs && sym_tuple->specializers.set_in(cs->sym->type)) return i + 1;
+  }
+  return 0;
+}
+
+// issues/189: is this actual position the call's `*t` tuple, or inside it?
+// Any candidate admits it: the tuple's elements are bound to the
+// candidate's formals by an unpack wrapper (Matcher::build), which
+// re-dispatches with them, so its type is checked there, element by
+// element, and not against the formal at its position here.
+static bool is_star_actual(MPosition *acpp) {
+  return match_star_at && acpp && acpp->pos.n && is_intPosition(acpp->pos[0]) &&
+         (int)Position2int(acpp->pos[0]) == match_star_at;
+}
 
 // Reset pattern.cc module-level state. Called by ifa_reset().
 void pattern_reset() {
@@ -228,6 +272,8 @@ void pattern_reset() {
   varargs_funs.clear();
   sym_match_cache.clear();
   signature_cache.clear();
+  unpack_cache.clear();
+  unpacking_refusals.clear();
   vk_clear();
   pattern_match_hits = 0;
   pattern_match_complete = 0;
@@ -489,6 +535,25 @@ void Matcher::find_arg_matches(AVar *a, MPosition &ap, MPosition *acp, MPosition
   a->arg_of_send.add(send);
   Vec<Fun *> funs;
   add_all_args(all_args, acpp, a->out);
+  if (is_star_actual(acpp) && *partial_matches) {
+    // issues/189: every candidate admits every member of the `*t` tuple,
+    // and nothing recurses into it. No arity constraint either: the
+    // tuple is not the formal's value.
+    for (CreationSet *cs : a->out->sorted) if (cs) {
+      for (Fun *f : **partial_matches) if (f) {
+        PMatch *m = match_map.get(f);
+        if (!m) match_map.put(f, (m = new_PMatch(f)));
+        VecCreationSet *t = m->actual_filters.get(acp);
+        if (!t) {
+          m->actual_filters.put(acp, (t = new VecCreationSet));
+          if (acp != acpp) m->actual_named_to_positional.put(acp, acpp);
+        }
+        t->set_add(cs);
+        m->actuals.put(acpp, a);
+      }
+    }
+    return;
+  }
   enum { INVERT_MIN_WIDTH = 16, INVERT_BUDGET = 4 };
   static Fun *const SEVERAL = (Fun *)(uintptr_t)1;
   Vec<CreationSet *> hit_set, hits;
@@ -715,6 +780,9 @@ void Matcher::find_all_matches(CreationSet *cs, Vec<AVar *> &args, Vec<cchar *> 
 }
 
 static int subsumes_arg(PMatch *x, PMatch *y, MPosition *acpp, CreationSet *cs, int *identical) {
+  // issues/189: the `*t` tuple is not any candidate's formal value, so it
+  // says nothing about which is more specific (and has no dispatch type).
+  if (is_star_actual(acpp)) return 0;
   MPosition *xp = to_formal(acpp, x), *yp = to_formal(acpp, y);
   // A surplus actual of a varargs candidate has no formal, so it gives no
   // preference: two overrides that both take `*args` are told apart by the
@@ -1014,6 +1082,33 @@ static void fixup_maps_for_defaults(PMatch *m, Fun *oldf, Vec<MPosition *> &defa
 
 static bool is_rest_actual(AVar *a) { return a && a->var && a->var->sym && a->var->sym->is_rest; }
 
+// issues/189: the arity every member of a `*t` tuple agrees on, or -1 when
+// one is not a tuple of an arity known here (a list's `*` makes a tuple of
+// run-time length) or two disagree.
+static int star_tuple_arity(AVar *t) {
+  int arity = -1;
+  if (!t || !t->out || !t->out->sorted.n) return -1;
+  for (CreationSet *cs : t->out->sorted) if (cs) {
+    if (!sym_tuple->specializers.set_in(cs->sym->type) || cs->no_static_arity || cs->static_arity < 0) return -1;
+    if (arity >= 0 && arity != cs->static_arity) return -1;
+    arity = cs->static_arity;
+  }
+  return arity;
+}
+
+// The call's top-level actuals bind the wrapper's formals one for one.
+static void identity_positions(PMatch *m) {
+  m->actual_to_formal_position.clear();
+  m->formal_to_actual_position.clear();
+  form_MPositionAVar(x, m->actuals) {
+    MPosition *p = x->key;
+    if (!p || p->pos.n != 1 || !p->last_is_positional()) continue;
+    m->actual_to_formal_position.put(p, p);
+    m->formal_to_actual_position.put(p, p);
+  }
+  m->default_args.clear();
+}
+
 Fun *Matcher::build(PMatch *m, Vec<Fun *> &done_matches) {
   Fun *f = m->fun, *fnew;
   if (m->generic_substitutions.n) {
@@ -1029,6 +1124,86 @@ Fun *Matcher::build(PMatch *m, Vec<Fun *> &done_matches) {
     m->generic_substitutions.clear();
     m = build_PMatch(f, m);
   }
+  // issues/189: `f(..., *t, ...)`. Route the call through a wrapper that
+  // takes the actuals as they are, indexes the tuple, and calls again with
+  // its elements in its place; that call binds them as positionals,
+  // defaults, `*args` and all, by the ordinary rules. The tuple's arity
+  // decides the wrapper, so it must be one arity, known here.
+  //
+  // Except a call already in f's own shape: one actual per formal, the
+  // tuple at `*args` and, if f has `**kw`, a marked dict there. That is
+  // `inner(x, *args, **kw)` forwarding, and it is what a signature
+  // wrapper's own call looks like, so it must not be wrapped again.
+  auto star_direct = [&]() {
+    if (!f->is_varargs || f->rest_pos != match_star_at) return false;
+    int nactuals = 0;
+    AVar *at_kw = nullptr;
+    form_MPositionAVar(x, m->actuals) {
+      MPosition *p = x->key;
+      if (!p || p->pos.n != 1 || !p->last_is_positional()) continue;
+      int i = (int)Position2int(p->pos[0]);
+      if (i > nactuals) nactuals = i;
+      if (i == f->kw_pos) at_kw = x->value;
+    }
+    if (top_names)
+      for (int i = 0; i < top_names->n; i++)
+        if (top_names->v[i]) return false;
+    return nactuals == f->sym->has.n && (!f->kw_pos || is_rest_actual(at_kw));
+  };
+  if (match_star_at && !star_direct()) {
+    MPosition sp;
+    sp.push(match_star_at);
+    AVar *star = m->actuals.get(cannonicalize_mposition(sp));
+    int arity = star_tuple_arity(star);
+    if (arity < 0) {
+      // Not while the tuple is still untyped: that is a pass, not a verdict.
+      if (star && star->out && star->out->sorted.n)
+        refuse_unpacking(send, "'*' unpacking into the named parameters of %s() needs a tuple of one length known "
+                         "at compile time; a list, or tuples of different lengths, are not supported (issues/189)",
+                         fun_display_name(f));
+      return 0;
+    }
+    int nactuals = 0;
+    form_MPositionAVar(x, m->actuals) {
+      MPosition *p = x->key;
+      if (p && p->pos.n == 1 && p->last_is_positional() && (int)Position2int(p->pos[0]) > nactuals)
+        nactuals = (int)Position2int(p->pos[0]);
+    }
+    // CPython's TypeError for too many, as the refusal. (Too few is the
+    // wrapper's own call's, at the callee.) The callee itself is position
+    // 1, so the positionals CPython counts are one fewer, self included.
+    if (!f->rest_pos) {
+      int star_formal = f->star_pos();
+      int nplain = star_formal ? star_formal - 1 : f->sym->has.n;
+      int given = match_star_at - 1 + arity;
+      if (given > nplain) {
+        refuse_unpacking(send, "%s() takes %d positional argument%s but %d %s given", fun_display_name(f), nplain - 1,
+                         nplain - 1 == 1 ? "" : "s", given - 1, given - 1 == 1 ? "was" : "were");
+        return 0;
+      }
+    }
+    Vec<cchar *> names;
+    std::string key = std::to_string(nactuals) + "*" + std::to_string(match_star_at) + "#" + std::to_string(arity);
+    for (int i = 0; i < nactuals; i++) {
+      cchar *name = top_names && i < top_names->n ? top_names->v[i] : nullptr;
+      names.add(name);
+      key += "|";
+      if (name) key += name;
+    }
+    cchar *k = if1_cannonicalize_string(if1, key.c_str());
+    Map<cchar *, Fun *> *c = unpack_cache.get(f);
+    if (!c) unpack_cache.put(f, (c = new Map<cchar *, Fun *>));
+    Fun *w = c->get(k);
+    if (!w) {
+      w = if1->callback->unpack_wrapper(f, match_star_at, arity, names);
+      if (w) c->put(k, w);
+    }
+    if (!w || done_matches.set_in(w)) return 0;
+    done_matches.set_add(w);
+    m = build_PMatch(w, m);
+    identity_positions(m);
+    f = w;
+  } else
   // ROADMAP 6.1, issues/182: a function with `*args` or `**kw`. Route the
   // call through a wrapper for its shape -- how many positionals, which
   // keywords -- unless this IS the wrapper's own call: one positional
@@ -1063,7 +1238,11 @@ Fun *Matcher::build(PMatch *m, Vec<Fun *> &done_matches) {
                   (!f->kw_pos || is_rest_actual(at_kw));
     // An already-packed actual (the caller's `*t` or `**d`) is the whole
     // rest tuple or keyword dict: it binds nothing else, in no other call.
-    if (direct ? nmarked != (f->rest_pos ? 1 : 0) + (f->kw_pos ? 1 : 0) : nmarked != 0) return 0;
+    if (direct ? nmarked != (f->rest_pos ? 1 : 0) + (f->kw_pos ? 1 : 0) : nmarked != 0) {
+      refuse_unpacking(send, "'**' unpacking into the named parameters of %s() is not supported; it binds only "
+                       "a '**kw' parameter (issues/189)", fun_display_name(f));
+      return 0;
+    }
     if (!direct) {
       key = std::to_string(npositional) + key;
       cchar *k = if1_cannonicalize_string(if1, key.c_str());
@@ -1078,20 +1257,16 @@ Fun *Matcher::build(PMatch *m, Vec<Fun *> &done_matches) {
       done_matches.set_add(w);
       m = build_PMatch(w, m);
       // The wrapper's formals are exactly the actuals, in order.
-      m->actual_to_formal_position.clear();
-      m->formal_to_actual_position.clear();
-      form_MPositionAVar(x, m->actuals) {
-        MPosition *p = x->key;
-        if (!p || p->pos.n != 1 || !p->last_is_positional()) continue;
-        m->actual_to_formal_position.put(p, p);
-        m->formal_to_actual_position.put(p, p);
-      }
-      m->default_args.clear();
+      identity_positions(m);
       f = w;
     }
   } else {
     form_MPositionAVar(x, m->actuals)
-      if (x->key && x->key->pos.n == 1 && is_rest_actual(x->value)) return 0;
+      if (x->key && x->key->pos.n == 1 && is_rest_actual(x->value)) {
+        refuse_unpacking(send, "'**' unpacking into the named parameters of %s() is not supported; it binds only "
+                         "a '**kw' parameter (issues/189)", fun_display_name(f));
+        return 0;
+      }
   }
   if (!f->is_varargs && f->kwonly_pos) {
     // issues/182: a keyword-only formal takes no positional actual.
@@ -1234,6 +1409,10 @@ int Matcher::covers_formals(Fun *f, Vec<CreationSet *> &csargs, MPosition &p, in
     if (pp->prefix_to_last(p) && pp->last_is_positional()) {
       if (formals.set_in(pp)) continue;
       if (star_pos && pp->pos.n == 1 && (int)Position2int(pp->last()) >= star_pos) continue;
+      // issues/189: a call with a `*t` may bind any positional formal from
+      // the tuple; the unpack wrapper's own call is what refuses one left
+      // unbound, and fills the defaults.
+      if (match_star_at && top_level && pp->pos.n == 1) continue;
       if (f->default_args.get(pp)) {
         m->default_args.add(pp);
         continue;
@@ -1358,6 +1537,7 @@ static int generic_substitutions(PMatch **am, MPosition &app, Vec<CreationSet *>
     Sym *concrete_value = actual->var->sym->aspect ? actual->var->sym->aspect : cs->sym;
     Sym *formal = m->fun->arg_syms.get(fcpp);
     if (!formal && m->fun->is_varargs) goto Lnext;
+    if (is_star_actual(acpp)) goto Lnext;
     {
       Sym *generic_type = get_generic_type(formal);
       if (generic_type) {
@@ -1385,7 +1565,7 @@ static void coercion_uses(PMatch **am, MPosition &app, Vec<CreationSet *> &args)
     Sym *concrete_type = a->var->sym->aspect ? a->var->sym->aspect : cs->sym;
     concrete_type = concrete_type->type;
     Sym *formal_type = m->formal_dispatch_types.get(fcpp);
-    if (formal_type == concrete_type || (!formal_type && m->fun->is_varargs)) goto LnextArg;
+    if (formal_type == concrete_type || (!formal_type && m->fun->is_varargs) || is_star_actual(acpp)) goto LnextArg;
     {
       Sym *coerced_type = if1->callback->coerce(concrete_type, formal_type);
       if (coerced_type && concrete_type != coerced_type) {
@@ -1438,7 +1618,7 @@ static void promotion_uses(PMatch **am, MPosition &app, Vec<CreationSet *> &args
     Sym *concrete_type = a->var->sym->aspect ? a->var->sym->aspect : cs->sym;
     concrete_type = concrete_type->type;
     Sym *formal_type = m->formal_dispatch_types.get(fcpp);
-    if (formal_type == concrete_type || (!formal_type && m->fun->is_varargs)) goto LnextArg;
+    if (formal_type == concrete_type || (!formal_type && m->fun->is_varargs) || is_star_actual(acpp)) goto LnextArg;
     {
       Sym *formal = m->fun->arg_syms.get(fcpp);
       Sym *promoted_type = if1->callback->promote(m->fun, formal, formal_type, concrete_type);
@@ -1520,7 +1700,7 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
       MPosition *fcpp = to_formal(acpp, m);
       VecCreationSet *t = m->actual_filters.get(acpp);
       Sym *formal = m->fun->arg_syms.get(fcpp);
-      if (!formal && f->is_varargs) goto LnextCoverArg;
+      if ((!formal && f->is_varargs) || is_star_actual(acpp)) goto LnextCoverArg;
       // is each actual handled
       if (!t || !t->set_in(csargs[i])) {
         app.pop();
@@ -1629,6 +1809,7 @@ void Matcher::find_best_cs_match(Vec<CreationSet *> &csargs, MPosition &app, Vec
     for (int i = 0; i < csargs.n; i++) {
       Sym *arg = similar[0]->arg_syms.get(cannonicalize_to_formal(app, match_map.get(similar.v[0])));
       if (!arg && similar[0]->is_varargs) goto LnextSimilarArg;
+      if (is_star_actual(cannonicalize_mposition(app))) goto LnextSimilarArg;
       if (arg->is_pattern) {
         Vec<CreationSet *> local_csargs;
         Vec<Fun *> local_result;
@@ -1685,7 +1866,7 @@ void Matcher::prune_uncoverable(Vec<AVar *> &args, MPosition &app, Vec<Fun *> &m
       for (int i = 0; i < args.n && coverable; i++, app.inc()) {
         MPosition *acpp = cannonicalize_mposition(app);
         Sym *formal = m->fun->arg_syms.get(to_formal(acpp, m));
-        if (!formal && f->is_varargs) continue;
+        if ((!formal && f->is_varargs) || is_star_actual(acpp)) continue;
         if (formal && formal->is_pattern) continue;  // decided recursively, not by this test
         VecCreationSet *t = m->actual_filters.get(acpp);
         Sym *ft = formal && formal->is_exact_match ? dispatch_type(formal) : nullptr;
@@ -1968,7 +2149,7 @@ void Matcher::find_best_matches(Vec<AVar *> &args, Vec<CreationSet *> &csargs, V
         PMatch *m = match_map.get(f);
         if (!m) continue;  // find_best_cs_match skips it too (no PMatch)
         Sym *formal = f->arg_syms.get(to_formal(acpp, m));
-        if (!formal && f->is_varargs) {
+        if ((!formal && f->is_varargs) || is_star_actual(acpp)) {
           always.add(fi);
           continue;
         }
@@ -3089,7 +3270,9 @@ int pattern_match(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_clo
     pattern_match_hits++;
     return matches.n;
   }
-  int mode = incmatch_mode();
+  // issues/189: a `*t` call's match depends on the tuple's arity, which a
+  // member's twin need not share; it is always matched in full.
+  int mode = star_actual_at(args, names) ? 0 : incmatch_mode();
   if (mode) {
     static bool reg = false;
     if (!reg) reg = true, atexit(incmatch_report);
@@ -3151,6 +3334,20 @@ static int pattern_match_full_(Vec<AVar *> &args, Vec<cchar *> &names, AVar *sen
 static int pattern_match_full(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
                               PNode *visibility_point, Vec<Match *> &matches) {
   int r = pattern_match_full_(args, names, send, is_closure, partial, visibility_point, matches);
+  // issues/189: a `**d` that found no callee. A `**kw` formal is the only
+  // thing it binds, so a callee with named parameters filtered it out
+  // before Matcher::build could say why.
+  if (!r && send && send->var && !unpacking_refusal_at(send->var->def))
+    for (int i = 0; i < args.n; i++) {
+      AVar *a = args[i];
+      if (!a || !a->var || !a->var->sym || !a->var->sym->is_rest || (i < names.n && names[i]) || !a->out) continue;
+      bool dict = false;
+      for (CreationSet *cs : a->out->sorted)
+        if (cs && !sym_tuple->specializers.set_in(cs->sym->type)) dict = true;
+      if (dict)
+        refuse_unpacking(send, "'**' unpacking binds only a '**kw' parameter; into named parameters (a "
+                         "forwarding decorator's `fn(*a, **kw)`, or `f(**d)`) it is not supported (issues/189)");
+    }
   if (vkcollapse_mode() == 2) {
     static long checked = 0, mismatch = 0;
     static bool reg = false;
@@ -3172,6 +3369,8 @@ static int pattern_match_full(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send
 static int pattern_match_full_(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
                                PNode *visibility_point, Vec<Match *> &matches) {
   Matcher matcher(send, args[0], is_closure, partial);
+  match_star_at = star_actual_at(args, names);
+  struct ClearStar { ~ClearStar() { match_star_at = 0; } } clear_star;
   Vec<Fun *> *partial_matches = 0;
   find_visible_functions(args, visibility_point, &partial_matches, matcher.function_values);
   log_dispatch_pattern_match(partial_matches, matcher.function_values, send);

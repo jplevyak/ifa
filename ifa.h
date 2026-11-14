@@ -122,6 +122,12 @@ class IFACallbacks : public gc {
   // Sym::is_rest: the matcher binds such a call directly, so the wrapper's
   // own call does not wrap again. Returns 0 when the call does not bind.
   virtual Fun *signature_wrapper(Fun *, int npositional, Vec<cchar *> &keywords) { return 0; }
+  // issues/189: a call of `f` whose actual at top-level position `star_at`
+  // (1-based; the callee is position 1) is a tuple of `arity` elements to
+  // be bound like that many positionals. `names` holds each actual's
+  // keyword name, or null. Returns a wrapper taking exactly those actuals
+  // which calls again with the tuple's elements in its place, or 0.
+  virtual Fun *unpack_wrapper(Fun *, int star_at, int arity, Vec<cchar *> &names) { return 0; }
   virtual Fun *instantiate_generic(Fun *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual bool reanalyze(Vec<ATypeViolation *> &type_violations) { return false; }
   // issues/128 step 2: take back frontend decisions that the CONVERGED

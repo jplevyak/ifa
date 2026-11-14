@@ -163,6 +163,10 @@ struct UnexpectedKeyword {
   cchar *keyword;
 };
 UnexpectedKeyword *unexpected_keyword_at(PNode *send_pnode);
+// issues/189: why the matcher declined a call's `*` or `**` actual, keyed
+// by the send's PNode, so its violation can say so instead of "illegal
+// call argument type".
+cchar *unpacking_refusal_at(PNode *send_pnode);
 
 // ifa/207 step 2: IFA_STANDING. See pattern.cc.
 extern int standing_generation;
