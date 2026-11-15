@@ -27,9 +27,9 @@ phase-4 decomposition into a CFG-walk driver + per-Code_kind
 helpers) by walking PNodes. Each PNode becomes a `BasicBlock` (or
 part of one) terminated by a branch/ret. Phi/phy MOVEs are materialised
 the same way as in the C backend, but using LLVM IR `phi` instructions
-or simple stores. `llvm_codegen_compile` spawns
-`clang -c -fPIC <file>.ll -o <file>.o` then
-`clang <file>.o -o <file> -lm` via `posix_spawnp` (see §11). Debug
+or simple stores. `llvm_codegen_compile` optimizes the module and writes
+the native object in-process (`llvm_emit_object`), then spawns
+`clang++ <file>.o -o <file> ...` only to link (see §11). Debug
 output goes through the `DEBUG_LOG(…)` macro (off unless built with
 the right flag) — production builds are quiet.
 
@@ -441,53 +441,47 @@ through it. Treat as experimental.
 
 ---
 
-## 11. The compile driver (`llvm_codegen_compile`, `llvm.cc:1342`)
+## 11. The compile driver (`llvm_codegen_compile`, `llvm.cc`)
 
-```c
-int llvm_codegen_compile(cchar *input_filename) {
-  // Derive <name>.ll, <name>.o, <name> paths from input_filename.
-  // Each snprintf uses FILENAME_MAX and fails on truncation.
-  char ll_file[FILENAME_MAX], obj_file[FILENAME_MAX], exe_file[FILENAME_MAX];
-  // ... bounded snprintf, fail-on-overflow ...
+Since 2026-11-14 the system compiler only LINKS. `llvm_emit_object` does,
+in process, with the LLVM pyc is linked against:
 
-  // Step 1: clang -c -fPIC <ll> -o <obj>
-  {
-    char *argv[] = {"clang", "-c", "-fPIC", ll_file, "-o", obj_file, nullptr};
-    int res = codegen_spawn("clang", argv);
-    if (res != 0) fail("llvm_codegen_compile: clang -c failed for %s (exit=%d)", ll_file, res);
-  }
+1. clang `-O2 -flto`'s pre-link pipeline on the program's module;
+2. link `pyc_runtime_lto.o` (the runtime as bitcode) into it,
+   `LinkOnlyNeeded`, so the runtime helpers can inline;
+3. internalize every definition but `main` (what an lld LTO link of an
+   executable did; it lets a one-caller function inline and a dead one
+   go);
+4. the LTO pipeline at `-O2`, with clang's tuning (SLP vectorization on);
+5. code generation for the host triple, CPU `x86-64` on x86-64 (clang's
+   default, and the runtime bitcode's `target-cpu`; the inliner refuses a
+   callee whose features are not a subset of the caller's), with a
+   `TargetLibraryInfo` and, on LLVM 22, a `RuntimeLibraryInfoWrapper`
+   for the triple. Without the last, LLVM 22's code generator believes
+   `memcpy` cannot be called and expands every `llvm.memcpy` inline: sha
+   ran 30% slower.
 
-  // Step 2: clang <obj> -o <exe> -lm
-  {
-    char *argv[] = {"clang", obj_file, "-o", exe_file, "-lm", nullptr};
-    int res = codegen_spawn("clang", argv);
-    if (res != 0) fail("llvm_codegen_compile: linking failed for %s (exit=%d)", obj_file, res);
-  }
-  return 0;
-}
-```
+Then `clang++ <obj> [ffi.o] -o <exe> -lm <gc>`: the bundled
+`<system_dir>/gc/lib/libgc.a` when the install carries one
+(`make dist`), else `-lgc -lgccpp`; `-lpyc_runtime` only when the
+runtime bitcode was not linked in (missing, `PYC_LLVM_LTO=0`, or written
+by a newer clang than pyc's LLVM, which cannot read it).
+`PYC_DUMP_OPT_LL=path` writes the module as optimized, before code
+generation.
 
-Phase 4 of CODEGEN_PLAN replaced the pre-existing `system(cmd)`
-shell invocations with `codegen_spawn(file, argv)` (from
-`codegen_common.cc`), which calls `posix_spawnp`. Same benefits as
-the C backend's compile path (§9 of CODEGEN_C.md): no shell quoting,
-length-checked path buffers, no chance of shell-metachar surprises
-in user-supplied filenames.
+**Why in process.** Textual IR and bitcode only read forward. A released
+pyc carries its own LLVM, and handing its `.ll` to the user's clang failed
+whenever that clang was older (`getelementptr inbounds nuw` from LLVM 22
+in clang 18). A native object links with any toolchain. The `.ll` is
+still written next to the input, for reading.
 
-So the LLVM backend's compile path is:
-1. Emit `.ll`.
-2. `clang -c -fPIC file.ll -o file.o`.
-3. `clang file.o -o file -lm`.
-
-Note: this does NOT link in the pyc runtime (`-lpyc_c_runtime` or
-similar). Programs that need runtime helpers (anything using
-`_CG_*` calls) will fail to link as-is. Either:
-- The LLVM backend currently restricts to pure-numeric programs, or
-- A separate `-l` argument needs to be added (and the runtime
-  rebuilt as a shared library).
-
-Status: the LLVM backend is a work-in-progress; the C backend is the
-reliable production path.
+Measured against the clang/lld path (same tree, `-b`): sha, sieve and
+richards at parity or better, with identical output. Corpus:
+`check__PYC_LLVM_1__19a71648+e06aaf32` has every program's compile, run,
+warning and CPython verdict of `check__PYC_LLVM_1__328f0b12+ccf15f37`
+(doom refused, othello2 differing, as before). `make test` green on both
+backends, and the `-b` suite passes 523/0 with pyc built against LLVM 20
+(CI's) as well as 22.
 
 ---
 
@@ -581,11 +575,11 @@ silently picks "some" matching function. If you see weird runtime
 behaviour, set a breakpoint on the fallback paths.
 
 ### 14.9 `Function::ExternalLinkage` everywhere
-Every emitted function uses `ExternalLinkage`. That's harmless for
-linking but prevents LLVM from doing whole-module dead-code
-elimination across function boundaries (every function is treated as
-potentially referenced from outside). If you care about post-clang
-size, change non-main functions to `InternalLinkage`.
+Every emitted function uses `ExternalLinkage`, but since 2026-11-14
+`llvm_emit_object` internalizes every definition but `main` before the
+LTO pipeline whenever the runtime bitcode is linked in (§11), which is
+what the lld LTO link did before it. Without the runtime bitcode the
+module still links `libpyc_runtime.a` by name, and stays external.
 
 ### 14.10 No equivalent of `c_codegen_pre_file`
 The C backend lets the frontend inject prologue lines via

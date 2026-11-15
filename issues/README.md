@@ -118,6 +118,7 @@ Frontend-side items from the same work are in the top-level `issues/`:
 | --- | --- |
 | [200](200-llvm-backend-parity.md) | A1 (layout contract), A5 (int bits in float slots), A6 (three index-path wrong answers) and A3 (six decisions shared; a lambda candidate no longer reads 0 under `-b`) done; no IR fixture or determinism check yet (D3), and the emitter seam (D2). |
 | [210](210-a-list-display-of-function-constants-loses-its-elements.md) | `[lambda x: .., lambda x: ..]`: C stores a function into a `void *` element without a cast (a compile error); LLVM stores no elements. One rule for a function constant used as a value, on both backends. Fixture `tests/lambda_list_literal.py` (`.known_issue`). |
+| [211](211-jit-aborts-on-a-generator.md) | `pyc -j` aborts in LLVM (`Do not know how to promote this operator's operand!`) on any generator; `pyc` and `pyc -b` are fine. Probably the coroutine intrinsics reaching LLJIT unlowered. |
 | [201](201-representation-oracle.md) | representation has three owners (clone, codegen, FA's four predicates) and is keyed on C type strings; one oracle, read by all; slot elision into liveness and clone. |
 | [199](199-emitted-code-performance.md) | no run-time baseline exists; a benchmark mode first, then dispatch tables (030), the tuple header (054), the builtin shapes (190). |
 

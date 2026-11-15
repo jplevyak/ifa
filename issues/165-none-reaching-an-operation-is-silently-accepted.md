@@ -18,10 +18,12 @@ as BOXING. The inliner and DCE keep such a call and its receiver read
 The emitted check reports and exits: it is CPython's *uncaught*
 `TypeError`, and `except TypeError:` cannot catch it. The fix routes the
 check through `__pyc_exc__`, which means arming `pyc_program_has_raise`
-for every call that has such a check. This is the same change as
-threading the pending exception along the propagation path
-([issues/172](../../issues/172-stopiteration-value-reads-the-global-exception-slot.md),
-closed/190 item 3), and should land with it.
+for every call that has such a check. This is exception liveness along
+the propagation path, the change
+[issues/175](../../issues/175-an-exception-raised-in-an-operator-method-does-not-propagate.md)
+step 2 needs (closed/190 item 3), and should land with it. (It used to
+name issues/172 as the same change; 172 needs exception VALUE flow,
+which is bigger. Corrected 2026-11-14.)
 
 ## Residual 2: argument positions other than string concatenation
 

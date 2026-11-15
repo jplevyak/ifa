@@ -1,6 +1,7 @@
 # 200 — LLVM backend parity: the safety nets only the C backend has
 
-**Status: open; A1 and A5 done 2026-11-06, A6 2026-11-07, A3, D3 and D2 2026-11-14.** Left: the linkage measurement. Filed 2026-11-03 from
+**Status: open; A1 and A5 done 2026-11-06, A6 2026-11-07, A3, D3 and D2 2026-11-14.** Left: the linkage measurement (internalization itself landed with the
+in-process object, 2026-11-14). Filed 2026-11-03 from
 [closed/194](closed/194-review-codegen-2026-11.md) A1, A3, A5, D2, D3 and
 [closed/093](closed/093-CGEN-int-float-union-move-not-coerced.md). Both
 backends pass the full e2e suite. The gaps are in what each refuses and
@@ -221,10 +222,14 @@ all 516 `.c` files byte-identical, every exit status the same. The `-b` output i
 
 ## Also
 
-`CODEGEN_LLVM.md` §14.9: every emitted function is `ExternalLinkage`,
-which blocks whole-module DCE. With the runtime now LTO-linked, measure
-`InternalLinkage` for non-`main` functions under
-[199](199-emitted-code-performance.md)'s benchmark.
+`CODEGEN_LLVM.md` §14.9: every emitted function is `ExternalLinkage`.
+The lld LTO link already internalized them, which is why this never
+cost what it seemed to. Since 2026-11-14 the object is written in process
+(`llvm_emit_object`, CODEGEN_LLVM.md §11), and it internalizes every
+definition but `main` itself, whenever the runtime bitcode is linked in.
+On sha that took the program from 88 calls into the runtime to the 51
+the lld link made. Left: a measurement under
+[199](199-emitted-code-performance.md)'s benchmark, once it exists.
 
 **Sweep, 2026-11-06** (A5, A1, 204 rows 1–2, 039 item 1, 197 item 1 together,
 against `eb635d2a`): `check` mode identical per program in every column,
