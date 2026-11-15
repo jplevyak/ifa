@@ -90,7 +90,7 @@ row are independent of each other.
 | [134](134-remove-the-frontend-forced-split-opt-in.md) | 9 `__pyc_clone_constants__` annotations remain, each with a named blocker; the `PER_CS_RECEIVER` stage goes with them. |
 
 Frontend-side items from the same work are in the top-level `issues/`:
-[185](../../issues/185-list-eq-tuple-is-true.md) (`[1, 2] == (1, 2)` is True),
+[185](../../issues/closed/185-list-eq-tuple-is-true.md) (`[1, 2] == (1, 2)` is True),
 [186](../../issues/186-duplicate-method-definitions-are-an-ambiguous-call.md)
 (duplicate defs), [172](../../issues/172-stopiteration-value-reads-the-global-exception-slot.md)
 (the global exception slot).

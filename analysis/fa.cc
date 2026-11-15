@@ -2806,7 +2806,16 @@ static Var *peel_guarded_bool_merge(PNode *p, Var *cur, int max_depth) {
 // Used by issue-025 narrowing recognition to look through
 // the wrapper for `is None`, `is not None`, isinstance, etc.
 // Depth-bounded as a safety net; see ifa/analysis/NOTES.md.
-static PNode *peel_wrapper_def(Var *v, int max_depth = 6) {
+//
+// issues/185: `*negated` is set when an odd number of the peeled calls
+// invert the truth (`not x`). This used to peel through EVERY zero-argument
+// method call, so `if not isinstance(l, list): return False` narrowed as
+// `if isinstance(l, list)`: the code after it saw l's non-list members,
+// none for a list caller, and `l` had no type. It also peeled through
+// `it.__next__()` as if the result were `it`. Only a call the frontend
+// names a truth wrapper (narrowing_wrapper_polarity) is peeled now.
+static PNode *peel_wrapper_def(Var *v, bool *negated, int max_depth = 6) {
+  *negated = false;
   if (!v || !v->def) return v ? v->def : nullptr;
   Var *cur = v;
   PNode *p = v->def;
@@ -2827,7 +2836,9 @@ static PNode *peel_wrapper_def(Var *v, int max_depth = 6) {
           bound->def->rvals.n == 4) {
         PNode *bind = bound->def;
         Var *recv = bind->rvals[1];
-        if (recv && recv->def && recv->def != bind) {
+        int polarity = if1->callback->narrowing_wrapper_polarity(bind->rvals[3] ? bind->rvals[3]->sym : nullptr);
+        if (polarity && recv && recv->def && recv->def != bind) {
+          if (polarity < 0) *negated = !*negated;
           cur = recv;
           p = recv->def;
           advanced = true;
@@ -3146,7 +3157,8 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       // isolation.  When disabled, narrow_operand stays
       // nullptr and the apply sites below fall through to
       // the unnarrowed flow_vars.
-      PNode *iso_def = ifa_narrow ? peel_wrapper_def(p->rvals.v[0]) : nullptr;
+      bool negated = false;
+      PNode *iso_def = ifa_narrow ? peel_wrapper_def(p->rvals.v[0], &negated) : nullptr;
       Var *operand_var = nullptr;
       Var *type_var = nullptr;
       bool is_none_check = false;   // narrowing target: nil_type
@@ -3265,6 +3277,15 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
             else
               ft = type_union(ft, make_AType(cs1));
           }
+        }
+        // issues/185: under `not`, the IF's true branch is the test's false.
+        if (negated) {
+          AType *t = tt;
+          tt = ft;
+          ft = t;
+          AVarRestrictPred tp = narrow_true_pred;
+          narrow_true_pred = narrow_false_pred;
+          narrow_false_pred = tp;
         }
         if (tt != fa->type_world.bottom_type ||
             ft != fa->type_world.bottom_type ||

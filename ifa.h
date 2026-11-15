@@ -103,6 +103,14 @@ class IFACallbacks : public gc {
   virtual cchar *narrowing_isinstance_name() { return nullptr; }
   virtual cchar *narrowing_is_none_name() { return nullptr; }
   virtual cchar *narrowing_is_not_none_name() { return nullptr; }
+  // How a zero-argument method call on a discriminator passes its truth
+  // through, for the same narrowing: +1 when `x.sel()` is true exactly when
+  // x is (pyc: the truthiness wrappers an `if` adds), -1 when it inverts it
+  // (pyc: `not x`, which is `x.__not__()`), 0 when it is not a wrapper of
+  // x's truth at all. FA peels only through a nonzero one, and swaps the
+  // narrowed branches on an odd number of -1s. The default, 0, peels
+  // nothing.
+  virtual int narrowing_wrapper_polarity(Sym *selector) { return 0; }
   virtual int formal_to_generic(Sym *s, Sym **ret_generic, int *ret_bind_to_value) { return false; }
   virtual Sym *instantiate(Sym *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual Fun *order_wrapper(Fun *, Map<MPosition *, MPosition *> &substitutions) { return 0; }
