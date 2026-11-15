@@ -57,9 +57,8 @@ if (codegen_llvm) {
 }
 ```
 
-`codegen_jit` (when set) skips the compile step — the IR stays in
-memory and the (unimplemented) JIT path is supposed to execute it.
-That path is currently a no-op shell.
+`codegen_jit` (when set, `pyc -j`) skips the compile step: the module
+stays in memory and `llvm_jit_execute` runs it (§14.6).
 
 ---
 
@@ -557,10 +556,17 @@ linked. Programs using runtime functions (allocations,
 `_CG_format_string`, etc.) won't link as-is. The C backend invokes
 `Makefile.cg` which handles this; LLVM doesn't have an equivalent.
 
-### 14.6 JIT path is unimplemented
-`codegen_jit` skips `llvm_codegen_compile` but does NOT invoke a JIT
-engine. The intent was `llvm::ExecutionEngine` integration; the code
-isn't there. Don't expect `-j` to work.
+### 14.6 The JIT (`jit.cc`)
+`pyc -j` and the REPL run the module in process with ORC's LLJIT
+(`llvm_jit_execute(argc, argv)`). The module first goes through
+`llvm_optimize_module(false, ...)`, the `-b` pipeline without the runtime
+bitcode: JIT'd code finds the runtime (`_CG_*`, `GC_*`) in the running pyc
+by name (`DynamicLibrarySearchGenerator`; `pyc_jit_exports.list` in a
+static build). The pipeline is required, not an optimization: it lowers
+the coroutines, which LLJIT's code generator cannot, and without it every
+generator aborted (ifa/closed/211). `main` runs in a forked child, with
+`argv` the script (`['']` in the REPL), so `exit()` cannot kill pyc.
+`ctypes` programs are refused under `-j` (issues/188).
 
 ### 14.7 Debug info incomplete
 `DBuilder` is set up but per-function debug info (line tables,
@@ -618,7 +624,7 @@ for the §5 wholesale Codegen migration.)
 | "infinite recursion in getLLVMType" | Recursive struct type without opaque-cache shortcut; see §14.4 |
 | "stale `f->llvm` after rerun" | Reset all `f->llvm` to NULL between invocations |
 | "label across functions wrong" | `label_to_bb_map` not cleared in `translateFunctionBody` |
-| "JIT does nothing" | The JIT path is unimplemented; only AOT compile works |
+| "`-j` aborts in the code generator" | The module reached LLJIT unoptimized; `llvm_jit_execute` must call `llvm_optimize_module` (§14.6) |
 | "module flag mismatch" | Check `DEBUG_METADATA_VERSION` and target triple settings |
 | "type mismatch in CreateAdd" | `mapNumericType` is producing the wrong width; check `num_index` |
 

@@ -425,8 +425,17 @@ static cchar *llvm_runtime_bitcode() {
 // (`getelementptr inbounds nuw`). Now the system compiler only LINKS a
 // plain object, which any version does. Returns whether the runtime
 // bitcode was linked in (then the program needs no libpyc_runtime.a).
-static bool llvm_emit_object(cchar *obj_file) {
+// Optimize TheModule as clang -O2 with LTO would (below), and return the
+// target machine it was optimized for. With `link_runtime`, the runtime
+// bitcode is linked in and every definition but `main` internalized, and
+// `*linked_runtime` says whether that happened. The JIT passes false: its
+// code finds the runtime in the running pyc by name, so those calls stay
+// external. Either way the pipeline lowers the coroutines (llvm.coro.*),
+// which the code generator cannot: the JIT handed LLJIT an unoptimized
+// module and aborted on any generator (ifa/211).
+std::unique_ptr<llvm::TargetMachine> llvm_optimize_module(bool link_runtime, bool *linked_runtime) {
   llvm::Module &M = *TheModule;
+  *linked_runtime = false;
   std::string triple_str = M.getTargetTriple()
 #if LLVM_VERSION_MAJOR >= 22
                                .str()
@@ -438,7 +447,7 @@ static bool llvm_emit_object(cchar *obj_file) {
 #else
   const llvm::Target *target = llvm::TargetRegistry::lookupTarget(triple_str, err);
 #endif
-  if (!target) fail("llvm_emit_object: no target for %s: %s", triple_str.c_str(), err.c_str());
+  if (!target) fail("llvm_optimize_module: no target for %s: %s", triple_str.c_str(), err.c_str());
   llvm::TargetOptions options;
 
   // The runtime bitcode, read first: the CPU and features clang compiled it
@@ -451,7 +460,7 @@ static bool llvm_emit_object(cchar *obj_file) {
   // (+neon, +outline-atomics, ...) are not implied by any CPU name, so
   // they are copied onto the program's functions, as clang stamps them.
   std::unique_ptr<llvm::Module> runtime;
-  if (cchar *rt = llvm_runtime_bitcode()) {
+  if (cchar *rt = link_runtime ? llvm_runtime_bitcode() : nullptr) {
     llvm::SMDiagnostic diag;
     runtime = llvm::parseIRFile(rt, diag, *TheContext);
     // A bitcode file written by a newer clang than this LLVM does not parse;
@@ -481,7 +490,7 @@ static bool llvm_emit_object(cchar *obj_file) {
       triple_str,
 #endif
       cpu, features, options, llvm::Reloc::PIC_, std::nullopt, llvm::CodeGenOptLevel::Default));
-  if (!tm) fail("llvm_emit_object: cannot create a target machine for %s", triple_str.c_str());
+  if (!tm) fail("llvm_optimize_module: cannot create a target machine for %s", triple_str.c_str());
   M.setDataLayout(tm->createDataLayout());
   // The same two rounds the lld LTO link ran: the program through clang
   // -O2 -flto's pre-link pipeline, then, with the runtime bitcode linked in,
@@ -511,12 +520,11 @@ static bool llvm_emit_object(cchar *obj_file) {
   };
   run(false);
 
-  bool linked_runtime = false;
   if (runtime) {
     runtime->setTargetTriple(M.getTargetTriple());
     runtime->setDataLayout(M.getDataLayout());
-    linked_runtime = !llvm::Linker::linkModules(M, std::move(runtime), llvm::Linker::Flags::LinkOnlyNeeded);
-    if (!linked_runtime) DEBUG_LOG("runtime bitcode did not link; using libpyc_runtime.a\n");
+    *linked_runtime = !llvm::Linker::linkModules(M, std::move(runtime), llvm::Linker::Flags::LinkOnlyNeeded);
+    if (!*linked_runtime) DEBUG_LOG("runtime bitcode did not link; using libpyc_runtime.a\n");
   }
   // What the lld LTO link did as it resolved symbols for an executable: every
   // definition but `main` becomes internal, so a function with one caller
@@ -524,7 +532,7 @@ static bool llvm_emit_object(cchar *obj_file) {
   // linkage blocked both). Only with the runtime linked in: otherwise the
   // program's object must still reach libpyc_runtime.a by name, and that
   // is declarations, which this leaves alone.
-  if (linked_runtime) llvm::internalizeModule(M, [](const llvm::GlobalValue &gv) { return gv.getName() == "main"; });
+  if (*linked_runtime) llvm::internalizeModule(M, [](const llvm::GlobalValue &gv) { return gv.getName() == "main"; });
   run(true);
   // PYC_DUMP_OPT_LL=path: the module as optimized, before code generation.
   if (const char *dump = getenv("PYC_DUMP_OPT_LL")) {
@@ -532,7 +540,21 @@ static bool llvm_emit_object(cchar *obj_file) {
     llvm::raw_fd_ostream dos(dump, dec);
     if (!dec) M.print(dos, nullptr);
   }
+  return tm;
+}
 
+// Optimize the program's module and write it as a native object
+// (llvm_optimize_module, then code generation). Returns whether the runtime
+// bitcode was linked in (then the program needs no libpyc_runtime.a).
+static bool llvm_emit_object(cchar *obj_file) {
+  bool linked_runtime = false;
+  std::unique_ptr<llvm::TargetMachine> tm = llvm_optimize_module(true, &linked_runtime);
+  llvm::Module &M = *TheModule;
+  std::string triple_str = M.getTargetTriple()
+#if LLVM_VERSION_MAJOR >= 22
+                               .str()
+#endif
+      ;
   std::error_code ec;
   llvm::raw_fd_ostream out(obj_file, ec, llvm::sys::fs::OF_None);
   if (ec) fail("llvm_emit_object: cannot write %s: %s", obj_file, ec.message().c_str());
