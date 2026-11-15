@@ -613,19 +613,13 @@ int llvm_codegen_compile(cchar *input_filename) {
       fail("llvm_codegen_compile: -o path too long: %s", codegen_output);
   }
 
-  // The compiler driving .ll -> .o -> exe. C++ (not C) since the
-  // coroutine-lowered IR links against C++ runtime pieces. The
-  // macOS/homebrew LLVM location is only a fallback for Apple
-  // hosts; everywhere else use clang++ from PATH, and let
-  // PYC_LLVM_CXX override either.
+  // The compiler that links the object into an executable. C++ (not C)
+  // since the coroutine-lowered code links against C++ runtime pieces.
+  // The system's clang++ (Xcode's on macOS): it only links an object, which
+  // any version does (llvm_emit_object), so a released pyc does not need
+  // Homebrew's LLVM. PYC_LLVM_CXX overrides it.
   cchar *cxx = getenv("PYC_LLVM_CXX");
-  if (!cxx) {
-#ifdef __APPLE__
-    cxx = "/opt/homebrew/opt/llvm/bin/clang++";
-#else
-    cxx = "clang++";
-#endif
-  }
+  if (!cxx) cxx = "clang++";
 
   // Extra link inputs: the frontend's extra translation unit (pyc's foreign
   // call shims), compiled here to its own object, then --libs and the
