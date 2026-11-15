@@ -440,21 +440,47 @@ static bool llvm_emit_object(cchar *obj_file) {
 #endif
   if (!target) fail("llvm_emit_object: no target for %s: %s", triple_str.c_str(), err.c_str());
   llvm::TargetOptions options;
-  // The CPU clang picks with no -march: the triple's baseline, so the
-  // program runs anywhere its triple does. It has to be clang's choice, not
-  // just any baseline: the runtime bitcode was compiled by clang and its
-  // functions say `target-cpu`, and the inliner declines a callee whose
-  // features are not a subset of the caller's. With "generic" on x86-64 no
-  // runtime helper inlined (sha made 281 calls into the runtime, not 51,
-  // and ran 2x slower).
-  cchar *cpu = llvm::Triple(triple_str).getArch() == llvm::Triple::x86_64 ? "x86-64" : "generic";
+
+  // The runtime bitcode, read first: the CPU and features clang compiled it
+  // for are the ones the program is compiled for too. That is clang's
+  // default for the triple (no -march: the program runs anywhere the
+  // triple does), and it must match, because the inliner declines a callee
+  // whose features are not a subset of the caller's: with "generic" on
+  // x86-64 no runtime helper inlined (sha made 281 calls into the runtime,
+  // not 51, and ran 2x slower). On aarch64 clang's features
+  // (+neon, +outline-atomics, ...) are not implied by any CPU name, so
+  // they are copied onto the program's functions, as clang stamps them.
+  std::unique_ptr<llvm::Module> runtime;
+  if (cchar *rt = llvm_runtime_bitcode()) {
+    llvm::SMDiagnostic diag;
+    runtime = llvm::parseIRFile(rt, diag, *TheContext);
+    // A bitcode file written by a newer clang than this LLVM does not parse;
+    // the program then links libpyc_runtime.a and the helpers do not inline.
+    if (!runtime) DEBUG_LOG("runtime bitcode %s does not parse; using libpyc_runtime.a\n", rt);
+  }
+  std::string cpu = llvm::Triple(triple_str).getArch() == llvm::Triple::x86_64 ? "x86-64" : "generic";
+  std::string features, tune;
+  if (runtime)
+    for (llvm::Function &f : *runtime) {
+      if (f.isDeclaration() || !f.hasFnAttribute("target-cpu")) continue;
+      cpu = f.getFnAttribute("target-cpu").getValueAsString().str();
+      if (f.hasFnAttribute("target-features")) features = f.getFnAttribute("target-features").getValueAsString().str();
+      if (f.hasFnAttribute("tune-cpu")) tune = f.getFnAttribute("tune-cpu").getValueAsString().str();
+      break;
+    }
+  for (llvm::Function &f : M) {
+    if (f.isDeclaration()) continue;
+    if (!f.hasFnAttribute("target-cpu")) f.addFnAttr("target-cpu", cpu);
+    if (!features.empty() && !f.hasFnAttribute("target-features")) f.addFnAttr("target-features", features);
+    if (!tune.empty() && !f.hasFnAttribute("tune-cpu")) f.addFnAttr("tune-cpu", tune);
+  }
   std::unique_ptr<llvm::TargetMachine> tm(target->createTargetMachine(
 #if LLVM_VERSION_MAJOR >= 22
       M.getTargetTriple(),
 #else
       triple_str,
 #endif
-      cpu, "", options, llvm::Reloc::PIC_, std::nullopt, llvm::CodeGenOptLevel::Default));
+      cpu, features, options, llvm::Reloc::PIC_, std::nullopt, llvm::CodeGenOptLevel::Default));
   if (!tm) fail("llvm_emit_object: cannot create a target machine for %s", triple_str.c_str());
   M.setDataLayout(tm->createDataLayout());
   // The same two rounds the lld LTO link ran: the program through clang
@@ -486,17 +512,11 @@ static bool llvm_emit_object(cchar *obj_file) {
   run(false);
 
   bool linked_runtime = false;
-  if (cchar *rt = llvm_runtime_bitcode()) {
-    llvm::SMDiagnostic diag;
-    std::unique_ptr<llvm::Module> runtime = llvm::parseIRFile(rt, diag, *TheContext);
-    // A bitcode file written by a newer clang than this LLVM does not parse;
-    // the program then links libpyc_runtime.a and the helpers do not inline.
-    if (runtime) {
-      runtime->setTargetTriple(M.getTargetTriple());
-      runtime->setDataLayout(M.getDataLayout());
-      linked_runtime = !llvm::Linker::linkModules(M, std::move(runtime), llvm::Linker::Flags::LinkOnlyNeeded);
-    }
-    if (!linked_runtime) DEBUG_LOG("runtime bitcode %s not linked in; using libpyc_runtime.a\n", rt);
+  if (runtime) {
+    runtime->setTargetTriple(M.getTargetTriple());
+    runtime->setDataLayout(M.getDataLayout());
+    linked_runtime = !llvm::Linker::linkModules(M, std::move(runtime), llvm::Linker::Flags::LinkOnlyNeeded);
+    if (!linked_runtime) DEBUG_LOG("runtime bitcode did not link; using libpyc_runtime.a\n");
   }
   // What the lld LTO link did as it resolved symbols for an executable: every
   // definition but `main` becomes internal, so a function with one caller
@@ -518,9 +538,7 @@ static bool llvm_emit_object(cchar *obj_file) {
   if (ec) fail("llvm_emit_object: cannot write %s: %s", obj_file, ec.message().c_str());
   llvm::legacy::PassManager codegen;
   // The library functions the target has, as llc and clang give their code
-  // generators. Without it the backend works from an unknown triple's
-  // (most of libc unavailable): the same IR came out 583 instructions in
-  // sha's hot function, against llc's 533, and ran 30% slower.
+  // generators.
   llvm::TargetLibraryInfoImpl tlii{llvm::Triple(triple_str)};
   codegen.add(new llvm::TargetLibraryInfoWrapperPass(tlii));
 #if LLVM_VERSION_MAJOR >= 22
