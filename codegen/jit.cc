@@ -45,6 +45,9 @@ char llvm_jit_cache_path[512] = {};
 // Load a cached bitcode file into TheModule / TheContext.
 // Returns true on success; false on any I/O or parse error (caller should
 // fall back to the full FA+codegen pipeline).
+// Whether TheModule came from llvm_jit_read_cache (already optimized).
+static bool jit_module_from_cache = false;
+
 bool llvm_jit_read_cache(const char *path) {
   auto mb = llvm::MemoryBuffer::getFile(path);
   if (!mb) return false;
@@ -53,10 +56,12 @@ bool llvm_jit_read_cache(const char *path) {
   if (!mod) return false;
   TheContext = std::move(ctx);
   TheModule  = std::move(*mod);
+  jit_module_from_cache = true;
   return true;
 }
 
-int llvm_jit_execute() {
+// Run the module's `main` with argc/argv: the program's sys.argv.
+int llvm_jit_execute(int argc, char **argv) {
   // Ensure LLVM knows about the native target.  This is a no-op when the
   // full pipeline already called llvm_codegen_initialize(), and required
   // when the cache-hit path skips that function entirely.
@@ -79,6 +84,16 @@ int llvm_jit_execute() {
   if (!gen)
     fail("JIT: DynamicLibrarySearchGenerator: %s", llvm::toString(gen.takeError()).c_str());
   jit->getMainJITDylib().addGenerator(std::move(*gen));
+
+  // The module as the AOT path compiles it: optimized, which lowers the
+  // coroutines a generator uses (ifa/211: LLJIT aborted on them, "Do not
+  // know how to promote this operator's operand"). A module read back from
+  // the REPL's cache was optimized before it was written.
+  if (!jit_module_from_cache) {
+    bool linked_runtime;
+    llvm_optimize_module(false, &linked_runtime);
+  }
+  jit_module_from_cache = false;
 
   // Write bitcode cache before ownership is transferred (one-shot).
   if (llvm_jit_cache_path[0] && TheModule) {
@@ -108,7 +123,7 @@ int llvm_jit_execute() {
   if (pid < 0)
     fail("JIT: fork() failed: %s", strerror(errno));
   if (pid == 0)
-    exit(entry(0, nullptr));
+    exit(entry(argc, argv));
 
   int status = 0;
   if (waitpid(pid, &status, 0) < 0)

@@ -98,10 +98,10 @@ static void approximate_liveness(Fun *f, Vec<PNode *> &nodes) {
 // UnboundLocalError for exactly this; pyc reads stack garbage silently
 // on both backends.
 //
-// DEFAULT OFF (IFA_UNBOUND=1 to enable). The fixed point below does not
-// converge on some functions; see "Where it stands" in the issue. It is
-// hard-bounded so an enabled run cannot hang, and exhausting the bound
-// abandons the result rather than reporting a wrong one.
+// DEFINITELY unbound is on by default (ifa/039 item 1); POSSIBLY needs
+// IFA_UNBOUND=1 or `safe`. The fixed point is hard-bounded so a run cannot
+// hang, and exhausting the bound abandons the result rather than reporting
+// a wrong one.
 //
 // Why a separate pass, and not the hook the issue originally proposed.
 // `get_Var`'s "no entry in the renaming environment" fallback looks like
@@ -159,14 +159,34 @@ static void compute_rpo(Fun *f, Vec<PNode *> &nodes, Vec<PNode *> &rpo) {
   for (PNode *n : nodes) if (!seen.set_in(n)) rpo.add(n);
 }
 
+// ifa/039: the Vars a function's formals bind on entry. A formal can be a
+// PATTERN whose sub-symbols are the bound names (the V frontend's
+// `operator` functions destructure their arguments this way), so walk the
+// pattern to its leaves. pyc's formals are flat and are found at depth 1.
+// With DEFINITELY on by default, missing the leaves made every formal of
+// ifa's test_llvm.v read as "used before assignment on every path".
+static void add_formal_vars(Sym *s, Vec<Var *> &formals) {
+  for (Sym *a : s->has) {
+    if (!a) continue;
+    if (a->var) formals.set_add(a->var);
+    if (a->is_pattern) add_formal_vars(a, formals);
+  }
+}
+
 static const int kUnboundMaxSweeps = 200;
 
 static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) {
   // The `safe` environment cannot auto-initialize what was never
   // identified, so requesting it turns the analysis on regardless.
+  //
+  // ifa/039 item 1: the analysis always runs, because DEFINITELY unbound
+  // (no path assigns the local before the read) is reported by default.
+  // POSSIBLY unbound is recorded only when asked for, by IFA_UNBOUND=1 or
+  // by `safe` (which fills those slots), since without the runtime check
+  // (item 2) it is an advisory warning on valid programs.
   static int enabled = -1;
   if (enabled < 0) enabled = getenv("IFA_UNBOUND") ? 1 : 0;
-  if (!enabled && !fauto_init_unbound) return;
+  bool record_possibly = enabled || fauto_init_unbound;
   if (!f->entry || !locals.n || !nodes.n) return;
 
   // Dense bit indices: a Vec-of-Var set with a linear set_in inside the
@@ -217,7 +237,7 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
   // build_patterns, which runs inside FA, long after build_ssu -- so at
   // this point it is always 0 and seeding from it seeds nothing.
   Vec<Var *> formals;
-  for (Sym *a : f->sym->has) if (a && a->var) formals.set_add(a->var);
+  add_formal_vars(f->sym, formals);
 
   uint64_t *in = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
   uint64_t *mayin = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
@@ -306,13 +326,18 @@ static void find_maybe_unbound(Fun *f, Vec<PNode *> &nodes, Vec<Var *> &locals) 
         else for (int i = 0; i < nwords; i++) in[i] &= po[i];
       }
     }
-    for (Var *v : n->rvals) if (v && v->sym->is_local) {
+    // A TYPE sym is its own value: a function-local `class I:` is read as
+    // `I` and bound by no PNode, so without this every use of a local
+    // class reported "used before assignment on every path"
+    // (tests/local_class_capture.py, once DEFINITELY was on by default).
+    for (Var *v : n->rvals) if (v && v->sym->is_local && !v->sym->type_kind) {
       int b = idx.get(v);
       if (!b) continue;
       --b;
       bool must = (in[b >> 6] & ((uint64_t)1 << (b & 63))) != 0;
       bool may = (mayin[b >> 6] & ((uint64_t)1 << (b & 63))) != 0;
       if (must) continue;              // definitely assigned: fine
+      if (may && !record_possibly) continue;  // possibly unbound, not asked for
       v->sym->maybe_unbound = 1;
       if (!may) v->sym->definitely_unbound = 1;  // no path assigns it at all
     }
@@ -382,7 +407,7 @@ static void mark_unbound_phi_operands(Fun *f, Vec<PNode *> &nodes) {
   }
 
   Vec<Var *> formals;
-  for (Sym *a : f->sym->has) if (a && a->var) formals.set_add(a->var);
+  add_formal_vars(f->sym, formals);
 
   uint64_t *in = (uint64_t *)MALLOC(nwords * sizeof(uint64_t));
   bool changed = true;
@@ -564,7 +589,7 @@ void Fun::build_ssu() {
     for (Var *v : p->lvals) if (v->sym->is_local) v->ssu->defs.add(p);
     for (Var *v : p->rvals) if (v->sym->is_local) v->ssu->uses.add(p);
   }
-  find_maybe_unbound(this, pnodes, vrs);  // ifa/issues/039 (default off)
+  find_maybe_unbound(this, pnodes, vrs);  // ifa/issues/039 (DEFINITELY by default)
   // Phi placement and phy placement feed each other: a
   // new phy creates new defs (its lvals at branch entries
   // — see `place_phy` line `defs.append(y->cfg_succ)`),

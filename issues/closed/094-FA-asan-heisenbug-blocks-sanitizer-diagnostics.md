@@ -1,9 +1,11 @@
 # 094 — an ASAN build of pyc intermittently crashes on `hello_world.py`
 
+**CLOSED 2026-11-03: merged into [202](../202-health-docs-levers-probes-tests-and-ci.md)** (row "ASAN build"), with the three ordered steps below as its plan. Unlocalised; nothing waits on it.
+
 **Status:** open, unlocalised. Filed 2026-08-11 while attempting
 closed/041's ASAN soak (041 is closed as not reproducible, so nothing
 waits on this). Rewritten 2026-09-28; history in git:
-`git show 3f36072b:ifa/issues/094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md`.
+`git show 3f36072b:ifa/issues/closed/094-FA-asan-heisenbug-blocks-sanitizer-diagnostics.md`.
 It matters on its own terms: a sanitizer build that is not trustworthy
 blocks every future memory diagnostic.
 

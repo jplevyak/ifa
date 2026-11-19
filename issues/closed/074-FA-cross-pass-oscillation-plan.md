@@ -64,7 +64,7 @@ CreationSet identity, which is decided by structure (which contour
 allocated it). A copy minted inside a contour, with the same shape as its
 source, should not count as a distinction that justifies a new contour.
 This is the identity-vs-shape question in
-[146](../146-remove-all-arbitrary-splitting.md), and a demand-splitting
+[146](146-remove-all-arbitrary-splitting.md), and a demand-splitting
 defect: nothing asked for the new level.
 
 ## Forward options
@@ -300,7 +300,7 @@ only if 1 and 2 leave `deepcopy` as a special case.
 | `PYC_CSKEY=3` (includes 2's `split_origin` canonicalization) | Durable setter type in the CS ledger signature. Stopped the ledger missing repeats because of drifting `s->out->type`. |
 | `FA::rederive_churn` | The divergence guard counts "mint anyway", not ledger routes (recovery). `pass_limit_hit` went 10 → 4 programs. |
 | `PYC_CSMOLD=3` | The mold fallback is limited to containers and never used for a split child. Fixed the bounded sibling `tests/deepcopy_copy_of_copy_chain.py`. |
-| display out of identity ([100](100-FA-display-removed-from-contour-identity.md)); marks retired ([146](../146-remove-all-arbitrary-splitting.md)) | ess −40-80% corpus-wide; retired this plan's old Stages 0 and 4. |
+| display out of identity ([100](100-FA-display-removed-from-contour-identity.md)); marks retired ([146](146-remove-all-arbitrary-splitting.md)) | ess −40-80% corpus-wide; retired this plan's old Stages 0 and 4. |
 
 The rest of the corpus's non-convergence is a different disease,
 characterized in [101](101-FA-first-time-forever-splitting.md): 95-98% of

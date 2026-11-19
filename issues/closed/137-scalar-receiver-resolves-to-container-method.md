@@ -5,7 +5,7 @@
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
 **Status:** open, found 2026-09-06 while triaging
-[129](../129-plan-demand-driven-creation-set-splitting.md)'s flag arm.
+[129](129-plan-demand-driven-creation-set-splitting.md)'s flag arm.
 Affects `pystone` under `PYC_CSDCPA1=2`.
 
 ## The diagnostic said the wrong thing

@@ -163,5 +163,23 @@ struct UnexpectedKeyword {
   cchar *keyword;
 };
 UnexpectedKeyword *unexpected_keyword_at(PNode *send_pnode);
+// issues/189: why the matcher declined a call's `*` or `**` actual, keyed
+// by the send's PNode, so its violation can say so instead of "illegal
+// call argument type".
+cchar *unpacking_refusal_at(PNode *send_pnode);
+
+// ifa/207 step 2: IFA_STANDING. See pattern.cc.
+extern int standing_generation;
+int standing_mode();
+void standing_record(Vec<AVar *> &args, Vec<cchar *> &names, AVar *send, int is_closure, Partial_kind partial,
+                     PNode *visibility_point, Vec<Match *> &matches);
+int standing_try(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
+                 Vec<Match *> &admitted, Vec<Match *> *check);
+
+// ifa/207: skip a dispatch whose inputs did not change. See pattern.cc.
+int dispatch_unchanged(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
+                       int *ret);
+void dispatch_remember(Vec<AVar *> &args, AVar *send, int is_closure, Partial_kind partial, PNode *visibility_point,
+                       int ret, Vec<Match *> *matches);
 
 #endif

@@ -54,8 +54,15 @@ CFLAGS += -MMD -MP -Wall
 ifdef DEBUG
 CFLAGS += -g -DDEBUG=1
 endif
+# PORTABLE=1 (a release build, `make dist`): no -march=native, so the
+# binary runs on any CPU of its architecture, not only the build host's.
+ifdef PORTABLE
+MARCH =
+else
+MARCH = -march=native
+endif
 ifdef OPTIMIZE
-CFLAGS += -O3 -march=native
+CFLAGS += -O3 $(MARCH)
 endif
 ifdef PROFILE
 CFLAGS += -pg
@@ -91,7 +98,7 @@ endif
 # LLVM Configuration
 LLVM_CONFIG ?= $(shell command -v llvm-config 2>/dev/null || echo /opt/homebrew/opt/llvm/bin/llvm-config)
 LLVM_CXXFLAGS = $(shell $(LLVM_CONFIG) --cxxflags)
-LLVM_LDFLAGS = $(shell $(LLVM_CONFIG) --ldflags --libs core irreader executionengine mcjit native target CodeGen AsmPrinter AsmParser | sed 's/-NDEBUG //')
+LLVM_LDFLAGS = $(shell $(LLVM_CONFIG) --ldflags --libs core irreader executionengine mcjit native target CodeGen AsmPrinter AsmParser passes linker ipo | sed 's/-NDEBUG //')
 # Removed -NDEBUG as DEBUG=1 is often set. LLVM_CXXFLAGS usually includes appropriate -DNDEBUG or not.
 
 CFLAGS += $(LLVM_CXXFLAGS)

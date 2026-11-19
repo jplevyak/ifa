@@ -2,7 +2,7 @@
 
 **Status:** fixed 2026-09-07. Root cause of `richards`'s compile failure
 under `PYC_CSDCPA1=2`, one of the two corpus programs in
-[129](../129-plan-demand-driven-creation-set-splitting.md)'s bill that had
+[129](129-plan-demand-driven-creation-set-splitting.md)'s bill that had
 never been triaged.
 
 ## Symptom

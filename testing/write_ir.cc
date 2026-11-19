@@ -74,6 +74,9 @@ static cchar *type_kind_word(int k) {
 }
 
 static void write_sym_attrs(FILE *fp, Sym *s, NameAssigner &na) {
+  // A Sym whose %name was de-duplicated keeps its own name through :name.
+  cchar *assigned = na.name_of.get(s);
+  if (s->name && assigned && !s->is_constant && strcmp(assigned, s->name)) fprintf(fp, " :name \"%s\"", s->name);
   if (s->type) { fputs(" :type ", fp); na.print_ref(fp, s->type); }
   if (s->in) { fputs(" :in ", fp); na.print_ref(fp, s->in); }
   if (s->type_kind) fprintf(fp, " :kind %s", type_kind_word(s->type_kind));
@@ -127,6 +130,8 @@ static void write_code_form(FILE *fp, Code *c, NameAssigner &na, LabelNames &lbl
       return;
     case Code_SEND:
       fputs("  (send", fp);
+      if (c->partial != if1->partial_default)
+        fputs(c->partial == Partial_OK ? " :partial ok" : c->partial == Partial_NEVER ? " :partial never" : " :partial always", fp);
       for (Sym *r : c->rvals) { fputc(' ', fp); na.print_ref(fp, r); }
       if (c->lvals.n) {
         fputs(" =>", fp);

@@ -52,6 +52,16 @@ load, because the fold is a snapshot with no backward edge.)
 
 ## Open
 
+1b. **Write-once globals first** (the Concert ancestor's `write-once`,
+   [closed/195](closed/195-what-the-concert-compiler-still-has-that-ifa-does-not.md)
+   C4): a global whose every store is sourced inside the initialisation
+   contours (module level before the first call that reaches user code) is
+   write-once; every read outside those contours folds to the stored
+   value. The fixture above is this shape. ifa has the hook
+   (`provably_constant_load`) and the call-graph facts; it lacks the
+   classification. Stable across passes by construction (the store set
+   comes from `if1->allclosures`), so it passes Wall 1.
+
 2. **A per-Fun mod-set over module-data cells**, transitive over the call
    graph. It has the same shape as `compute_fun_can_raise()` (post-clone,
    over `Fun::calls`), generalised from one bit to a small set. It bounds

@@ -1,8 +1,10 @@
 # 054 — every tuple carries a 16-byte list header it rarely needs
 
+**CLOSED 2026-11-03: merged into [199](../199-emitted-code-performance.md)** (the cost side) and [201](../201-representation-oracle.md) (the decision, which this issue already said belongs to FA's representation layer and must be read identically by both backends).
+
 **Status:** open, deliberately deferred (performance, no correctness
 impact). Rewritten 2026-09-28; history in git:
-`git show 3f36072b:ifa/issues/054-CGEN-remove-unconditional-tuple-list-header.md`.
+`git show 3f36072b:ifa/issues/closed/054-CGEN-remove-unconditional-tuple-list-header.md`.
 
 ## What and why
 
@@ -18,7 +20,7 @@ path. For a uniform-arity tuple the header is written and never read.
 
 The decision belongs to FA's representation layer, not to either
 backend: a tuple CreationSet needs a header iff it can reach an AVar whose
-type unions it with a tuple CS of a different arity. That is [132](closed/132-arity-is-representation-not-provenance.md)'s
+type unions it with a tuple CS of a different arity. That is [132](132-arity-is-representation-not-provenance.md)'s
 cross-CreationSet arity question, and `IFA_DBG_SLOTREP` already
 enumerates those AVars. Mark the contributing CreationSets (per CS, not per
 `Sym`, or a monomorphic site pays for a heterogeneous one). Both backends

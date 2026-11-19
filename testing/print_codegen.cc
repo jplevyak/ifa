@@ -23,12 +23,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-void print_codegen_c_normalized(FILE *fp, IF1 *p) {
+// The ifa_analyze + ifa_optimize mirror both backend printers share.
+// Prints the phase banner; returns false when there is no top closure.
+static bool codegen_pipeline(FILE *fp, cchar *phase, int &fa_rc, int &clone_rc) {
   // ------------------------------------------------------------------
   // Setup (same as dce/freq printers).
   // ------------------------------------------------------------------
   Vec<Sym *> closures;
-  for (Sym *c : p->allclosures) closures.add(c);
+  for (Sym *c : if1->allclosures) closures.add(c);
   for (Sym *c : closures) {
     if (c == fa_setup_user_entry) continue;
     if (!c->code) continue;
@@ -40,15 +42,15 @@ void print_codegen_c_normalized(FILE *fp, IF1 *p) {
     pdb->add(f);
   }
 
-  fputs(";; phase: codegen-c\n\n", fp);
+  fprintf(fp, ";; phase: %s\n\n", phase);
   if (!if1->top || !if1->top->fun) {
     fputs("(skipped — no top closure)\n", fp);
-    return;
+    return false;
   }
 
   // ifa_analyze pipeline.
-  int fa_rc = pdb->fa->analyze(if1->top->fun);
-  int clone_rc = clone(pdb->fa);
+  fa_rc = pdb->fa->analyze(if1->top->fun);
+  clone_rc = clone(pdb->fa);
   FA *fa = pdb->fa;
   for (Fun *f : fa->funs) build_cfg_dominators(f);
   mark_live_code(fa);
@@ -63,6 +65,13 @@ void print_codegen_c_normalized(FILE *fp, IF1 *p) {
     mark_live_types(fa);
     mark_live_funs(fa);
   }
+  return true;
+}
+
+void print_codegen_c_normalized(FILE *fp, IF1 *) {
+  int fa_rc = 0, clone_rc = 0;
+  if (!codegen_pipeline(fp, "codegen-c", fa_rc, clone_rc)) return;
+  FA *fa = pdb->fa;
 
   // ------------------------------------------------------------------
   // Run the C backend into a memstream so we can lightly normalise.
@@ -182,3 +191,74 @@ static void write_stripping_dbg(FILE *fp, cchar *line, size_t line_len) {
   fwrite(line, 1, line_len, fp);
 }
 
+
+// Is the line host-, path- or LLVM-version-specific boilerplate? The
+// module ID and source_filename carry the fixture path, the target lines
+// the host triple, and every `!N = ...` metadata line the debug-info
+// tables (which name the directory). An intrinsic's declaration, its
+// `; Function Attrs` comment and the `attributes #N` groups are LLVM's
+// own text and change between versions (20 prints `nocapture`, 22
+// `captures(none)`); the call site still names the intrinsic. None of
+// it is codegen.
+static bool ll_is_host_line(cchar *cur, size_t len) {
+  return ll_starts_with(cur, len, "; ModuleID = ") ||
+         ll_starts_with(cur, len, "; Function Attrs: ") ||
+         ll_starts_with(cur, len, "attributes #") ||
+         (ll_starts_with(cur, len, "declare ") && ll_contains(cur, len, " @llvm.")) ||
+         ll_starts_with(cur, len, "source_filename = ") ||
+         ll_starts_with(cur, len, "target datalayout = ") ||
+         ll_starts_with(cur, len, "target triple = ") ||
+         ll_starts_with(cur, len, "!llvm.") ||
+         (len >= 2 && cur[0] == '!' && cur[1] >= '0' && cur[1] <= '9');
+}
+
+void print_codegen_llvm_normalized(FILE *fp, IF1 *) {
+  int fa_rc = 0, clone_rc = 0;
+  if (!codegen_pipeline(fp, "codegen-llvm", fa_rc, clone_rc)) return;
+  FA *fa = pdb->fa;
+
+  char *buf = NULL;
+  size_t buf_n = 0;
+  FILE *mem = open_memstream(&buf, &buf_n);
+  if (!mem) {
+    fputs("(open_memstream failed)\n", fp);
+    return;
+  }
+  llvm_codegen_print_ir(mem, fa, if1->top->fun, "fixture.ir");
+  fclose(mem);
+
+  // No byte count: the raw module carries host- and path-length text.
+  fprintf(fp, "(summary fa_rc=%d clone_rc=%d funs=%d)\n\n", fa_rc, clone_rc, fa->funs.n);
+  fputs(";; llvm-output (module header, target, debug metadata stripped):\n", fp);
+  cchar *cur = buf;
+  cchar *end = buf + buf_n;
+  bool prev_blank = true;  // collapse the blank runs stripping leaves behind
+  while (cur < end) {
+    cchar *nl = (cchar *)memchr(cur, '\n', end - cur);
+    cchar *line_end = nl ? nl : end;
+    size_t line_len = line_end - cur;
+    cchar *next = nl ? nl + 1 : end;
+    if (ll_is_host_line(cur, line_len)) { cur = next; continue; }
+    if (line_len == 0) {
+      if (!prev_blank) fputc('\n', fp);
+      prev_blank = true;
+      cur = next;
+      continue;
+    }
+    // A "#dbg_" record line is dropped whole by write_stripping_dbg;
+    // write into a scratch buffer so a dropped line leaves no newline.
+    char *lb = NULL;
+    size_t lb_n = 0;
+    FILE *lf = open_memstream(&lb, &lb_n);
+    write_stripping_dbg(lf, cur, line_len);
+    fclose(lf);
+    if (lb_n) {
+      fwrite(lb, 1, lb_n, fp);
+      fputc('\n', fp);
+      prev_blank = false;
+    }
+    free(lb);
+    cur = next;
+  }
+  if (buf) free(buf);
+}

@@ -19,6 +19,17 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Linker/Linker.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/IPO/Internalize.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+#if LLVM_VERSION_MAJOR >= 22
+#undef FREAD
+#undef FWRITE
+#include "llvm/Analysis/RuntimeLibcallInfo.h"
+#endif
+#include "llvm/Support/SourceMgr.h"
 #include <fcntl.h>
 #include <spawn.h>
 #include <stdarg.h>
@@ -46,11 +57,12 @@ llvm::DIFile *UnitFile = nullptr;
 void llvm_codegen_initialize(FA *fa);
 void llvm_codegen_initialize(FA *fa) {
   // Initialize LLVM components
-  llvm::InitializeAllTargetInfos();
-  llvm::InitializeAllTargets();
-  llvm::InitializeAllTargetMCs();
-  // llvm::InitializeAllAsmParsers(); // Not strictly needed for IR generation to .ll
-  llvm::InitializeAllAsmPrinters();  // Needed for object file emission if done via PassManager
+  // The host target only: the module's triple is getDefaultTargetTriple()
+  // below, and clang (not pyc) compiles the .ll. Initializing every target
+  // linked each LLVM backend into a static pyc (`make pyc-static`) for
+  // nothing.
+  llvm::InitializeNativeTarget();
+  llvm::InitializeNativeTargetAsmPrinter();
 
   // Tear down any previous-call state in reverse-dependency order.
   // The naive `TheContext = make_unique<...>()` assigns the new Context
@@ -114,9 +126,10 @@ void llvm_codegen_initialize(FA *fa) {
 
 
 void llvm_build_type_strings(FA *fa) {
-#define S(_n) cg_set_string(if1_get_builtin(fa->pdb->if1, #_n), "_CG_" #_n);
-#include "builtin_symbols.h"
-#undef S
+  // ifa/201: the same members exist on both backends. Before the names,
+  // the slot map and any struct type, as in c_codegen_print_c.
+  cg_elide_unread_slots(fa);
+  cg_name_builtin_types(fa);
   // Annotate=false: LLVM IR identifiers can't carry comments. No
   // globals collection: the LLVM backend discovers globals separately
   // via createGlobalVariables. See codegen_common.{h,cc}.
@@ -387,46 +400,212 @@ void llvm_codegen_write_ir(FA *fa, Fun *main, cchar *input_filename) {
   DEBUG_LOG("LLVM IR written to %s\n", fn);
 }
 
-// Run argv with stdout/stderr discarded; the exit status, or -1.
-static int spawn_quiet(const char *file, char *const argv[]) {
-  posix_spawn_file_actions_t fa_;
-  posix_spawn_file_actions_init(&fa_);
-  posix_spawn_file_actions_addopen(&fa_, 1, "/dev/null", O_WRONLY, 0);
-  posix_spawn_file_actions_addopen(&fa_, 2, "/dev/null", O_WRONLY, 0);
-  pid_t pid = 0;
-  int rc = posix_spawnp(&pid, file, &fa_, nullptr, argv, environ);
-  posix_spawn_file_actions_destroy(&fa_);
-  if (rc != 0) return -1;
-  int status = 0;
-  if (waitpid(pid, &status, 0) < 0) return -1;
-  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
 
 // The runtime as LLVM bitcode (pyc_runtime_lto.o, built beside
-// libpyc_runtime.a by the top-level Makefile), and whether `cxx` can link it
-// with lld. Linked as bitcode, the runtime helpers (`_CG_str_eq`, `_CG_ord`,
-// `_CG_list_resize`, ...) inline into the program the way the C backend's do
-// from pyc_c_runtime.h; linked from the archive they cannot. Measured
-// 2026-10-18 on 8 corpus programs: 17% faster (geomean), sha 47%, sieve 30%.
-// PYC_LLVM_LTO=0 turns it off. Decided once per process.
-static cchar *llvm_lto_runtime(cchar *cxx) {
-  static int decided = 0;
+// libpyc_runtime.a by the top-level Makefile). llvm_emit_object links it into
+// the program's module before optimizing, so the runtime helpers
+// (`_CG_str_eq`, `_CG_ord`, `_CG_list_resize`, ...) inline into the program
+// the way the C backend's do from pyc_c_runtime.h. Measured 2026-10-18 (as an
+// lld LTO link) on 8 corpus programs: 17% faster (geomean), sha 47%, sieve
+// 30%. PYC_LLVM_LTO=0 turns it off.
+static cchar *llvm_runtime_bitcode() {
   static char path[FILENAME_MAX];
-  if (decided) return decided > 0 ? path : nullptr;
-  decided = -1;
   if (cchar *e = getenv("PYC_LLVM_LTO")) if (!atoi(e)) return nullptr;
-  cchar *dirs[] = {system_dir, "..", "/usr/local/lib", "/opt/homebrew/lib", nullptr};
-  bool found = false;
-  for (int i = 0; dirs[i] && !found; i++) {
+  cchar *dirs[] = {system_dir, "..", nullptr};
+  for (int i = 0; dirs[i]; i++) {
     if (snprintf(path, sizeof(path), "%s/pyc_runtime_lto.o", dirs[i]) >= (int)sizeof(path)) continue;
-    found = access(path, R_OK) == 0;
+    if (access(path, R_OK) == 0) return path;
   }
-  if (!found) return nullptr;
-  // Does `cxx -fuse-ld=lld` work? `-Wl,--version` runs the linker and exits.
-  char *probe[] = {(char *)cxx, (char *)"-fuse-ld=lld", (char *)"-Wl,--version", nullptr};
-  if (spawn_quiet(cxx, probe) != 0) return nullptr;
-  decided = 1;
-  return path;
+  return nullptr;
+}
+
+// Optimize the program's module and write it as a native object, in this
+// process, with the LLVM pyc is linked against. pyc used to write the .ll
+// and run `clang -O2 -c` on it, which needs a clang at least as new as that
+// LLVM: textual IR (and bitcode) only reads forward. A released pyc carries
+// its own LLVM, so the user's clang 18 refused the IR of pyc's LLVM 20
+// (`getelementptr inbounds nuw`). Now the system compiler only LINKS a
+// plain object, which any version does. Returns whether the runtime
+// bitcode was linked in (then the program needs no libpyc_runtime.a).
+// Optimize TheModule as clang -O2 with LTO would (below), and return the
+// target machine it was optimized for. With `link_runtime`, the runtime
+// bitcode is linked in and every definition but `main` internalized, and
+// `*linked_runtime` says whether that happened. The JIT passes false: its
+// code finds the runtime in the running pyc by name, so those calls stay
+// external. Either way the pipeline lowers the coroutines (llvm.coro.*),
+// which the code generator cannot: the JIT handed LLJIT an unoptimized
+// module and aborted on any generator (ifa/211).
+std::unique_ptr<llvm::TargetMachine> llvm_optimize_module(bool link_runtime, bool *linked_runtime) {
+  llvm::Module &M = *TheModule;
+  *linked_runtime = false;
+  std::string triple_str = M.getTargetTriple()
+#if LLVM_VERSION_MAJOR >= 22
+                               .str()
+#endif
+      ;
+  std::string err;
+#if LLVM_VERSION_MAJOR >= 22
+  const llvm::Target *target = llvm::TargetRegistry::lookupTarget(M.getTargetTriple(), err);
+#else
+  const llvm::Target *target = llvm::TargetRegistry::lookupTarget(triple_str, err);
+#endif
+  if (!target) fail("llvm_optimize_module: no target for %s: %s", triple_str.c_str(), err.c_str());
+  llvm::TargetOptions options;
+
+  // The runtime bitcode, read first: the CPU and features clang compiled it
+  // for are the ones the program is compiled for too. That is clang's
+  // default for the triple (no -march: the program runs anywhere the
+  // triple does), and it must match, because the inliner declines a callee
+  // whose features are not a subset of the caller's: with "generic" on
+  // x86-64 no runtime helper inlined (sha made 281 calls into the runtime,
+  // not 51, and ran 2x slower). On aarch64 clang's features
+  // (+neon, +outline-atomics, ...) are not implied by any CPU name, so
+  // they are copied onto the program's functions, as clang stamps them.
+  std::unique_ptr<llvm::Module> runtime;
+  if (cchar *rt = link_runtime ? llvm_runtime_bitcode() : nullptr) {
+    llvm::SMDiagnostic diag;
+    runtime = llvm::parseIRFile(rt, diag, *TheContext);
+    // A bitcode file written by a newer clang than this LLVM does not parse;
+    // the program then links libpyc_runtime.a and the helpers do not inline.
+    if (!runtime) DEBUG_LOG("runtime bitcode %s does not parse; using libpyc_runtime.a\n", rt);
+  }
+  std::string cpu = llvm::Triple(triple_str).getArch() == llvm::Triple::x86_64 ? "x86-64" : "generic";
+  std::string features, tune;
+  if (runtime)
+    for (llvm::Function &f : *runtime) {
+      if (f.isDeclaration() || !f.hasFnAttribute("target-cpu")) continue;
+      cpu = f.getFnAttribute("target-cpu").getValueAsString().str();
+      if (f.hasFnAttribute("target-features")) features = f.getFnAttribute("target-features").getValueAsString().str();
+      if (f.hasFnAttribute("tune-cpu")) tune = f.getFnAttribute("tune-cpu").getValueAsString().str();
+      break;
+    }
+  for (llvm::Function &f : M) {
+    if (f.isDeclaration()) continue;
+    if (!f.hasFnAttribute("target-cpu")) f.addFnAttr("target-cpu", cpu);
+    if (!features.empty() && !f.hasFnAttribute("target-features")) f.addFnAttr("target-features", features);
+    if (!tune.empty() && !f.hasFnAttribute("tune-cpu")) f.addFnAttr("tune-cpu", tune);
+  }
+  std::unique_ptr<llvm::TargetMachine> tm(target->createTargetMachine(
+#if LLVM_VERSION_MAJOR >= 22
+      M.getTargetTriple(),
+#else
+      triple_str,
+#endif
+      cpu, features, options, llvm::Reloc::PIC_, std::nullopt, llvm::CodeGenOptLevel::Default));
+  if (!tm) fail("llvm_optimize_module: cannot create a target machine for %s", triple_str.c_str());
+  M.setDataLayout(tm->createDataLayout());
+  // The same two rounds the lld LTO link ran: the program through clang
+  // -O2 -flto's pre-link pipeline, then, with the runtime bitcode linked in,
+  // the full LTO pipeline, which inlines the helpers. One -O2 round after
+  // linking left sha making 94 calls into the runtime where LTO made 51.
+  auto run = [&](bool lto) {
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+    // clang -O2's tuning: the PassBuilder defaults leave SLP vectorization
+    // off, which clang turns on at -O2.
+    llvm::PipelineTuningOptions pto;
+    pto.LoopUnrolling = true;
+    pto.LoopInterleaving = true;
+    pto.LoopVectorization = true;
+    pto.SLPVectorization = true;
+    llvm::PassBuilder PB(tm.get(), pto);
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+    llvm::ModulePassManager MPM = lto ? PB.buildLTODefaultPipeline(llvm::OptimizationLevel::O2, nullptr)
+                                      : PB.buildLTOPreLinkDefaultPipeline(llvm::OptimizationLevel::O2);
+    MPM.run(M, MAM);
+  };
+  run(false);
+
+  if (runtime) {
+    runtime->setTargetTriple(M.getTargetTriple());
+    runtime->setDataLayout(M.getDataLayout());
+    *linked_runtime = !llvm::Linker::linkModules(M, std::move(runtime), llvm::Linker::Flags::LinkOnlyNeeded);
+    if (!*linked_runtime) DEBUG_LOG("runtime bitcode did not link; using libpyc_runtime.a\n");
+  }
+  // What the lld LTO link did as it resolved symbols for an executable: every
+  // definition but `main` becomes internal, so a function with one caller
+  // inlines into it and a dead one is deleted (ifa/200's "Also": external
+  // linkage blocked both). Only with the runtime linked in: otherwise the
+  // program's object must still reach libpyc_runtime.a by name, and that
+  // is declarations, which this leaves alone.
+  if (*linked_runtime) llvm::internalizeModule(M, [](const llvm::GlobalValue &gv) { return gv.getName() == "main"; });
+  run(true);
+  // PYC_DUMP_OPT_LL=path: the module as optimized, before code generation.
+  if (const char *dump = getenv("PYC_DUMP_OPT_LL")) {
+    std::error_code dec;
+    llvm::raw_fd_ostream dos(dump, dec);
+    if (!dec) M.print(dos, nullptr);
+  }
+  return tm;
+}
+
+// Optimize the program's module and write it as a native object
+// (llvm_optimize_module, then code generation). Returns whether the runtime
+// bitcode was linked in (then the program needs no libpyc_runtime.a).
+static bool llvm_emit_object(cchar *obj_file) {
+  bool linked_runtime = false;
+  std::unique_ptr<llvm::TargetMachine> tm = llvm_optimize_module(true, &linked_runtime);
+  llvm::Module &M = *TheModule;
+  std::string triple_str = M.getTargetTriple()
+#if LLVM_VERSION_MAJOR >= 22
+                               .str()
+#endif
+      ;
+  std::error_code ec;
+  llvm::raw_fd_ostream out(obj_file, ec, llvm::sys::fs::OF_None);
+  if (ec) fail("llvm_emit_object: cannot write %s: %s", obj_file, ec.message().c_str());
+  llvm::legacy::PassManager codegen;
+  // The library functions the target has, as llc and clang give their code
+  // generators.
+  llvm::TargetLibraryInfoImpl tlii{llvm::Triple(triple_str)};
+  codegen.add(new llvm::TargetLibraryInfoWrapperPass(tlii));
+#if LLVM_VERSION_MAJOR >= 22
+  // LLVM 22 keeps which runtime library calls exist in its own analysis. The
+  // pass manager's default one knows none of the triple's, so the code
+  // generator expanded every llvm.memcpy into an inline loop: sha's hot
+  // function had 9 fewer memcpy calls and 50 more instructions than llc's
+  // from the same IR, and ran 30% slower. Registered as llc registers it.
+  codegen.add(new llvm::RuntimeLibraryInfoWrapper(llvm::Triple(triple_str), tm->Options.ExceptionModel,
+                                                  tm->Options.FloatABIType, tm->Options.EABIVersion,
+                                                  tm->Options.MCOptions.ABIName));
+#endif
+  if (tm->addPassesToEmitFile(codegen, out, nullptr, llvm::CodeGenFileType::ObjectFile))
+    fail("llvm_emit_object: the target cannot emit an object file");
+  codegen.run(M);
+  out.flush();
+  return linked_runtime;
+}
+
+// The Boehm GC the program links: the static archives an installed pyc
+// carries in <system_dir>/gc/lib (`make dist BUNDLE_GC=1`), so the program
+// needs no libgc where it is built or run, else the system's -lgc -lgccpp.
+// Mirrors Makefile.cg's GC_BUNDLE for the C backend.
+static void llvm_gc_link_args(std::vector<char *> &argv) {
+  static std::string gc, gccpp;
+  static int decided = 0;
+  if (!decided) {
+    decided = -1;
+    std::string dir = std::string(system_dir) + "/gc/lib/";
+    if (access((dir + "libgc.a").c_str(), R_OK) == 0) {
+      decided = 1;
+      gc = dir + "libgc.a";
+      if (access((dir + "libgccpp.a").c_str(), R_OK) == 0) gccpp = dir + "libgccpp.a";
+    }
+  }
+  if (decided > 0) {
+    if (!gccpp.empty()) argv.push_back((char *)gccpp.c_str());
+    argv.push_back((char *)gc.c_str());
+    argv.push_back((char *)"-lpthread");
+  } else {
+    argv.push_back((char *)"-lgc");
+    argv.push_back((char *)"-lgccpp");
+  }
 }
 
 int llvm_codegen_compile(cchar *input_filename) {
@@ -458,94 +637,71 @@ int llvm_codegen_compile(cchar *input_filename) {
       fail("llvm_codegen_compile: -o path too long: %s", codegen_output);
   }
 
-  // The compiler driving .ll -> .o -> exe. C++ (not C) since the
-  // coroutine-lowered IR links against C++ runtime pieces. The
-  // macOS/homebrew LLVM location is only a fallback for Apple
-  // hosts; everywhere else use clang++ from PATH, and let
-  // PYC_LLVM_CXX override either.
+  // The compiler that links the object into an executable. C++ (not C)
+  // since the coroutine-lowered code links against C++ runtime pieces.
+  // The system's clang++ (Xcode's on macOS): it only links an object, which
+  // any version does (llvm_emit_object), so a released pyc does not need
+  // Homebrew's LLVM. PYC_LLVM_CXX overrides it.
   cchar *cxx = getenv("PYC_LLVM_CXX");
-  if (!cxx) {
-#ifdef __APPLE__
-    cxx = "/opt/homebrew/opt/llvm/bin/clang++";
-#else
-    cxx = "clang++";
-#endif
-  }
+  if (!cxx) cxx = "clang++";
 
-  // LTO path (see llvm_lto_runtime): compile the IR to bitcode and link it
-  // with the bitcode runtime under lld, so the runtime helpers inline. If that
-  // link fails for any reason, fall through to the archive link below, which
-  // recompiles the IR to a native object first.
-  if (cchar *lto_rt = llvm_lto_runtime(cxx)) {
-    char *cargv[] = {(char *)cxx, (char *)"-O2", (char *)"-flto", (char *)"-c", (char *)"-fPIC",
-                     (char *)"-Wno-override-module", ll_file, (char *)"-o", obj_file, nullptr};
-    if (codegen_spawn(cxx, cargv) == 0) {
-      char *largv[] = {(char *)cxx,        (char *)"-O2",       (char *)"-flto",
-                       (char *)"-fuse-ld=lld", obj_file,        (char *)lto_rt,
-                       (char *)"-o",       exe_file,            (char *)"-L/opt/homebrew/lib",
-                       (char *)"-L/usr/local/lib", (char *)"-lm", (char *)"-lgc",
-                       (char *)"-lgccpp",
-#ifdef __APPLE__
-                       (char *)"-stdlib=libc++",
-#endif
-                       nullptr};
-      if (spawn_quiet(cxx, largv) == 0) {
-        DEBUG_LOG("Executable %s created with the LTO runtime %s\n", exe_file, lto_rt);
-        return 0;
-      }
-    }
-    DEBUG_LOG("LTO link failed for %s; linking with libpyc_runtime.a\n", exe_file);
+  // Extra link inputs: the frontend's extra translation unit (pyc's foreign
+  // call shims), compiled here to its own object, then --libs and the
+  // foreign libraries the program names. `extra` is spliced into both link
+  // lines below, after the program's object.
+  std::vector<char *> extra;
+  if (codegen_extra_source) {
+    static char src_file[FILENAME_MAX], src_obj[FILENAME_MAX];
+    if (snprintf(src_file, sizeof(src_file), "%s.ffi.cc", input_filename) >= (int)sizeof(src_file) ||
+        snprintf(src_obj, sizeof(src_obj), "%s.ffi.o", input_filename) >= (int)sizeof(src_obj))
+      fail("llvm_codegen_compile: input filename too long: %s", input_filename);
+    FILE *sfp = fopen(src_file, "w");
+    if (!sfp) fail("llvm_codegen_compile: unable to write %s", src_file);
+    fputs(codegen_extra_source, sfp);
+    fclose(sfp);
+    Vec<cchar *> cflags;
+    codegen_split_flags(codegen_extra_cflags, cflags);
+    std::vector<char *> sargv = {(char *)cxx, (char *)"-O2", (char *)"-c", (char *)"-fPIC", (char *)"-std=c++23"};
+    for (cchar *f : cflags) sargv.push_back((char *)f);
+    sargv.insert(sargv.end(), {src_file, (char *)"-o", src_obj, nullptr});
+    int res = codegen_spawn(cxx, sargv.data());
+    if (res != 0) fail("llvm_codegen_compile: compiling %s failed (exit=%d)", src_file, res);
+    extra.push_back(src_obj);
   }
-
-  // Step 1: clang -c -fPIC <ll> -o <obj>
   {
-    char *argv[] = {(char *)cxx, (char *)"-O2", (char *)"-c", (char *)"-fPIC", (char *)"-Wno-override-module", ll_file, (char *)"-o", obj_file, nullptr};
-    int res = codegen_spawn(cxx, argv);
-    if (res != 0) {
-      fail("llvm_codegen_compile: clang -c failed for %s (exit=%d)", ll_file, res);
-      return res;
-    }
+    Vec<cchar *> libs;
+    codegen_split_flags(codegen_extra_libs, libs);
+    for (cchar *l : codegen_link_libs) libs.add(l);
+    for (cchar *l : libs) extra.push_back((char *)l);
   }
-  DEBUG_LOG("LLVM IR from %s compiled to %s\n", ll_file, obj_file);
 
-  // Step 2: clang <obj> -o <exe> -L<system_dir> -lpyc_runtime
-  //         -lm -lgc -lgccpp
+  // The object, written here (llvm_emit_object), then linked by the system
+  // compiler: `cxx <obj> -o <exe> [-L<system_dir> -lpyc_runtime] -lm <gc>`.
   //
-  // -lgc / -lgccpp: the IR emitted by P_prim_make / P_prim_new /
-  // P_prim_clone references GC_malloc (Boehm GC). Without these the
-  // link fails on undefined `GC_malloc`. See issue 012.
-  //
-  // -lpyc_runtime (D.3.5): out-of-line copies of the runtime
-  // helpers (`_CG_string_alloc`, `_CG_chr`, `_CG_str_eq`, ...). The
-  // C backend gets these via `#include "pyc_c_runtime.h"` per
-  // generated .py.c; the LLVM backend produces a single .o that
-  // references them as external symbols, so we link the pyc
-  // runtime library here. -L points at the install location (the
-  // same `system_dir` we use for Makefile.cg and __pyc__).
-  //
-  // -L.. is a development fallback: when running `make test_llvm`
-  // from ifa/ the library lives one level up (pyc root) where
-  // `make` built it; after `make install` it lands in system_dir
-  // so this path is a no-op in production.
+  // The GC (llvm_gc_link_args): the IR from P_prim_make / P_prim_new /
+  // P_prim_clone calls GC_malloc (issue 012). libpyc_runtime.a holds the
+  // runtime helpers out of line, for when the runtime bitcode was not linked
+  // into the module; -L<system_dir> is where it is installed, -L.. where
+  // `make test_llvm` in ifa/ finds it in the source tree.
+  bool linked_runtime = llvm_emit_object(obj_file);
+  DEBUG_LOG("LLVM IR from %s compiled to %s%s\n", ll_file, obj_file,
+            linked_runtime ? " with the runtime bitcode" : "");
   {
     char libdir_arg[FILENAME_MAX];
     int n = snprintf(libdir_arg, sizeof(libdir_arg), "-L%s", system_dir);
     if (n < 0 || (size_t)n >= sizeof(libdir_arg))
       fail("llvm_codegen_compile: -L<system_dir> arg too long");
-    char *argv[] = {(char *)cxx,             obj_file,
-                    (char *)"-o",            exe_file,
-                    libdir_arg,
-                    (char *)"-L..",
-                    (char *)"-L/opt/homebrew/lib",
-                    (char *)"-L/usr/local/lib",
-                    (char *)"-lpyc_runtime",
-                    (char *)"-lm",           (char *)"-lgc",
-                    (char *)"-lgccpp",
+    std::vector<char *> argv = {(char *)cxx, obj_file};
+    argv.insert(argv.end(), extra.begin(), extra.end());
+    argv.insert(argv.end(), {(char *)"-o", exe_file, (char *)"-L/opt/homebrew/lib", (char *)"-L/usr/local/lib"});
+    if (!linked_runtime) argv.insert(argv.end(), {libdir_arg, (char *)"-L..", (char *)"-lpyc_runtime"});
+    argv.push_back((char *)"-lm");
+    llvm_gc_link_args(argv);
 #ifdef __APPLE__
-                    (char *)"-stdlib=libc++",
+    argv.push_back((char *)"-stdlib=libc++");
 #endif
-                    nullptr};
-    int res = codegen_spawn(cxx, argv);
+    argv.push_back(nullptr);
+    int res = codegen_spawn(cxx, argv.data());
     if (res != 0) {
       fail("llvm_codegen_compile: linking failed for %s (exit=%d)", obj_file, res);
       return res;

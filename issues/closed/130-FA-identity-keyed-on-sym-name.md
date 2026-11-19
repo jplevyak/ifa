@@ -3,7 +3,7 @@
 **Status:** closed 2026-10-15. A3 and A1 are fixed (see "A3" and "A1,
 fixed" below), A1's `strcmp` scans are gone, C is fixed, and A2 was
 already fixed in the tree (both keys of the shape canon spell `name#id`).
-Deleting `PYC_CSELEM` itself is [146](../146-remove-all-arbitrary-splitting.md)'s
+Deleting `PYC_CSELEM` itself is [146](146-remove-all-arbitrary-splitting.md)'s
 verdict, not this issue's. Rewritten 2026-09-28; the full site census is in git:
 `git show 3f36072b:ifa/issues/130-FA-identity-keyed-on-sym-name.md`.
 
@@ -119,7 +119,7 @@ on every column for all 77 programs, ess and css included.
 
 `atype_shape` emits `cs->sym->name` into a monotone, never-cleared canon,
 so a collision is a permanent merge. **Moot if `PYC_CSELEM` is deleted**,
-which [146](../146-remove-all-arbitrary-splitting.md)'s inventory
+which [146](146-remove-all-arbitrary-splitting.md)'s inventory
 recommends. If it is kept, use `name#id`.
 
 **Already fixed (found 2026-10-15).** `atype_shape_id` emits each

@@ -1,258 +1,73 @@
-# 170 — a contour decision taken on a pass's transient types is never revisited
+# 170 — re-derive contour decisions at convergence: the merge of equal contours
 
-**Status: open.** Root-caused 2026-09-25 on `voronoi`. Rewritten 2026-09-28
-to also carry [097](closed/097-CGEN-callsite-vs-clone-formal-type-mismatch.md)
-(an edge routed to a contour whose type was momentarily empty) and the
-re-join residual of [144](closed/144-route-4-fans-per-creation-point-instead-of-partitioning.md).
-The common root: **a split or a routing decision is taken on types that
-are not yet the converged ones, and nothing takes it back when the
-converged types no longer justify it.**
+**Status: open on steps 2 and 3.** Step 1 landed 2026-10-12. Rewritten
+2026-11-03; the three instances, the stop-condition firings and the
+measurements are in git (`git show 123ac81:ifa/issues/170-FA-contours-minted-on-transient-types-are-never-remerged.md`).
 
-## Why it matters under this project's rule
+## The rule
 
-A contour exists because something observed a distinction that required it
-(AGENTS.md). A distinction observed on pass-0 imprecision, or on a
-half-populated contour, is a statement about the analysis, not about the
-program. [157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md)'s rule
-is that demand is a property of CONVERGED types. The corollary here: **a
-contour whose demand has evaporated at convergence is unjustified and
-should go.** Retiring one costs nothing in soundness, because
-`analyze_to_convergence` re-derives every type from bottom each pass. Only
-the DECISION persists, and the decision is what is stale.
+A contour exists because something observed a distinction that required
+it. A distinction observed on pass-0 imprecision or on a half-populated
+contour is a statement about the analysis, not the program, and a contour
+whose demand has evaporated at convergence is unjustified. Retiring one
+costs nothing in soundness: every pass re-derives types from bottom, and
+only the DECISION persists.
 
-## Instance 1 — duplicate EntrySets from pass-0 unions (voronoi)
+## Step 1, landed: `merge_equivalent_entry_sets` (`PYC_ESMERGE=1`)
 
-With every constant mechanism off (`PYC_NO_FORCED_SPLIT=1` plus 169's
-strip), `voronoi` has **156 contours for 140 distinct argument
-signatures**. `int.__add__` (`IFA_DBG_FUNES=__add__`):
+Runs as the last split stage, on a pass where no stage acted. Two
+contours of one function merge when every AVar has the same converged
+`out` in both, every creation point maps to the same CreationSets, the
+filters and display agree, no AVar is coerced, setter classes are the
+same, no violation is outstanding, nothing either creates carries a live
+demand, and no ledger decision touched either this pass. The younger's
+in-edges move to the older. Measured: verdicts identical on all 77,
+EntrySets −2.7 %, compile time −7 %, `voronoi`'s `int.__add__` back to one
+`[int64][int64]` contour. Three stop-condition firings each named a demand
+the first version misread (a split made as a means, coercion, the setter
+criterion) and none was answered with hysteresis.
 
-```
-es=75  args= [int64] [int64]    <- 1 edge  from _init_by_array
-es=124 args= [int64] [int64]    <- 17 edges
-es=125 args= [int64] [int64]    <- 3 edges
-```
+## Step 2, open: routing on a momentarily-empty contour
 
-`PYC_DBG_BIND=__add__`: all of them were minted in pass 0 on `int64|float64`
-actuals, inside the Mersenne Twister (pure `int`). The float came from IFA's
-minimal start: `float` inherits `int.__add__`, `voronoi.py:19`'s `xrand +
-xoff` shares its one contour, and the `{int, float}` return flows into
-`random`'s globals. Once the split separates float from int, es=124 and
-es=125 both converge to `[int64][int64]`, and nothing merges them. The data
-side has the same shape: `CS_DEF_PART` partitions the start-merged `list`
-CS on pass-0 flow keys, and `voronoi` ends with two `list[int64]` CSs
-against shedskin's one.
+`entry_set_compatibility` scores an edge against candidates' formal types
+as they are mid-pass; at the top of a pass every formal is bottom, so a
+wrong contour scores "less compatible" and can win, and the `ret → result`
+flow `analyze_edge` installed for the first binding outlives the
+rebinding (instances 2 and 2b: msp_ss's `ord('q')` edge, `bool.__eq__`'s
+per-constant formal under `--fa-inline=0`). A codegen guard now refuses
+the mismatch, so a valid program is rejected rather than miscompiled.
 
-Not the start-merged default (`PYC_CSDCPA1=0` gives the same 156 / 140).
-Not the routing knobs (`PYC_HARDREUSE=0/4/5`, `PYC_TYPEKEY=1` all leave 156).
-Those choose WHICH existing contour a re-bound edge goes to. None of them
-ever retires a contour.
+Two fixes, either sufficient: a constant-keeping formal hard-rejects
+(`-1`) a contour holding a different constant or the abstract type; or
+rebinding an edge retracts the previous binding's return flow.
+`reroute_uncovered_edges` (closed/178 fix 2) re-takes stale routes at
+quiescence and may already cover msp_ss: **check that first**, on the
+site, not the verdict.
 
-## Instance 2 — routing on a momentarily-empty contour (msp_ss, 097)
+## Step 3, blocked: `merge_equivalent_creation_sets` (`PYC_CSMERGE`, built, default 0)
 
-`entry_set_compatibility` scores an edge against candidate EntrySets using
-each candidate's formal types AS THEY ARE MID-PASS. On `msp_ss`,
-`loadTIText`'s `l[0] == ord('q')` edge was scored against 7 `str.__eq__`
-contours. Six correctly conflicted; ES 607 scored fully compatible because
-its `x` formal had not yet been re-flowed this pass (its real contributors
-are `str.strip`'s string constants). `find_best_entry_sets` took it, the
-formal then grew to `{str, int64}`, and the routing was never revisited.
-The emitted C had an argument type that disagreed with the clone's formal.
-(A codegen guard now turns that into a diagnostic.)
+The data-side counterpart: same-class CreationSets whose converged
+members, element and arity agree, with no coercion, same setter classes,
+no live demand, no ledger touch this pass. Census: 70 pairs on bh, 25 on
+voronoi, mostly closures (excluded: `partial_application` needs one
+creation point per closure CS).
 
-An attempt to defer routing until the worklist drained was reverted in
-2026-08. It changed which contours a pass reached and hit
-[closed/098](closed/098-FA-per-pass-reset-scoped-to-reachable-set.md)'s
-stale-state gap. 098 is fixed, so that blocker is gone.
+Every merged pair is split straight back on the next pass, to the pass
+cap, by the SETTER stage, which separates two creation points whenever the
+writes into what they allocate differ at all. That is a split on a fact,
+and it is [196](196-the-setter-stage-splits-on-a-fact.md). Adding a guard
+against the re-split would be the hysteresis this issue forbids. **Do not
+attempt step 3 before 196.**
 
-### Instance 2b — the same, with a per-constant formal (2026-10-05)
+## Stop condition
 
-Measured with `--fa-inline=0`, on `tests/cross_type_eq.py` and
-`tests/minmax_3arg.py` (both pass on the default path). Reduced repro
-(`b = "a"; print(c != b); print(True == b); print(True != b);
-print(False == True); print(True != False); print(c == False)` with
-`c = 2.5`): `bool.__eq__`'s `if isinstance(x, bool):` in a contour where
-`x` is a `str` sends `False` to `bool.__pyc_to_bool__`, whose formal is
-`__pyc_clone_constants__`-annotated. At convergence that edge sits in the
-`False` contour, which is correct. But on the final pass it was first bound
-to the contour that serves `__str__`'s non-constant `bool`. At the top of a
-pass every formal is bottom, so `edge_type_compatible_with_entry_set`
-returns `0` ("less compatible"), not `-1`, and the score can still pick it.
-The `ret -> result` flow `analyze_edge` installs for that first binding
-outlives the rebinding. So the condition reads `bool`, the dead `True` arm
-is walked, and its narrowed `x` is reported `has no type`.
-
-Two fixes are possible, and either would do. A constant-keeping formal could
-hard-reject (`-1`) a contour holding a different constant or the abstract
-type. Or rebinding an edge could retract the return flow of its previous
-binding.
-
-**Why this only shows up now.** Until 2026-10-05 the default path never
-reached it. Mid-FA inlining folds the bool wrappers away, and the
-post-inlining `analyze_to_convergence` skipped its first reset, so it
-started from the previous convergence's values. That skip was itself this
-issue's root at its largest: every value from before the last split was
-carried into the final pass and could only grow. It is fixed (the reset
-keys on `analysis_pass > 0`). Removing it exposed four single-convergence
-bugs that the stale pass had been hiding, all fixed alongside:
-`compute_es_can_raise` ran on cleared `out_edges` (so `except` never caught
-with `--fa-inline=0`), the generator-return widening was a walk-time
-snapshot, `make_seq` read its source once (`tuple(genexpr)` was untyped),
-and a call's ifa/178 gate could only engage through stale edges. With
-`--fa-inline=0` the suite went from 13 failures to these 2.
-
-## Instance 3 — split products that converge equal (144)
-
-Route 4 used to fan one contour per creation point. It now partitions by
-assign-set signature, which no longer MAKES the duplicates. But nothing
-collapses two products that later converge to identical content (`bh`'s
-`Vec3`: 18 of 20 contours byte-identical across all 29 members before the
-fan was removed). `cselem_rejoin_unknown_mints` (`PYC_CSREJOIN=1`) is the
-only re-join in the tree, and it deliberately never touches split products.
-
-## The fix: re-derive decisions at convergence
-
-At the end of a pass (types converged), before the split stages:
-
-1. **EntrySets.** Group each Fun's contours by converged argument types
-   (constants stripped at formals that do not want them; 169, 151). Where
-   two agree at every formal and no live demand keeps them apart, re-home
-   the younger one's edges onto the older and retire it.
-2. **Routing.** An edge whose actual types are incompatible with its
-   contour's CONVERGED formals is re-routed. That is the same comparison
-   step 1 makes, run from the edge's side.
-3. **CreationSets.** Same-sym CSs whose converged content agrees (element
-   type, per-position slot types, arity; 132) are compatible. Collapse
-   them, the split-back direction of `PYC_CSREJOIN`.
-
-The next pass re-derives. This is the compatibility leg of the three-way
-rule: identity may stay fine, but two contours with no demand between them
-are compatible.
-
-**Stop condition, written before building:** if a merge re-creates the same
-split on the next pass (the pair oscillates), the split has a live demand
-this issue misread. Find what the demand is. Do not add hysteresis.
-
-## Step 1 landed (2026-10-12): `merge_equivalent_entry_sets`
-
-`PYC_ESMERGE`, default 1, in `fa.cc`. It runs as the LAST split stage, and
-only on a pass where no stage acted. Two contours of one function merge when
-all of the following hold:
-
-- **Identical state.** Every AVar of the function has the same converged
-  `out` in both. Every creation point maps to the same CreationSets
-  (`cs_map`). The filters and the lexical display agree.
-- **No coercion.** No AVar in either contour is coerced (`num_coerce`).
-- **Same setter classes** (`same_eq_classes`) for every AVar.
-- **Settled pass.** No type violation is outstanding.
-- **No live demand on what they create.** Nothing either contour creates
-  has an irrepresentable element or a pure int/float mix.
-- **Not asserted this pass.** No ledger decision made or routed a group into
-  either contour on this pass.
-
-The younger contour's in-edges move to the older, with the same calls a
-split uses in reverse (`set_entry_set`, `record_backedges`). Ledger
-products, `route_last` and `route_adj` entries that name the retired contour
-are pointed at the survivor. `IFA_DBG_ESMERGE` logs every merge.
-
-The stop condition fired three times. Each time it named a demand the
-first version misread, and none was answered with hysteresis:
-
-1. **A split made as a MEANS.** First run before the split stages,
-   `tests/splitter_setter.py` oscillated. The setter stage splits `__new__`
-   so two Boxes get two creation points, and the two contours stay identical
-   until the follow-up CreationSet split lands. Fix: merge last, on a quiet
-   pass, when every follow-up has happened.
-2. **Coercion.** An int contour and a float contour both read float64 once
-   one is widened. Merging them put `random.py:135` (neural2) and
-   `sudoku2.py:235` back into int/float unions, one warning each. Fix:
-   never merge a coerced contour.
-3. **The setter criterion.** On minilight a merge created a setter
-   confluence in `__getitem__` es=887. The setter stage split it off
-   (`SPLIT ES 887 setters ... -> 2831`) and the next quiet pass merged it
-   back: 1,969 merges, the pass cap (35 → 102 passes), compile 12.7 s →
-   26.8 s. That criterion is not type-shaped (ifa/146), so the converged
-   types cannot show it. Fix: compare setter classes directly. minilight
-   then runs 36 passes in 12.9 s and drops 767 → 729 EntrySets.
-
-**Measured** (sweep `check__PYC_ESMERGE_1__82e9b98f+880362ce` vs
-`check__default__82e9b98f+ad98a906`, same binary):
-- **Verdicts:** identical on all 77 programs, including warning counts.
-- **EntrySets:** 31,960 → 31,081 (−2.7%). CreationSets 120,904 → 120,849.
-- **Compile time:** 2,747 s → 2,548 s (−7%): pygmy 231 → 164 s, sunfish
-  249 → 184 s, plcfrs 130 → 119 s.
-- **voronoi:** 178 → 172 EntrySets. `int.__add__` has one `[int64][int64]`
-  contour where it had two (es=82 and es=148), and the output is unchanged.
-- **`make test`:** green on both backends.
-
-**Still open:** step 2's msp_ss check (`reroute_uncovered_edges`, from
-ifa/178's fix 2, already re-takes stale routes at quiescence and may cover
-it), and step 3, which merges equal CreationSets. Step 3 is blocked; see
-below.
-
-## Step 3 tried (2026-10-13): blocked by two splitters that act on facts
-
-`merge_equivalent_creation_sets` (`PYC_CSMERGE`, **default 0**, fa.cc) is the
-data-side counterpart of step 1. It runs after the EntrySet merge, on a quiet
-pass, and merges two same-class CreationSets when all of these hold:
-
-- every member, the element, and the arity have the same converged type;
-- no member is coerced, and setter classes are the same;
-- neither CreationSet carries a live demand;
-- no ledger decision made or routed into either one this pass.
-
-The younger one's creation points (`defs`) are re-pointed at the older through
-`cs_map`, along with ledger `cs_product`s and the csshape canon.
-`PYC_CSMERGE=2` only counts the pairs, and `IFA_DBG_CSMERGE` logs them.
-
-**Census.** At convergence there are 70 pairs on bh (57 closures, 6 `Vec3`,
-then `range`, `list` and others) and 25 on voronoi (20 closures, 3 `range`).
-Closures are excluded, because `partial_application` needs exactly one
-creation point per closure CreationSet: that def supplies the call's
-argument names. With the first version, bh and voronoi aborted there.
-
-**The stop condition fired twice, and neither time on a demand.**
-
-1. **`split_css`, the default setter split.** Merged pairs were split straight
-   back by SETTER / MARK_SETTER on the next pass, to the pass cap (voronoi
-   11 → 102 passes, bh 36 → 102). Its setter classes are singletons
-   (ifa/157), so it separates two creation points whenever the writes into
-   what they allocate differ at all. The creation points' own `setters`
-   cannot be asked at merge time: they are computed only for the setter
-   stage's starters, so a CreationSet with one creation point has none (the
-   measured value was `-1`). Comparing the members' writers directly, which
-   is what `compute_setters` walks, gives **zero** mergeable pairs on bh and
-   voronoi. Two CreationSets made in different contours are written by
-   different writes, so under this criterion no merge can stand.
-2. **Route 4, under `PYC_SETTERMIN=1`.** That flag's setter key is
-   type-shaped, so the merge tests the same key (`cs_writers_repr_key`). bh
-   then merges 129 times and voronoi 50, and both again run to the pass cap.
-   This time `CS_DEF_PARTITION` re-splits each pair:
-   `[csdefsplit] ENTER candidates=28 (confluence=28 demand=0)` then
-   `cs=1253 sym=StopIteration KEY sets=21 defs=2 groups=2`. The merged
-   CreationSet was nominated by a type CONFLUENCE, not a demand, and route 4
-   partitioned its two creation points by assign set (who writes which
-   member). Its `demanded` set gates only EntrySet splits (`ESBLOCK`), never
-   its own CreationSet partition.
-
-Both re-splitters key on writer identity rather than on what the types are,
-and neither is asked by a demand. That is ifa/146's subject (the setter
-split's missing type condition), and route 4's confluence nomination belongs
-on the same list. A CreationSet merge cannot stand while either one runs, and
-adding a guard against the re-split would be the hysteresis this issue
-forbids. **Prerequisite for step 3:** make both splits demand-only, or give
-them a type condition. The merge code stays off by default until then; it is
-what this measurement ran.
-
-Output was unchanged in every arm measured (bh, voronoi stdout identical
-apart from `TIME`).
+If a merge re-creates the same split on the next pass, the split has a
+live demand this issue misread. Find what the demand is. Do not add
+hysteresis.
 
 ## Verification
 
-- `voronoi` under `PYC_NO_FORCED_SPLIT=1`: contours == exact signatures
-  (156 → 140); `int.__add__` has one `[int64][int64]` contour. At the
-  default, fewer than today's 169 with output unchanged.
-- `msp_ss`: no argument-vs-formal type mismatch at the `ord('q')` site
-  (the program fails for other reasons; check the site, not the verdict).
-- Corpus `-m check`, same binary: no verdict regresses; `ess`, `css` and
-  compile time fall.
-- `make test` green on both backends.
+Step 2: msp_ss has no argument-vs-formal mismatch at the `ord('q')` site;
+`tests/cross_type_eq.py` and `tests/minmax_3arg.py` pass under
+`--fa-inline=0`. Step 3: `PYC_CSMERGE=1` on voronoi and bh converges
+without the pass cap, output unchanged, `css` down; then it defaults on.

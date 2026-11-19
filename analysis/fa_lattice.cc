@@ -410,15 +410,20 @@ AType *type_diff_all(AType *a, Vec<AType *> &bs) {
   for (AType *b : bs) if (b && b != fa->type_world.bottom_type) live.set_add(b);
   if (!live.n) return a;
   if (live.n == 1) for (AType *b : live) if (b) return type_diff(a, b);
+  // The members of every b in one set: asking each b about each member of
+  // `a` is |a| x |bs|, and a send whose receiver is an 894-class union has an
+  // edge, and so a b, per class.
   Vec<CreationSet *> abstract;  // members of some b with no defs, as type_diff's subsumption test
+  Vec<CreationSet *> concrete;  // every member of some b
   for (AType *b : live) if (b)
-    for (CreationSet *bb : b->sorted) if (!bb->defs.n) abstract.set_add(bb);
+    for (CreationSet *bb : b->sorted) {
+      concrete.set_add(bb);
+      if (!bb->defs.n) abstract.set_add(bb);
+    }
   AType *r = new AType();
   bool changed = false;
   for (CreationSet *aa : a->sorted) {
-    bool covered = false;
-    if (aa->defs.n)
-      for (AType *b : live) if (b && b->set_in(aa)) { covered = true; break; }
+    bool covered = aa->defs.n && concrete.set_in(aa);
     if (!covered)
       for (CreationSet *bb : abstract) if (bb && subsumed_by(aa->sym, bb->sym)) { covered = true; break; }
     if (covered)

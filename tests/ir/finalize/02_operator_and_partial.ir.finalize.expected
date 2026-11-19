@@ -1,0 +1,59 @@
+;; phase: finalize
+
+(prim-bound
+  in %lam0:
+    send[1] = prim_add
+    send[2] = prim_reply
+  in %outer:
+    send[1] = (none)
+    send[2] = prim_reply
+  in %top:
+    send[1] = (none)
+    send[2] = (none)
+)
+
+(live
+  syms:     37 live, 0 dead
+  closures: 3 live (of 3 total)
+)
+
+;; full state:
+;; syms
+(sym %c0 :immediate (int64 1))
+(sym %c1 :immediate (int64 2))
+(sym %l_x :is-local :nesting-depth 1)
+(sym %l_y :is-local :nesting-depth 1)
+(sym %l_s :is-local :nesting-depth 1)
+(sym %l_cont)
+(sym %x :is-local :nesting-depth 1)
+(sym %o_r :is-local :nesting-depth 1)
+(sym %ocont)
+(sym %f :is-local :nesting-depth 1)
+(sym %r :is-local :nesting-depth 1)
+(sym %tcont)
+
+;; funs
+(fun %lam0
+  :args (%lam0 %l_x %l_y)
+  :rets (%l_s)
+  :cont %l_cont
+  :body
+  (send @operator %l_x #+ %l_y => %l_s)
+  (send @primitive @reply %l_cont %l_s)
+)
+(fun %outer
+  :args (%outer %x)
+  :rets (%o_r)
+  :cont %ocont
+  :body
+  (send :partial always %lam0 %x => %o_r)
+  (send @primitive @reply %ocont %o_r)
+)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+  (send %outer %c0 => %f)
+  (send %f %c1 => %r)
+)
+

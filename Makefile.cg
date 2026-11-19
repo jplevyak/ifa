@@ -3,7 +3,7 @@ OS_TYPE = $(shell uname -s | \
 
 CFLAGS += -I$(CG_ROOT) -I$(CG_ROOT)/common -I/usr/local/include/gc -I/opt/homebrew/include -g -Wno-deprecated
 
-LIBS = -lm -lgc -lpcre
+LIBS = -lm -lgc
 
 ifeq ($(OS_TYPE),Linux)
   LIBS += -ldl -lrt

@@ -105,6 +105,14 @@ llvm::StructType *sym_to_llvm_struct(Sym *s) {
     if (cg_has_classtag(s))
       fields.push_back(llvm::PointerType::getUnqual(*TheContext));
     for (Sym *f : s->has) {
+      // ifa/201: a member with no type does not exist (a slot nothing
+      // reads, ifa/123; a field no contour typed, issues/055). It keeps
+      // its index and takes no space: the C backend's `char eN[0]`, so
+      // both backends lay a class out the same way.
+      if (!f->type) {
+        fields.push_back(llvm::ArrayType::get(llvm::Type::getInt8Ty(*TheContext), 0));
+        continue;
+      }
       llvm::Type *ft = sym_to_llvm_type(f->type);
       // Substitute opaque ptr for unsized / void fields.
       if (!ft || ft->isVoidTy()) {
@@ -120,6 +128,10 @@ llvm::StructType *sym_to_llvm_struct(Sym *s) {
 // ifa/issues/030: translate a has-index into the LLVM struct slot
 // (tagged class records have the classtag at slot 0).
 static inline int llvm_fld(Sym *s, int i) { return cg_has_classtag(s) ? i + 1 : i; }
+
+// ifa/201: does record `s` have member `i` in its emitted struct? One
+// with no type is a zero-width placeholder: nothing may load or store it.
+static inline bool llvm_member_exists(Sym *s, int i) { return cg_member_width(s, i) > 0; }
 
 // ifa/issues/030: the per-class tag object. Only its ADDRESS
 // matters (identity comparison at dispatch sites), so an internal
@@ -330,6 +342,26 @@ static llvm::Value *int_width_cast(llvm::Value *v, llvm::Type *want) {
   if (v->getType()->isIntegerTy(1) && want->getIntegerBitWidth() > 1)
     return Builder->CreateZExtOrTrunc(v, want);
   return Builder->CreateSExtOrTrunc(v, want);
+}
+
+// A value stored into a slot (an alloca, a global, a record field) whose
+// LLVM type differs from the value's. C converts by assignment; this is
+// the same set of conversions. ifa/200 A5: without the int<->float arms a
+// `{int, float}` MOVE stored an i64's bits into a double slot, so `1`
+// read back as 5e-324 where the C backend prints 1.0.
+static llvm::Value *slot_store_cast(llvm::Value *v, llvm::Type *want) {
+  if (!v || !want) return v;
+  llvm::Type *have = v->getType();
+  if (have == want) return v;
+  if (have->isPointerTy() && want->isPointerTy()) return v;  // opaque pointers
+  if (have->isIntegerTy() && want->isIntegerTy()) return int_width_cast(v, want);
+  if (have->isIntegerTy() && want->isFloatingPointTy())
+    return have->isIntegerTy(1) ? Builder->CreateUIToFP(v, want) : Builder->CreateSIToFP(v, want);
+  if (have->isFloatingPointTy() && want->isIntegerTy()) return Builder->CreateFPToSI(v, want);
+  if (have->isFloatingPointTy() && want->isFloatingPointTy()) return Builder->CreateFPCast(v, want);
+  if (have->isPointerTy() && want->isIntegerTy()) return Builder->CreatePtrToInt(v, want);
+  if (have->isIntegerTy() && want->isPointerTy()) return Builder->CreateIntToPtr(v, want);
+  return v;
 }
 
 static llvm::Value *gen_state_field(EmitCtx &ctx, GenStateField field) {
@@ -637,35 +669,14 @@ void put_result(EmitCtx &ctx, Var *v, llvm::Value *value) {
   if (v == ctx.watch_result) ctx.watch_result_put = true;
   llvm::AllocaInst *slot = ctx.alloca_map.get(v);
   if (slot) {
-    llvm::Type *want = slot->getAllocatedType();
-    if (value->getType() != want) {
-      if (value->getType()->isPointerTy() && want->isPointerTy()) {
-        // opaque-ptr no-op.
-      } else if (value->getType()->isIntegerTy() && want->isIntegerTy()) {
-        value = int_width_cast(value, want);
-      } else if (value->getType()->isPointerTy() && want->isIntegerTy()) {
-        value = Builder->CreatePtrToInt(value, want);
-      } else if (value->getType()->isIntegerTy() && want->isPointerTy()) {
-        value = Builder->CreateIntToPtr(value, want);
-      }
-    }
-    Builder->CreateStore(value, slot);
+    Builder->CreateStore(slot_store_cast(value, slot->getAllocatedType()), slot);
     return;
   }
   // Global Var: always also emit a real store so reads via
   // value_for_var (which loads from the GlobalVariable) see
   // the current value, not the initial null.
   if (llvm::GlobalVariable *gv = g_var_to_global.get(v)) {
-    llvm::Type *gv_ty = sym_to_llvm_type(v->type);
-    llvm::Value *sv = value;
-    if (gv_ty && sv->getType() != gv_ty) {
-      if (sv->getType()->isPointerTy() && gv_ty->isPointerTy()) {
-        // opaque-ptr no-op
-      } else if (sv->getType()->isIntegerTy() && gv_ty->isIntegerTy()) {
-        sv = int_width_cast(sv, gv_ty);
-      }
-    }
-    Builder->CreateStore(sv, gv);
+    Builder->CreateStore(slot_store_cast(value, sym_to_llvm_type(v->type)), gv);
     return;  // value_for_var always loads globals fresh; var_map bind would be dead
   }
   ctx.var_map.put(v, value);
@@ -717,34 +728,6 @@ static llvm::Value *fun_identity_token(Sym *f) {
   llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
   return new llvm::GlobalVariable(*TheModule, i8, true, llvm::GlobalValue::PrivateLinkage,
                                   llvm::ConstantInt::get(i8, 0), name);
-}
-
-// -------------------------------------------------------------
-// resolve_union_receiver — port of cg.cc:148.  When the obj's
-// declared type is a Type_SUM (union), pick a concrete
-// component that carries the named field.  This is the cg.cc
-// trick that gets it to 99/0 against materialized's 92/7 —
-// the materialized side doesn't carry this through CGv2Type
-// so emit gets stuck on opaque-typed unions.
-// -------------------------------------------------------------
-
-Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
-  if (!obj || obj->type_kind != Type_SUM) return obj;
-  if (symbol) {
-    for (Sym *component : obj->has) {
-      if (!component || component == sym_nil_type) continue;
-      for (Sym *field : component->has) {
-        if (field && field->name == symbol) return component;
-      }
-    }
-  }
-  if (obj->has.n > 0) {
-    for (Sym *component : obj->has) {
-      if (component && component != sym_nil_type) return component;
-    }
-    return obj->has.v[0];
-  }
-  return obj;
 }
 
 // Get-or-create GC_malloc declaration.
@@ -916,6 +899,63 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
     return true;
   }
 
+  // ifa/206 step 2: the union's members disagree about this field's layout
+  // or representation, so no one member's layout reads it. Each arm reads
+  // through the object's own layout, chosen by its tag (mirrors cg.cc).
+  {
+    Vec<Sym *> arms;
+    Vec<int> arm_slots;
+    if (cg_union_read_arms(ctx.fn, pn->rvals.v[1]->type, symbol, arms, arm_slots)) {
+      llvm::Value *obj = value_for_var(ctx, pn->rvals.v[1]);
+      llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
+      if (!obj || !dst_ty || dst_ty->isVoidTy()) return false;
+      llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+      llvm::Function *cur_fn = Builder->GetInsertBlock()->getParent();
+      llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "uread.merge", cur_fn);
+      llvm::Value *tag = Builder->CreateLoad(ptr_ty, obj, "classtag");
+      std::vector<std::pair<llvm::Value *, llvm::BasicBlock *>> incoming;
+      for (int k = 0; k < arms.n; k++) {
+        llvm::BasicBlock *next_bb = nullptr;
+        if (k < arms.n - 1) {
+          llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "uread.hit", cur_fn);
+          next_bb = llvm::BasicBlock::Create(*TheContext, "uread.next", cur_fn);
+          Builder->CreateCondBr(Builder->CreateICmpEQ(tag, get_classtag_global(arms[k]), "tagcmp"), hit_bb, next_bb);
+          Builder->SetInsertPoint(hit_bb);
+        }
+        llvm::StructType *st = sym_to_llvm_struct(arms[k]);
+        int si = llvm_fld(arms[k], arm_slots[k]);
+        if (!st || si >= (int)st->getNumElements()) return false;
+        llvm::Type *fty = st->getElementType(si);
+        llvm::Value *v = Builder->CreateLoad(fty, Builder->CreateStructGEP(st, obj, si), "uread");
+        if (v->getType() != dst_ty) {
+          if (v->getType()->isIntegerTy() && dst_ty->isFloatingPointTy())
+            v = Builder->CreateSIToFP(v, dst_ty);
+          else if (v->getType()->isFloatingPointTy() && dst_ty->isFloatingPointTy())
+            v = Builder->CreateFPCast(v, dst_ty);
+          else if (v->getType()->isIntegerTy() && dst_ty->isIntegerTy())
+            v = int_width_cast(v, dst_ty);
+          else if (v->getType()->isPointerTy() && dst_ty->isIntegerTy())
+            v = Builder->CreatePtrToInt(v, dst_ty);
+          else if (v->getType()->isIntegerTy() && dst_ty->isPointerTy())
+            v = Builder->CreateIntToPtr(v, dst_ty);
+          else if (!(v->getType()->isPointerTy() && dst_ty->isPointerTy())) {
+            fail("field type mismatch reading a union receiver's '%s' field (ifa/206)", symbol);
+            return false;
+          }
+        }
+        incoming.push_back({v, Builder->GetInsertBlock()});
+        Builder->CreateBr(merge_bb);
+        if (next_bb) Builder->SetInsertPoint(next_bb);
+      }
+      Builder->SetInsertPoint(merge_bb);
+      llvm::PHINode *phi = Builder->CreatePHI(dst_ty, (unsigned)incoming.size(),
+                                              cg_get_string(dst_var) ? cg_get_string(dst_var) : "uread");
+      for (auto &in : incoming) phi->addIncoming(in.first, in.second);
+      put_result(ctx, dst_var, phi);
+      return true;
+    }
+  }
+
   // Struct getter case.  Resolve union → concrete component,
   // find field index by name, GEP + Load.
   Sym *obj_sym = pn->rvals.v[1]->type;
@@ -932,6 +972,18 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   }
   if (field_idx < 0) {
     return false;
+  }
+  // ifa/200 A1: the same blind-cast obligation the C backend records at
+  // its field read (cg.cc), checked by cg_check_layout_contract at the end
+  // of cg_emit_llvm.
+  cg_note_field_access(ctx.fn, pn->rvals.v[1], obj_sym, field_idx);
+  // ifa/201: a member that does not exist has nothing to load. A read kept
+  // live only for its None check has a dead result (the check is already
+  // emitted); any other read of it is refused, as the C backend refuses it.
+  if (!llvm_member_exists(obj_sym, field_idx)) {
+    if (!dst_var->live) return true;
+    codegen_fail(pn, "the attribute '%s' is not a field of the receiver's type '%s' (ifa/102)", symbol,
+                 obj_sym->name ? obj_sym->name : "?");
   }
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
@@ -1001,6 +1053,7 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
     }
   }
   if (field_idx < 0) return false;
+  cg_note_field_access(ctx.fn, pn->rvals.v[1], obj_sym, field_idx);  // ifa/200 A1, as at the read
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
   int slot_idx = llvm_fld(obj_sym, field_idx);
@@ -1075,7 +1128,7 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
   // computed from `~x` was silently dropped, so SHA-1's `(~B) & D` round
   // function vanished from shedskin_examples/sha and every digest was
   // wrong on LLVM (the C backend has _CG_prim_not).
-  if (op != P_prim_lnot && op != P_prim_minus && op != P_prim_not) return false;
+  if (!cg_unaryop_prim(op)) return false;
 
   // Return true (claimed) even when operands are missing — these are
   // dead/pruned nodes; falling through to emit_send_default_prim would
@@ -1140,41 +1193,8 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
   return true;
 }
 
-// issue 077: the set of prim indices THIS function's switch below
-// actually handles. Needed up front (not just as the switch's own
-// dispatch) because the type-mismatch guard below must only fire for
-// operators this function is responsible for -- emit_send_binop is
-// called for EVERY prim send (virtual_cg_emit_send's chain), and an
-// unrelated one (e.g. P_prim_primitive, a generic "call this by
-// name" node whose "operands" aren't a same-typed pair by design)
-// reaches here too, on its way to `default: return false` and
-// whatever emitter actually owns it. Checking types before confirming
-// membership false-positived on ~200 corpus programs in testing.
-static bool is_binop_family(int idx) {
-  switch (idx) {
-    case P_prim_add:
-    case P_prim_subtract:
-    case P_prim_mult:
-    case P_prim_div:
-    case P_prim_mod:
-    case P_prim_lsh:
-    case P_prim_rsh:
-    case P_prim_and:
-    case P_prim_or:
-    case P_prim_xor:
-    case P_prim_less:
-    case P_prim_lessorequal:
-    case P_prim_greater:
-    case P_prim_greaterorequal:
-    case P_prim_equal:
-    case P_prim_notequal:
-      return true;
-    default:
-      return false;
-  }
-}
-
-static void emit_salvage_trap(EmitCtx &ctx, Var *dst_v = nullptr) {
+static void emit_salvage_trap(EmitCtx &ctx, cchar *kind, Var *dst_v = nullptr) {
+  cg_trap_census("llvm", kind, ctx.fn);
   llvm::Function *trap_fn = get_intrinsic_decl(llvm::Intrinsic::trap);
   Builder->CreateCall(trap_fn);
   if (dst_v && dst_v->type) {
@@ -1187,7 +1207,7 @@ static void emit_salvage_trap(EmitCtx &ctx, Var *dst_v = nullptr) {
 
 // `**`, matching pyc_c_runtime.h's _CG_prim_pow: int ** int is exact
 // (_CG_int_pow), and anything else is libm's pow on doubles. There was
-// no handler at all -- `**` is not in is_binop_family, and the default
+// no handler at all -- `**` is not in cg_binop_family, and the default
 // fallback declined it on the operator-symbol operand -- so every power
 // was silently emitted as nothing and read back as 0 (nbody printed
 // 0.000000000 for every energy; ifa/issues/180). The pow call is
@@ -1242,7 +1262,7 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   int idx = pn->prim->index;
   if (idx == P_prim_pow) return emit_send_pow(ctx, pn);
-  if (!is_binop_family(idx)) return false;
+  if (!cg_binop_family(idx)) return false;
   if (pn->rvals.n < 4 || pn->lvals.n < 1) return false;
   Var *lhs_v = pn->rvals.v[pn->rvals.n - 3];
   Var *rhs_v = pn->rvals.v[pn->rvals.n - 1];
@@ -1269,8 +1289,7 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   }
 
   if (lhs->getType() != rhs->getType()) {
-    emit_salvage_trap(ctx, dst_v);
-    return true;
+    codegen_fail(pn, "binary operand type mismatch (ifa/102)");
   }
 
   llvm::Value *res = nullptr;
@@ -1535,6 +1554,26 @@ static llvm::Value *emit_norm_idx_const_len(llvm::Value *idx64, int64_t len) {
 
 static llvm::Value *record_field_gep(Sym *t, llvm::Value *obj, llvm::Value *idx, llvm::Type **field_ty);
 static llvm::Value *coerce_slot_value(llvm::Value *v, llvm::Type *to);
+// The LLVM type a list's elements are stored at: its element Sym's, as the
+// C backend's `t->element->type`; `fallback` when the list has none.
+static llvm::Type *list_elem_llvm_type(Sym *t, llvm::Type *fallback) {
+  Sym *e = t && t->element ? t->element->type : nullptr;
+  llvm::Type *et = e ? sym_to_llvm_type(e) : nullptr;
+  if (!et || et->isVoidTy()) return fallback;
+  return et;
+}
+// ifa/200 A6: a @vector class's elements follow its struct, as the C
+// backend's trailing `v[0]` member does; _CG_prim_clone_vector allocates
+// sizeof(struct) + n. Indexing from the object's first byte, as this
+// emitter did, read and wrote the class's own fields: a bytearray's
+// `length` showed up as its bytes 88-90, and a 27648-byte framebuffer
+// overran its 100-byte allocation.
+static llvm::Value *vector_data_ptr(Sym *t, llvm::Value *obj) {
+  llvm::StructType *st = sym_to_llvm_struct(t);
+  if (!st || st->isOpaque()) return obj;
+  uint64_t sz = TheModule->getDataLayout().getTypeAllocSize(st);
+  return Builder->CreateConstGEP1_64(llvm::Type::getInt8Ty(*TheContext), obj, sz, "vdata");
+}
 bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_index_object)
     return false;
@@ -1553,8 +1592,7 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
 
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
   if (!idx->getType()->isIntegerTy()) {
-    emit_salvage_trap(ctx, dst_v);
-    return true;
+    codegen_fail(pn, "list index is not an integer type (ifa/102)");
   }
   if (!idx->getType()->isIntegerTy(64))
     idx = Builder->CreateSExtOrTrunc(idx, i64);
@@ -1596,10 +1634,15 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (t && !t->is_vector && t->type_kind != Type_RECORD) {
     llvm::Value *data = load_list_data_ptr(obj);
     llvm::Value *idx_normed = emit_norm_idx(obj, idx, /*is_string=*/false);
-    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx_normed);
+    // ifa/200 A6: the element's storage type is the LIST's element type
+    // (cg.cc reads `t->element->type`), converted to the destination by
+    // value, not the destination's type: those differ when a permissive
+    // widening made one of them float.
+    llvm::Type *store_ty = list_elem_llvm_type(t, elem_ty);
+    llvm::Value *gep = Builder->CreateGEP(store_ty, data, idx_normed);
     llvm::Value *loaded = Builder->CreateLoad(
-        elem_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
-    put_result(ctx, dst_v, loaded);
+        store_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
+    put_result(ctx, dst_v, slot_store_cast(loaded, elem_ty));
     return true;
   }
 
@@ -1616,6 +1659,13 @@ bool emit_send_index_load(EmitCtx &ctx, PNode *pn) {
   if (llvm::Value *fgep = record_field_gep(t, obj, idx_use, &field_ty)) {
     llvm::Value *loaded = coerce_slot_value(Builder->CreateLoad(field_ty, fgep), elem_ty);
     put_result(ctx, dst_v, loaded);
+    return true;
+  }
+  if (t && t->is_vector) {
+    llvm::Type *store_ty = list_elem_llvm_type(t, elem_ty);
+    llvm::Value *gep = Builder->CreateGEP(store_ty, vector_data_ptr(t, obj), idx_use);
+    llvm::Value *loaded = Builder->CreateLoad(store_ty, gep, cg_get_string(dst_v) ? cg_get_string(dst_v) : "");
+    put_result(ctx, dst_v, slot_store_cast(loaded, elem_ty));
     return true;
   }
   llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx_use);
@@ -1639,6 +1689,7 @@ static llvm::Value *record_field_gep(Sym *t, llvm::Value *obj, llvm::Value *idx,
   int64_t i = ci->getSExtValue();
   if (i < 0) i += t->has.n;
   if (i < 0 || i >= t->has.n) return nullptr;
+  if (!llvm_member_exists(t, (int)i)) return nullptr;  // ifa/201
   llvm::StructType *st = sym_to_llvm_struct(t);
   if (!st || st->isOpaque()) return nullptr;
   unsigned slot = (unsigned)llvm_fld(t, (int)i);
@@ -1659,6 +1710,10 @@ static llvm::Value *coerce_slot_value(llvm::Value *v, llvm::Type *to) {
   if (from->isPointerTy() && to->isIntegerTy()) return Builder->CreatePtrToInt(v, to);
   if (from->isIntegerTy() && to->isPointerTy()) return Builder->CreateIntToPtr(v, to);
   if (from->isFloatingPointTy() && to->isFloatingPointTy()) return Builder->CreateFPCast(v, to);
+  // ifa/200 A5: a value conversion, as C's assignment does, not a bit
+  // reinterpretation (an i64 BitCast to double reads 1 as 5e-324).
+  if (from->isIntegerTy() != to->isIntegerTy() && (from->isFloatingPointTy() || to->isFloatingPointTy()))
+    return slot_store_cast(v, to);
   return Builder->CreateBitCast(v, to);
 }
 
@@ -1676,8 +1731,7 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
   llvm::Type *elem_ty = val->getType();
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
   if (!idx->getType()->isIntegerTy()) {
-    emit_salvage_trap(ctx);
-    return true;
+    codegen_fail(pn, "list index is not an integer type (ifa/102)");
   }
   if (!idx->getType()->isIntegerTy(64))
     idx = Builder->CreateSExtOrTrunc(idx, i64);
@@ -1689,8 +1743,13 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
       !(sym_string && sym_string->specializers.set_in(t))) {
     llvm::Value *data = load_list_data_ptr(obj);
     llvm::Value *idx_normed = emit_norm_idx(obj, idx, /*is_string=*/false);
-    llvm::Value *gep = Builder->CreateGEP(elem_ty, data, idx_normed);
-    Builder->CreateStore(val, gep);
+    // ifa/200 A6: store at the LIST's element type, converting the value
+    // as C's `= (ety)val` does. Storing at the value's own type wrote an
+    // int's bits into a float list (`m[3][3] = 1` read back as 5e-324,
+    // which zeroed every softrender matrix).
+    llvm::Type *store_ty = list_elem_llvm_type(t, elem_ty);
+    llvm::Value *gep = Builder->CreateGEP(store_ty, data, idx_normed);
+    Builder->CreateStore(slot_store_cast(val, store_ty), gep);
     return true;
   }
 
@@ -1701,6 +1760,12 @@ bool emit_send_index_store(EmitCtx &ctx, PNode *pn) {
   llvm::Type *field_ty = nullptr;
   if (llvm::Value *fgep = record_field_gep(t, obj, idx_use, &field_ty)) {
     Builder->CreateStore(coerce_slot_value(val, field_ty), fgep);
+    return true;
+  }
+  if (t && t->is_vector) {
+    llvm::Type *store_ty = list_elem_llvm_type(t, elem_ty);
+    llvm::Value *gep = Builder->CreateGEP(store_ty, vector_data_ptr(t, obj), idx_use);
+    Builder->CreateStore(slot_store_cast(val, store_ty), gep);
     return true;
   }
   llvm::Value *gep = Builder->CreateGEP(elem_ty, obj, idx_use);
@@ -1759,6 +1824,8 @@ static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
   }
 
   llvm::Type *src_ty = src->getType();
+  Sym *src_sym = src_var->type ? unalias_type(src_var->type) : nullptr;
+  bool src_unsigned = src_sym && src_sym->num_kind == IF1_NUM_KIND_UINT;
   llvm::Value *res = src;
   if (src_ty != dst_ty) {
     if (src_ty->isIntegerTy() && dst_ty->isIntegerTy()) {
@@ -1767,18 +1834,20 @@ static bool emit_send_coerce(EmitCtx &ctx, PNode *pn) {
       if (dst_ty->isIntegerTy(1)) {
         res = Builder->CreateICmpNE(src,
             llvm::ConstantInt::get(src_ty, 0));
-      } else if (src_ty->isIntegerTy(1)) {
+      } else if (src_ty->isIntegerTy(1) || src_unsigned) {
         // Widening FROM i1 (bool) must ZERO-extend: bool is an
         // unsigned 0/1 value, so sign-extending True (i1 1) would
         // yield all-ones = -1 (`int(True) == -1` on the LLVM backend).
-        // i1 is only ever bool in this codegen; every other integer
-        // source is signed and keeps SExt below.
+        // ifa/200 A6: so must an unsigned SOURCE Sym. LLVM's integer
+        // types carry no sign, so the Sym is what says it: a bytearray
+        // element is a uint8 (`__pyc_char__`), and SExt read byte 188
+        // back as -68, which is how softrender's texels went wrong.
         res = Builder->CreateZExtOrTrunc(src, dst_ty);
       } else {
         res = Builder->CreateSExtOrTrunc(src, dst_ty);
       }
     } else if (src_ty->isIntegerTy() && dst_ty->isFloatingPointTy()) {
-      res = Builder->CreateSIToFP(src, dst_ty);
+      res = src_unsigned ? Builder->CreateUIToFP(src, dst_ty) : Builder->CreateSIToFP(src, dst_ty);
     } else if (src_ty->isFloatingPointTy() && dst_ty->isIntegerTy()) {
       res = Builder->CreateFPToSI(src, dst_ty);
     } else if (src_ty->isFloatingPointTy() && dst_ty->isFloatingPointTy()) {
@@ -1850,9 +1919,15 @@ static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
     } else {
       llvm::Value *tag = Builder->CreateLoad(ptr_ty, lhs, "classtag");
       res = llvm::ConstantInt::getFalse(*TheContext);
+      Vec<llvm::GlobalVariable *> tested;
       for (Sym *impl : concrete) {
-        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(impl), "isocmp");
-        res = Builder->CreateOr(res, cmp);
+        Vec<Sym *> ms;
+        cg_tag_family_members(impl, ms);  // ifa/206: a split family's every tag
+        for (Sym *m : ms) {
+          llvm::GlobalVariable *g = get_classtag_global(m);
+          if (!tested.set_add(g)) continue;
+          res = Builder->CreateOr(res, Builder->CreateICmpEQ(tag, g, "isocmp"));
+        }
       }
     }
     llvm::Type *dst_ty = sym_to_llvm_type(dst_var->type);
@@ -2095,6 +2170,10 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
     Builder->CreateCall(memcpy_fn,
         { new_p, src, llvm::ConstantInt::get(i64, copy_sz),
           llvm::ConstantInt::getFalse(*TheContext) });
+    // ifa/206 step 2: a type with its own tag is re-stamped; the copy
+    // carried the source's.
+    if (cg_tag_is_concrete(dst_var->type))
+      Builder->CreateStore(get_classtag_global(dst_var->type), Builder->CreateStructGEP(dst_struct, new_p, 0));
     // ifa/issues/029/030: populate method-pointer slots for
     // polymorphic dispatch (mirrors cg.cc's P_prim_clone
     // polymorphic method-pointer installation logic).
@@ -2343,6 +2422,7 @@ bool emit_send_make(EmitCtx &ctx, PNode *pn) {
     for (int i = 3; i < pn->rvals.n; i++) {
       int field_idx = i - 3;
       if (field_idx >= n_fields) break;
+      if (!llvm_member_exists(dst_ty, field_idx)) continue;  // ifa/201: no such member to store
       Var *val_var = pn->rvals.v[i];
       if (!val_var) continue;
       llvm::Value *val = value_for_var(ctx, val_var);
@@ -2472,14 +2552,7 @@ void emit_move(EmitCtx &ctx, PNode *pn) {
     // like `g = expr` are dropped and subsequent loads
     // return null.
     if (llvm::GlobalVariable *gv = g_var_to_global.get(lhs)) {
-      llvm::Type *gv_ty = sym_to_llvm_type(lhs->type);
-      if (gv_ty && src->getType() != gv_ty) {
-        if (src->getType()->isPointerTy() && gv_ty->isPointerTy()) {
-          // opaque-ptr no-op.
-        } else if (src->getType()->isIntegerTy() && gv_ty->isIntegerTy()) {
-          src = Builder->CreateSExtOrTrunc(src, gv_ty);
-        }
-      }
+      src = slot_store_cast(src, sym_to_llvm_type(lhs->type));
       Builder->CreateStore(src, gv);
     }
     put_result(ctx, lhs, src);
@@ -2546,11 +2619,8 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     // Same target whitelist as the C backend, duplicated rather than
     // shared across the two files -- matches how this primitive's
     // core logic is already kept in sync rather than shared elsewhere
-    // in this function (see __pyc_format_string__ below). Traps
-    // unconditionally on mismatch, not gated on fruntime_errors: none
-    // of this backend's other guarded-degrade paths (emit_salvage_trap's
-    // other call sites above) consult that flag either -- LLVM codegen
-    // isn't currently threaded through strict/permissive mode at all.
+    // in this function (see __pyc_format_string__ below). A mismatch is
+    // refused in every mode, as in the C backend (ifa/102).
     static cchar *checked_c_call_targets[] = {
         "_CG_str_eq",  "_CG_str_ne", "_CG_str_lt", "_CG_str_le",
         "_CG_str_gt",  "_CG_str_ge", "_CG_fopen",  "_CG_chr",
@@ -2569,8 +2639,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         Var *av = pn->rvals.v[i];
         if (!tv || !av) continue;
         if (c_call_arg_type_mismatch(tv->sym, av->type)) {
-          emit_salvage_trap(ctx, pn->lvals.n > 0 ? pn->lvals.v[0] : nullptr);
-          return true;
+          codegen_fail(pn, "call argument type mismatch calling '%s' (ifa/102)", fn_name);
         }
       }
     }
@@ -2799,6 +2868,10 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       if (!rec || !rec_ty) return false;
       for (int fi = 0; fi < (int)rec_ty->getNumElements(); fi++) {
         llvm::Type *ft = rec_ty->getElementType(fi);
+        if (ft->isArrayTy()) {  // ifa/201: a member that does not exist
+          args.push_back(llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*TheContext)));
+          continue;
+        }
         llvm::Value *gep = Builder->CreateStructGEP(rec_ty, rec, fi);
         llvm::Value *fv = Builder->CreateLoad(ft, gep);
         if (fi < arg_var->type->has.n)
@@ -3026,7 +3099,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
 }
 
 bool emit_send_default_prim(EmitCtx &ctx, PNode *pn) {
-  // Port of write_c_prim's tail fallback (`_CG_<name>` route).
+  // Port of cg.cc's write_cg_macro_call (`_CG_<name>` route).
   // Used for any prim that doesn't have a structural handler.
   // Note: P_prim_primitive goes through emit_send_primitive,
   // not here — it has its own name-from-rvals[1] dispatch.
@@ -3108,16 +3181,25 @@ class LLVMEmitter : public VirtualCGEmitter {
     if (idx == P_prim_setter && pn->rvals.n >= 5 && pn->rvals.v[4] && pn->rvals.v[4]->sym &&
         pn->rvals.v[4]->sym->is_fake)
       return true;
-    // An attribute read the emitter cannot resolve: the C backend's
-    // `assert(!"runtime error: getter not resolved")`. Trap at run time,
-    // as it does, rather than read an unassigned result as zero.
+    // An attribute read the emitter cannot resolve: refused, as cg.cc
+    // does (ifa/102), except on a None-only receiver, which raised.
     if (idx == P_prim_period) {
       // ifa/185 (doom), as in cg.cc: a read kept live only for its None
       // check (already emitted, codegen_common) has a dead result and
       // nothing to load.
       if (pn->lvals.n && pn->lvals.v[0] && !pn->lvals.v[0]->live) return true;
-      emit_salvage_trap(ctx, pn->lvals.n ? pn->lvals.v[0] : nullptr);
-      return true;
+      // ifa/102, as in cg.cc: a live read on a receiver that can only be
+      // None is CPython's AttributeError. Nothing to load after it, but the
+      // result needs a value for the code after it to emit.
+      if (pn->rvals.n > 3 && pn->rvals.v[1] && pn->rvals.v[1]->type == sym_nil_type && pn->rvals.v[3]->sym->is_symbol) {
+        ::emit_none_check(ctx, pn->rvals.v[1], pn->rvals.v[3]->sym->name);
+        Var *dst = pn->lvals.n ? pn->lvals.v[0] : nullptr;
+        if (dst && dst->type)
+          if (llvm::Type *t = sym_to_llvm_type(dst->type); t && !t->isVoidTy())
+            put_result(ctx, dst, llvm::Constant::getNullValue(t));
+        return true;
+      }
+      codegen_fail(pn, "the attribute read is not a field of the receiver's type (ifa/102)");
     }
     return false;
   }
@@ -3128,7 +3210,7 @@ class LLVMEmitter : public VirtualCGEmitter {
     if (!pn || !pn->prim) return false;
     if (pn->prim->index == P_prim_id) {
       // id(x): address (pointers) or value bits (ints) as i64 --
-      // mirrors write_c_prim's `(_CG_int64)(uintptr_t)x` (cg.cc).
+      // mirrors cg.cc's c_prim_any: `(_CG_int64)(uintptr_t)x`.
       if (pn->lvals.n < 1 || pn->rvals.n < 3) return false;
       Var *dst_var = pn->lvals.v[0];
       llvm::Value *v = value_for_var(ctx, pn->rvals.v[2]);
@@ -3346,7 +3428,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   ctx.watch_result_put = saved_put;
   if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->hasTerminator()) {
     codegen_unresolved_send(pn, ctx.fn ? ctx.fn->calls.get(pn) : nullptr, "no dispatch plan produced its result");
-    emit_salvage_trap(ctx, dst);
+    emit_salvage_trap(ctx, "no_dispatch_plan_result", dst);
   }
 }
 
@@ -3361,7 +3443,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     // {list, tuple} union). Trap at run time, and give the result a
     // defined value so the code after it still emits.
     codegen_unresolved_send(pn, callees, "the analysis found no target");
-    emit_salvage_trap(ctx, pn->lvals.n ? pn->lvals.v[0] : nullptr);
+    emit_salvage_trap(ctx, "matching_function_not_found", pn->lvals.n ? pn->lvals.v[0] : nullptr);
     return;
   }
   Fun *single_target = get_target_fun_core(pn, ctx.fn);
@@ -3465,6 +3547,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     if (arity_cases.last()->tests.n) {
       // No case matched: FA proved this unreachable; trap like the C
       // backend's assert.
+      cg_trap_census("llvm", "arity_dispatch:_no_branch_matched", ctx.fn);
       llvm::Function *trap = get_intrinsic_decl(llvm::Intrinsic::trap);
       Builder->CreateCall(trap);
       Builder->CreateUnreachable();
@@ -3522,8 +3605,10 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     // so the carrier-direct/plains[] branches below have a shared
     // dispatch operand even when no classtag/nil-receiver candidate
     // ever supplies one.
-    if (pn->rvals.n && pn->rvals.v[0] && !pn->rvals.v[0]->sym->is_symbol)
+    if (pn->rvals.n && pn->rvals.v[0] && !pn->rvals.v[0]->sym->is_symbol) {
       recv = value_for_var(ctx, pn->rvals.v[0]);
+      recv_var = pn->rvals.v[0];
+    }
     // issue 026 pre-pass + classtag/nil-receiver resolution: shared
     // with the C backend (codegen_common.{h,cc}) -- previously
     // independently duplicated here and in cg.cc, independently
@@ -3535,14 +3620,16 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     bool ok = true;
     for (int fi = 0; fi < callees->n && ok; fi++) {
       Fun *fun_val = (*callees)[fi];
-      if (!fun_val || !fun_val->sym || !fun_val->sym->name) { ok = false; break; }
+      if (!fun_val || !fun_val->sym) { ok = false; break; }  // a lambda has no name (ifa/200 A3)
       Vec<Sym *> rts;
       Vec<int> rt_slots;
       Vec<int> rt_ridxs;
       poly_dispatch_classtag_targets(fun_val, pn, directly_owned, rts, rt_slots, rt_ridxs);
       for (int ri = 0; ri < rts.n; ri++) {
-        if (!recv && rt_ridxs[ri] >= 0 && rt_ridxs[ri] < pn->rvals.n && pn->rvals[rt_ridxs[ri]])
+        if (!recv && rt_ridxs[ri] >= 0 && rt_ridxs[ri] < pn->rvals.n && pn->rvals[rt_ridxs[ri]]) {
           recv = value_for_var(ctx, pn->rvals[rt_ridxs[ri]]);
+          recv_var = pn->rvals[rt_ridxs[ri]];
+        }
       }
       // ifa/issues/030(a), 2026-08-06: merge into classes[] FIRST,
       // whenever rts.n is nonzero -- mirrors cg.cc's `if (rts.n) {
@@ -3563,7 +3650,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       if (rts.n) {
         for (int ri = 0; ri < rts.n; ri++) {
           Sym *rt = rts[ri];
-          if (!rt->name || rt->is_system_type || !cg_has_classtag(rt)) continue;
+          if (!poly_dispatch_tag_arm(rt)) continue;
           added_any = true;
           bool found = false;
           for (int ci = 0; ci < classes.n; ci++)
@@ -3610,24 +3697,13 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       // directly: it IS the statically-known implementation for
       // this tag, no stored slot needed.
       {
-        Sym *carrier_recv = nullptr;
         int carrier_ridx = -1;
-        MPosition cselfp;
-        cselfp.push(1);
-        for (int pi = 0; pi < fun_val->sym->has.n + 2 && !carrier_recv; pi++) {
-          MPosition *cp = cannonicalize_mposition(cselfp);
-          cselfp.inc();
-          Var *argv = fun_val->args.get(cp);
-          if (!argv || !argv->type) continue;
-          if (argv->type->name && !strcmp(argv->type->name, "__closure__") && cg_has_classtag(argv->type)) {
-            carrier_recv = argv->type;
-            carrier_ridx = (int)Position2int(cp->pos[0]) - 1;
-          }
-          break;
-        }
+        Sym *carrier_recv = poly_dispatch_closure_carrier(fun_val, &carrier_ridx);
         if (carrier_recv && fun_val->cg_string && TheModule->getFunction(fun_val->cg_string)) {
-          if (!recv && carrier_ridx >= 0 && carrier_ridx < pn->rvals.n && pn->rvals[carrier_ridx])
+          if (!recv && carrier_ridx >= 0 && carrier_ridx < pn->rvals.n && pn->rvals[carrier_ridx]) {
             recv = value_for_var(ctx, pn->rvals[carrier_ridx]);
+            recv_var = pn->rvals[carrier_ridx];
+          }
           // All carriers are currently named "__closure__": a SECOND,
           // DISTINCT carrier Sym reaching this same dispatch site
           // would collide on that name and be indistinguishable from
@@ -3755,6 +3831,24 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
                      sel ? sel : "call", scalar_member->name ? scalar_member->name : "scalar");
     }
     if (ok && (classes.n || nil_fn || default_fn) && recv) {
+      {  // ifa/206: what this site calls directly; the rest go through the slot
+        Vec<Fun *> direct;
+        if (nil_fn) direct.add(nil_fn);
+        if (default_fn) direct.add(default_fn);
+        for (int ci = 0; ci < classes.n; ci++)
+          if (slots[ci] == -1) direct.add(class_funs[ci]);
+        for (Fun *fv : plains) direct.add(fv);
+        cg_note_dispatch_site(pn, direct);
+      }
+      {  // ifa/102 step 3: every member of the receiver's union has an arm (as cg.cc)
+        bool nil_unclaimed = false;
+        Vec<Sym *> unclaimed;
+        poly_dispatch_coverage(pn, recv_var, nil_fn, classes, plains, default_fn, &nil_unclaimed, unclaimed);
+        if (unclaimed.n) poly_dispatch_refuse_unclaimed(pn, poly_dispatch_selector(pn, callees), unclaimed);
+        // None has no such method: CPython's AttributeError, raised before
+        // the classtag load below dereferences it (ifa/165).
+        if (nil_unclaimed) ::emit_none_check(ctx, recv_var, poly_dispatch_selector(pn, callees));
+      }
       llvm::BasicBlock *merge_bb = llvm::BasicBlock::Create(*TheContext, "poly.merge", cur_fn);
       llvm::AllocaInst *res_slot = nullptr;
       if (res_ty) {
@@ -3880,7 +3974,15 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       for (int ci = 0; ci < classes.n; ci++) {
         llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
         llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
-        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]), "tagcmp");
+        llvm::Value *cmp = nullptr;
+        {
+          Vec<Sym *> ms;
+          cg_tag_family_members(classes[ci], ms);  // ifa/206: a split family's every tag
+          for (Sym *m : ms) {
+            llvm::Value *c = Builder->CreateICmpEQ(tag, get_classtag_global(m), "tagcmp");
+            cmp = cmp ? Builder->CreateOr(cmp, c) : c;
+          }
+        }
         Builder->CreateCondBr(cmp, hit_bb, next_bb);
         Builder->SetInsertPoint(hit_bb);
         if (slots[ci] == -1) {
@@ -3895,7 +3997,16 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           Builder->SetInsertPoint(next_bb);
           continue;
         }
+        // ifa/200 A1: the receiver is read through classes[ci]'s layout at
+        // the method slot -- the obligation cg.cc records at its tag arm.
+        if (class_recv_ridx[ci] >= 0 && class_recv_ridx[ci] < pn->rvals.n && pn->rvals[class_recv_ridx[ci]])
+          cg_note_blind_cast(classes[ci], pn->rvals[class_recv_ridx[ci]]->type, slots[ci]);
         llvm::StructType *st = sym_to_llvm_struct(classes[ci]);
+        // ifa/201: cg_elide_unread_slots counted this read from the same
+        // plan, so the slot exists. If the two ever disagree, refuse.
+        if (!llvm_member_exists(classes[ci], slots[ci]))
+          codegen_fail(pn, "dispatch through method slot e%d of '%s', which no read was planned for (ifa/201)",
+                       slots[ci], classes[ci]->name ? classes[ci]->name : "?");
         llvm::Value *slot_gep = Builder->CreateStructGEP(st, recv, llvm_fld(classes[ci], slots[ci]));
         llvm::Value *fnptr = Builder->CreateLoad(ptr_ty, slot_gep, "methodptr");
         // issues/025 kanoodle (this backend's sibling of the C
@@ -3970,14 +4081,14 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       // default_fn unconditionally if one was claimed (ifa/issues/088
       // -- see its declaration comment: the only candidate left once
       // nil/classtag/carrier/plains have all had their turn, so
-      // nothing else could be the answer here). Otherwise still the
-      // pre-existing trap-free no-op -- res_slot stays an
-      // uninitialized alloca, not a zeroed one (ifa/issues/030(a)
-      // hardening note): a genuinely unmatched dispatch reads garbage,
-      // not 0. Not fixed as part of this change -- see the
-      // LLVM-backend caveat in ifa/issues/030's doc for the same
-      // pre-existing gap in the "bare callable value" pass below.
-      if (default_fn) emit_direct_call(default_fn);
+      // nothing else could be the answer here).
+      // ifa/102 step 3: with no default candidate, the fall-through is the
+      // C backend's "polymorphic dispatch: no branch matched" trap. The
+      // coverage check above proved every receiver type has an arm.
+      if (default_fn)
+        emit_direct_call(default_fn);
+      else
+        emit_salvage_trap(ctx, "poly_no_branch_matched");
       Builder->CreateBr(merge_bb);
       Builder->SetInsertPoint(merge_bb);
       if (dst_var && res_slot) {
@@ -4079,10 +4190,20 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           }
           Builder->CreateStore(cv, fres_slot);
         }
+      } else {
+        // ifa/200 A3: this arm used to branch to the merge without
+        // calling anything, so the call read as the slot's zero.
+        codegen_unresolved_send(pn, callees, "a candidate's formals do not match the call's operands");
+        emit_salvage_trap(ctx, "fnid_args_mismatch");
       }
       Builder->CreateBr(fmerge_bb);
       Builder->SetInsertPoint(next_bb);
     }
+    // ifa/200 A3: no candidate's address matched. This fell through to
+    // the merge, so the call silently produced 0 (a capturing lambda
+    // dispatched against a plain function printed 0 for 13); the C
+    // backend's "polymorphic dispatch: no branch matched" trap.
+    emit_salvage_trap(ctx, "poly_no_branch_matched");
     Builder->CreateBr(fmerge_bb);
     Builder->SetInsertPoint(fmerge_bb);
     if (dst_var && fres_slot) {
@@ -4217,36 +4338,11 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
   }
 }
 
-// Given a Code_IF PNode, returns the single cfg_succ index (0 or 1)
-// selected by a compile-time-constant condition -- the condition
-// Var's ->sym is FA's own canonical true_type/false_type Sym, either
-// from FA's ordinary constant folding or fed in by a pass like
-// ifa/optimize/exc_check_fold.cc -- or -1 if the condition is a real
-// runtime value (both successors are potentially live). Shared by
-// discover_blocks (which must not allocate/walk into the dead arm at
-// all) and emit_block_terminator (which must not branch into it),
-// so the two can't drift out of sync.
-static int const_if_successor(EmitCtx &ctx, PNode *n) {
-  if (!n || n->rvals.n == 0) return -1;
-  if (ctx.fa && ctx.fa->type_world.true_type && n->rvals.v[0]->sym == ctx.fa->type_world.true_type->v[0]->sym)
-    return 0;
-  if (ctx.fa && ctx.fa->type_world.false_type && n->rvals.v[0]->sym == ctx.fa->type_world.false_type->v[0]->sym)
-    return 1;
-  return -1;
-}
-
-// issues/085: mirrors is_unresolved_condition in cg.cc (the C
-// backend's own copy of this check -- kept independent, matching how
-// the two backends already duplicate const_if_successor's Sym-identity
-// checks above rather than sharing them). A Code_IF condition whose
-// Var::type is exactly fa->type_world.void_type's Sym never resolved
-// at all (FA gave up, salvaged to NOTYPE); unlike a provably-dead
-// constant fold (const_if_successor above), this is NOT proven
-// unreachable and must not be branched into/past silently.
-static bool is_unresolved_condition(EmitCtx &ctx, Var *cond) {
-  return cond && cond->type && ctx.fa && ctx.fa->type_world.void_type && ctx.fa->type_world.void_type->n > 0 &&
-         cond->type == ctx.fa->type_world.void_type->v[0]->type;
-}
+// ifa/200 A3: a constant IF's one successor, and whether an unresolved IF
+// traps, are cg_const_if_successor / cg_if_traps_unresolved, shared with
+// the C backend. discover_blocks and emit_block_terminator both ask the
+// first, so the two cannot disagree on which arm is dead.
+static int const_if_successor(EmitCtx &ctx, PNode *n) { return cg_const_if_successor(ctx.fa, n); }
 
 // issues/085: a real, controlled trap (an actual abort() call) for the
 // unresolved-condition case -- deliberately not CreateUnreachable(),
@@ -4256,6 +4352,7 @@ static bool is_unresolved_condition(EmitCtx &ctx, Var *cond) {
 // condition was never evaluated, not proven dead), and `unreachable`
 // is an optimizer license (UB if actually hit), not a runtime check.
 static void emit_abort_trap(EmitCtx &ctx) {
+  cg_trap_census("llvm", "unresolved_if_condition", ctx.fn);
   llvm::FunctionType *abort_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(*TheContext), {}, false);
   llvm::FunctionCallee abort_fn = TheModule->getOrInsertFunction("abort", abort_ty);
   Builder->CreateCall(abort_fn);
@@ -4272,10 +4369,41 @@ static void emit_abort_trap(EmitCtx &ctx) {
 // would execute in a block shared by both, corrupting the other branch.
 // -------------------------------------------------------------
 
+// ifa/049, as cg.cc's write_c_pnode (dead0/dead1): after a call that can
+// only raise, FA keeps only the exception check's pending arm, and the
+// other arm's successor is not fa_live. Nothing behind it is emitted; the
+// arm itself is a trap (ifa/102: this used to allocate the dead region's
+// blocks, emit them empty, and end them in `unreachable`, an optimizer
+// licence where C has a trap -- msp_ss's main had 41).
+static bool exc_arm_dead(PNode *n, int si) {
+  return n && n->code && n->code->kind == Code_IF && n->code->exc_check && n->live && n->fa_live &&
+         si < n->cfg_succ.n && n->cfg_succ.v[si] && !n->cfg_succ.v[si]->fa_live;
+}
+
+// The same for the code after a send that cannot complete (fa_noreturn):
+// emit_pnode traps after the send, and nothing FA did not reach behind it
+// is emitted. An fa_live successor (a label other paths reach) still is.
+static bool succ_dead(PNode *n, int si) {
+  if (exc_arm_dead(n, si)) return true;
+  return n && n->code && n->code->kind == Code_SEND && n->fa_live && n->fa_noreturn &&
+         si < n->cfg_succ.n && n->cfg_succ.v[si] && !n->cfg_succ.v[si]->fa_live;
+}
+
+static llvm::BasicBlock *exc_dead_arm_block(EmitCtx &ctx) {
+  llvm::BasicBlock *cur = Builder->GetInsertBlock();
+  llvm::BasicBlock *bb = llvm::BasicBlock::Create(*TheContext, "exc.dead", ctx.llvm_fn);
+  Builder->SetInsertPoint(bb);
+  cg_trap_census("llvm", "jump_to_unreachable_block", ctx.fn);
+  Builder->CreateCall(get_intrinsic_decl(llvm::Intrinsic::trap));
+  Builder->CreateUnreachable();
+  Builder->SetInsertPoint(cur);
+  return bb;
+}
+
 void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
 
   if (!closer || !closer->code) {
-    Builder->CreateUnreachable();
+    { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
     return;
   }
   Code *cd = closer->code;
@@ -4286,7 +4414,7 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         succ_bb = ctx.label_bb.get(closer->cfg_succ.v[0]);
       }
       if (succ_bb) Builder->CreateBr(succ_bb);
-      else Builder->CreateUnreachable();
+      else { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       break;
     }
     case Code_IF: {
@@ -4317,6 +4445,9 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       if (closer->cfg_succ.n > 1 && closer->cfg_succ.v[1]) {
         f_bb = ctx.label_bb.get(closer->cfg_succ.v[1]);
       }
+      bool dead0 = exc_arm_dead(closer, 0), dead1 = exc_arm_dead(closer, 1);
+      if (dead0) t_bb = exc_dead_arm_block(ctx);
+      if (dead1) f_bb = exc_dead_arm_block(ctx);
       // issues/085: a genuinely unresolved condition (FA gave up,
       // salvaged to NOTYPE/void_type -- not proven dead the way
       // const_if_successor's true_type/false_type check above
@@ -4328,18 +4459,14 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
       // (cond is nullptr anyway for this case -- an unresolved value
       // can't be materialized).
       //
-      // Gated on (t_bb || f_bb), same as the C backend's mirrored
-      // successor-liveness check: discover_blocks only allocates a
-      // block for a genuinely live successor, so neither existing
-      // means this Code_IF itself belongs to permanently dead code
-      // that just happened to get visited (e.g. an `if False:` body
-      // whose condition was simply never typed, not attempted and
-      // failed) -- confirmed necessary by this session's own
-      // pre/post-fix regression sweep (astar.py's entire, never-
-      // executed `if False:` module body tripped an earlier,
-      // ungated version of this check on the very first line of its
-      // __main__).
-      if ((t_bb || f_bb) && closer->rvals.n > 0 && is_unresolved_condition(ctx, closer->rvals.v[0])) {
+      //
+      // The gate is the C backend's (ifa/200 A3): the IF and some
+      // successor are live and fa_live. It used to be (t_bb || f_bb),
+      // which also trapped at dead IFs whose successors had blocks: 21
+      // suite and 7 corpus sites the C backend never emitted, every one
+      // dead (astar's `if False:` body behind `br i1 false`, blocks with
+      // no predecessors).
+      if (cg_if_traps_unresolved(ctx.fa, closer)) {
         emit_abort_trap(ctx);
         break;
       }
@@ -4357,7 +4484,7 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
           emit_phi_moves(ctx, closer, 1);
           Builder->CreateBr(f_bb);
         } else {
-          Builder->CreateUnreachable();
+          { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
         }
       } else if (t_bb && !f_bb) {
         emit_phy_moves(ctx, closer, 0);
@@ -4368,7 +4495,7 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         emit_phi_moves(ctx, closer, 1);
         Builder->CreateBr(f_bb);
       } else {
-        Builder->CreateUnreachable();
+        { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       }
       break;
     }
@@ -4499,9 +4626,9 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         llvm::BasicBlock *succ_bb =
             ctx.label_bb.get(closer->cfg_succ.v[0]);
         if (succ_bb) Builder->CreateBr(succ_bb);
-        else Builder->CreateUnreachable();
+        else { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       } else {
-        Builder->CreateUnreachable();
+        { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       }
       break;
     }
@@ -4510,11 +4637,11 @@ void emit_block_terminator(EmitCtx &ctx, PNode *closer) {
         llvm::BasicBlock *succ_bb =
             ctx.label_bb.get(closer->cfg_succ.v[0]);
         if (succ_bb) Builder->CreateBr(succ_bb);
-        else Builder->CreateUnreachable();
+        else { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       } else if (ctx.llvm_fn->getReturnType()->isVoidTy()) {
         Builder->CreateRetVoid();
       } else {
-        Builder->CreateUnreachable();
+        { cg_trap_census("llvm", "unreachable_terminator", ctx.fn); Builder->CreateUnreachable(); }
       }
       break;
     }
@@ -4728,6 +4855,7 @@ void discover_blocks(EmitCtx &ctx, Fun *f) {
       only_succ = const_if_successor(ctx, cur);
     for (int si = 0; si < cur->cfg_succ.n; si++) {
       if (only_succ >= 0 && si != only_succ) continue;
+      if (succ_dead(cur, si)) continue;
       PNode *s = cur->cfg_succ.v[si];
       if (!s || !seen.set_add(s)) continue;
       if (s->code && s->code->kind == Code_LABEL) {
@@ -4829,6 +4957,19 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
         break;
     }
   }
+  if (pn->code->kind == Code_SEND && pn->fa_live && pn->fa_noreturn && !pn->fa_noreturn_raises &&
+      Builder->GetInsertBlock() && !Builder->GetInsertBlock()->getTerminator()) {
+    // ifa/178, as cg.cc: a send that cannot complete in any contour of
+    // this clone (a callee that never returns, a read on None), whether
+    // or not DCE kept the send itself. Trap rather than run on into the
+    // code after it, which FA never reached (ifa/102: that code was
+    // emitted with no values and ended in `unreachable`;
+    // tests/expr_evaluator's evaluate).
+    cg_trap_census("llvm", "send_does_not_complete", ctx.fn);
+    Builder->CreateCall(get_intrinsic_decl(llvm::Intrinsic::trap));
+    Builder->CreateUnreachable();
+    Builder->SetInsertPoint(llvm::BasicBlock::Create(*TheContext, "after.noreturn", ctx.llvm_fn));
+  }
   // Phi/phy edge MOVE emission — mirrors cg.cc:do_phy_nodes /
   // do_phi_nodes at the per-PNode tail switch.  Called AFTER
   // the main emit so phi/phy MOVEs see the just-computed
@@ -4872,6 +5013,7 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
   if (pn->code->kind == Code_IF && pn->live && pn->fa_live) only_succ = const_if_successor(ctx, pn);
   for (int si = 0; si < pn->cfg_succ.n; si++) {
     if (only_succ >= 0 && si != only_succ) continue;
+    if (succ_dead(pn, si)) continue;
     PNode *s = pn->cfg_succ.v[si];
     if (s && done.set_add(s)) {
       emit_pnode(ctx, s, done);
@@ -5153,6 +5295,7 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
     if (!struct_ty) continue;
     int field_idx = (int)Position2int(p->pos.v[1]) - 1;
     if (field_idx < 0 || field_idx >= (int)struct_ty->getNumElements()) continue;
+    if (struct_ty->getElementType(field_idx)->isArrayTy()) continue;  // ifa/201: no such member
     llvm::Value *gep =
         Builder->CreateStructGEP(struct_ty, parent_val, field_idx, "pat_gep");
     llvm::Type *field_ty = struct_ty->getElementType(field_idx);
@@ -5179,6 +5322,7 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
   for (llvm::BasicBlock &bb : *ctx.llvm_fn) {
     if (!bb.hasTerminator()) {
       Builder->SetInsertPoint(&bb);
+      if (!llvm::pred_empty(&bb)) cg_trap_census("llvm", "unterminated_block", ctx.fn);
       Builder->CreateUnreachable();
     }
   }
@@ -5197,6 +5341,7 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
   // ifa/issues/029/030: creator-Fun -> method-slot registrations,
   // consumed by emit_send_clone (slot stores) and emit_send_call
   // (classtag dispatch). Shared with the C backend.
+  cg_plan_concrete_tags(fa);  // ifa/206 step 2: before any tag is named
   cg_build_new_to_val_map(fa);
   cg_build_dispatch_arm_plans(fa);  // ifa/121
 
@@ -5276,5 +5421,8 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
       break;
     }
   }
+  // ifa/200 A1: every blind cast the field and dispatch arms recorded is
+  // checked once, fatally, as c_codegen_print_c does for C (ifa/122).
+  cg_check_layout_contract();
   return true;
 }

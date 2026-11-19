@@ -196,12 +196,58 @@ switch (p->prim->index) {
         Vec<AVar *> methods;
         set_container(result, obj);
         bool partial = p->code->partial != Partial_NEVER;
+        // issues/184: a receiver that is a CLASS VALUE (`cls` in a
+        // @classmethod, bound to the class's meta type) holds no members:
+        // a class's attributes live on its prototype (`Sym::self`), which
+        // is where `C.attr` on the class by name reads them. Read the
+        // prototype's members for each such receiver, so a `cls` bound to
+        // several classes reads each class's own. A function found there is
+        // bound to the class value only if it is a @classmethod; any other
+        // function is the plain function, as `C.f` is in CPython.
+        Vec<CreationSet *> meta_answered;
+        auto proto_css = [&](CreationSet *cs, Vec<CreationSet *> &out) {
+          if (!cs || !cs->sym || !cs->sym->is_meta_type) return false;
+          Sym *cls = cs->sym->meta_type;
+          if (!cls || !cls->self || cls->self == cls || !cls->self->var) return false;
+          AVar *pav = make_AVar(cls->self->var, es);
+          pav->arg_of_send.add(result);
+          for (CreationSet *pcs : pav->out->sorted)
+            if (pcs) out.add(pcs);
+          return true;
+        };
         for (CreationSet *sel : selector->out->sorted) {
           cchar *symbol = sel->sym->name;
           if (!symbol) symbol = sel->sym->constant;
           if (!symbol) symbol = sel->sym->imm.v_string;
           assert(symbol);
-          for (CreationSet *cs : obj->out->sorted) {
+          for (CreationSet *ocs : obj->out->sorted) {
+            Vec<CreationSet *> protos;
+            if (proto_css(ocs, protos)) {
+              for (CreationSet *pcs : protos) {
+                AVar *iv = pcs->var_map.get(symbol);
+                if (!iv) continue;
+                meta_answered.set_add(ocs);
+                iv->arg_of_send.add(result);
+                AType *fnpart = type_intersection(iv->out, fa->type_world.function_type);
+                bool any_cm = false, any_plain = false;
+                for (CreationSet *fcs : fnpart->sorted) {
+                  Fun *ff = fcs->sym->fun;
+                  if (ff && ff->sym->is_class_method) any_cm = true;
+                  else any_plain = true;
+                }
+                if (!partial || !any_cm) {
+                  if (partial) flow_var_type_permit(result, iv->out);
+                  flow_vars(iv, result);
+                } else {
+                  flow_var_type_permit(result, type_diff(iv->out, fa->type_world.function_type));
+                  if (any_plain) flow_var_type_permit(result, fnpart);
+                  flow_vars(iv, result);
+                  methods.add(iv);
+                }
+              }
+              continue;
+            }
+            CreationSet *cs = ocs;
             AVar *iv = cs->var_map.get(symbol);
             if (iv) {
               iv->arg_of_send.add(result);
@@ -281,6 +327,11 @@ switch (p->prim->index) {
           int data_only = 0;
           for (CreationSet *cs : obj->out->sorted) {
             if (!cs) continue;
+            // issues/184: answered by the class's prototype above.
+            if (meta_answered.set_in(cs)) {
+              data_only++;
+              continue;
+            }
             bool data = false;
             for (CreationSet *sel : selector->out->sorted) {
               cchar *symbol = sel->sym->name;

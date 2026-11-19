@@ -14,7 +14,7 @@ int llvm_codegen_compile(cchar *filename);
 // -rdynamic so that runtime helpers are visible to GetForCurrentProcess.
 // If llvm_jit_cache_path is non-empty, writes LLVM bitcode to that path
 // before handing the module to the JIT (Stage-2 REPL cache protocol).
-int llvm_jit_execute();
+int llvm_jit_execute(int argc, char **argv);
 
 // Stage-2 REPL bitcode cache.
 // llvm_jit_cache_path: set by the caller (repl.cc) before calling

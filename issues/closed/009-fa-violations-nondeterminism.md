@@ -524,13 +524,13 @@ the change, `fa-converge` is byte-identical across 5+ runs of
 every fixture (`nested_iterator` included). The remaining
 cleanup work — the `.n` → `.capacity` / `.size` rename and the
 17 `qsort_by_id` → `sorted_view` migrations — is filed as
-[010-CLEANUP-vec-set-api-cleanup.md](../010-CLEANUP-vec-set-api-cleanup.md).
+[010-CLEANUP-vec-set-api-cleanup.md](010-CLEANUP-vec-set-api-cleanup.md).
 
 ## Status
 
 Steps 1-6 complete; Step 6 follow-on (options A + B) landed
 June 2026. Closing this issue. Remaining cleanup work tracked
-in [010](../010-CLEANUP-vec-set-api-cleanup.md).
+in [010](010-CLEANUP-vec-set-api-cleanup.md).
 
 ## What this unblocks
 

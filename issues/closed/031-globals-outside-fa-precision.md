@@ -5,7 +5,7 @@
 implemented and verified same day as filing — see "What landed"
 below. Step 3 (multiple closure shapes in one global) was always
 explicitly out of scope here, folded into
-[030](../030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s own
+[030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md)'s own
 scope — nothing remains open under this number.
 Originally filed as the common-root-cause writeup for pyc issues
 [001](../../../issues/closed/001-fa-crash-captured-locals.md) /

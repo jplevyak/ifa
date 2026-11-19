@@ -2,7 +2,7 @@
 
 **Status:** fixed 2026-09-06. Root cause of `tests/builtins.py` under
 `PYC_CSDCPA1=2`, the last element-union failure in
-[129](../129-plan-demand-driven-creation-set-splitting.md)'s suite bill.
+[129](129-plan-demand-driven-creation-set-splitting.md)'s suite bill.
 
 ## Symptom
 

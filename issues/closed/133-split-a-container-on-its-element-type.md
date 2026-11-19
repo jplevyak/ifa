@@ -1,6 +1,6 @@
 # 133 — a merged container leaks elements between unrelated lists
 
-> **CLOSED 2026-09-28 (merged into 129).** Its separator landed: `CS_DEF_PARTITION` (default), `__delitem__`'s false `merge_in` removed, NILSTORE, and the ES split as a means (`PYC_ESBLOCK=1`, default since 2026-09-24). Its "do not retry" list and the residual family moved into [129](../129-plan-demand-driven-creation-set-splitting.md).
+> **CLOSED 2026-09-28 (merged into 129).** Its separator landed: `CS_DEF_PARTITION` (default), `__delitem__`'s false `merge_in` removed, NILSTORE, and the ES split as a means (`PYC_ESBLOCK=1`, default since 2026-09-24). Its "do not retry" list and the residual family moved into [129](129-plan-demand-driven-creation-set-splitting.md).
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
@@ -10,8 +10,8 @@ left is a representation question, not another splitter.
 **Where it sits.** [128](128-cs-identity-over-discriminates-vs-element-type.md)
 asks how many container contours should exist; this issue is the separator
 that makes starting merged safe. It is the largest single item in
-[129](../129-plan-demand-driven-creation-set-splitting.md)'s `PYC_CSDCPA1=2`
-bill, and it must satisfy [146](../146-remove-all-arbitrary-splitting.md): the
+[129](129-plan-demand-driven-creation-set-splitting.md)'s `PYC_CSDCPA1=2`
+bill, and it must satisfy [146](146-remove-all-arbitrary-splitting.md): the
 partition size must be what the demand distinguishes, never a count of
 things.
 
@@ -224,7 +224,7 @@ that ONE shared contour's unrolled body has a single `x` per slot position,
 so slot types across shapes merge into `{int64, str}` and every use is a
 BOXING violation.
 
-**That merge is [146](../146-remove-all-arbitrary-splitting.md) E's debt, and
+**That merge is [146](146-remove-all-arbitrary-splitting.md) E's debt, and
 146 E is the blocker — not 128.** Separating a formal that holds N tuple
 CreationSets is exactly what the removed CARTESIAN_PRODUCT splitter did, and
 `tests/splitter_cartesian_product.py` already specifies the replacement.
@@ -255,7 +255,7 @@ way. See 128's closing section.
 
 ## Open — and the ordering lives in 129
 
-[129](../129-plan-demand-driven-creation-set-splitting.md) is the single
+[129](129-plan-demand-driven-creation-set-splitting.md) is the single
 integrated plan and sequences this against everything else. What this issue
 owns in it:
 

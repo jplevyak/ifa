@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <map>
+#include <unordered_map>
+#include <unordered_set>
 #include <set>
 #include <vector>
 #include "fa.h"
@@ -10,6 +12,7 @@
 #include "ast.h"
 #include "builtin.h"
 #include "clone.h"
+#include "repr.h"
 #include "dead.h"
 #include "fail.h"
 #include "fun.h"
@@ -50,6 +53,7 @@ int write_code_exit = 0;
 int analysis_pass = 0;
 FA *fa = nullptr;
 static Timer pass_timer, match_timer, extend_timer;
+static long fa_rounds_total();  // ifa/207
 // ifa/111 probe: the units the propagation worklists actually process.
 // `examined_avar_count` counts the SPLITTER's exhaustive sweep, not this,
 // so per-unit cost cannot be derived from it. PYC_DBG_WORK=1 to print.
@@ -2292,7 +2296,43 @@ int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, Vec<AVar
   for (int j = args.n - 1; j >= 0; j--) a.add(args[j]);
   Vec<Match *> matches;
   AVar *send = make_AVar(p->lvals[0], es);
+  // ifa/207: a dispatch that decides nothing is not run; see
+  // dispatch_unchanged. IFA_DISPMEMO=0 turns it off; =2 runs the matcher
+  // behind every witness answer and reports any it would have got wrong.
+  static int memo_on = getenv("IFA_DISPMEMO") ? atoi(getenv("IFA_DISPMEMO")) : 1;
+  if (memo_on) {
+    int remembered;
+    int r = dispatch_unchanged(a, send, is_closure, partial, visibility_point, &remembered);
+    if (r == 1) return remembered;
+    if (r == 2) {
+      if (memo_on == 2) {
+        static long checked = 0, mismatch = 0;
+        static bool reg = false;
+        if (!reg) reg = true, atexit([] { fprintf(stderr, "DISPMEMO witness checked=%ld MISMATCH=%ld\n", checked, mismatch); });
+        Vec<Match *> chk;
+        int n = pattern_match(a, names, send, is_closure, partial, visibility_point, chk);
+        bool ok = n > 0;
+        for (Match *m : chk) if (!m->is_partial && partial != Partial_ALWAYS) ok = false;
+        checked++;
+        if (!ok && ++mismatch <= 10) fprintf(stderr, "DISPMEMO WITNESS MISMATCH send=%d n=%d\n", send->id, n);
+      }
+      dispatch_remember(a, send, is_closure, partial, visibility_point, 1, nullptr);
+      return 1;
+    }
+  }
   match_timer.start();
+  // ifa/207 step 2: a firing that brought no new verdict class needs no
+  // matching; see standing_try.
+  int standing = standing_mode();
+  if (standing == 1) {
+    Vec<Match *> admitted;
+    if (standing_try(a, send, is_closure, partial, visibility_point, admitted, nullptr)) {
+      for (Match *m : admitted) make_AEdges(m, p, es, a);
+      match_timer.stop();
+      if (memo_on) dispatch_remember(a, send, is_closure, partial, visibility_point, 0, nullptr);
+      return 0;
+    }
+  }
   if (pattern_match(a, names, send, is_closure, partial, visibility_point, matches)) {
     for (Match *m : matches) {
       if (!m->is_partial && partial != Partial_ALWAYS)
@@ -2301,7 +2341,15 @@ int function_dispatch(PNode *p, EntrySet *es, AVar *a0, CreationSet *s, Vec<AVar
         partial_result = 1;
     }
   }
+  if (standing) {
+    if (standing == 2 && matches.n) {
+      Vec<Match *> unused;
+      standing_try(a, send, is_closure, partial, visibility_point, unused, &matches);
+    }
+    standing_record(a, names, send, is_closure, partial, visibility_point, matches);
+  }
   match_timer.stop();
+  if (memo_on) dispatch_remember(a, send, is_closure, partial, visibility_point, matches.n ? partial_result : -1, &matches);
   return matches.n ? partial_result : -1;
 }
 
@@ -2530,13 +2578,11 @@ static bool nil_member_is_representable(AVar *arg, AType *diff, AType *legal) {
   // the nil" -- which is true exactly when no num_kind scalar is present
   // (issue 060). It is the same rule, but stated so it does not depend on
   // whether `->type` carries nil (ifa/178's keep-nil experiment does).
+  // {None, scalar} stays an error (issue 060), and so does a pure `None`.
+  if (!atype_repr(t).nullable_pointer()) return false;
   Vec<CreationSet *> pointee;
-  for (CreationSet *c : t->sorted) if (c && c->sym) {
-    if (c->sym->type == sym_nil_type) continue;
-    if (c->sym->type && c->sym->type->num_kind) return false;  // {None, scalar}: 060, stays an error
-    pointee.add(c);
-  }
-  if (!pointee.n) return false;  // a pure `None` argument is still an error
+  for (CreationSet *c : t->sorted)
+    if (c && c->sym && c->sym->type != sym_nil_type) pointee.add(c);
   return type_diff(make_AType(pointee), legal) == fa->type_world.bottom_type;  // ... and the pointee is legal
 }
 
@@ -2765,7 +2811,16 @@ static Var *peel_guarded_bool_merge(PNode *p, Var *cur, int max_depth) {
 // Used by issue-025 narrowing recognition to look through
 // the wrapper for `is None`, `is not None`, isinstance, etc.
 // Depth-bounded as a safety net; see ifa/analysis/NOTES.md.
-static PNode *peel_wrapper_def(Var *v, int max_depth = 6) {
+//
+// issues/185: `*negated` is set when an odd number of the peeled calls
+// invert the truth (`not x`). This used to peel through EVERY zero-argument
+// method call, so `if not isinstance(l, list): return False` narrowed as
+// `if isinstance(l, list)`: the code after it saw l's non-list members,
+// none for a list caller, and `l` had no type. It also peeled through
+// `it.__next__()` as if the result were `it`. Only a call the frontend
+// names a truth wrapper (narrowing_wrapper_polarity) is peeled now.
+static PNode *peel_wrapper_def(Var *v, bool *negated, int max_depth = 6) {
+  *negated = false;
   if (!v || !v->def) return v ? v->def : nullptr;
   Var *cur = v;
   PNode *p = v->def;
@@ -2786,7 +2841,9 @@ static PNode *peel_wrapper_def(Var *v, int max_depth = 6) {
           bound->def->rvals.n == 4) {
         PNode *bind = bound->def;
         Var *recv = bind->rvals[1];
-        if (recv && recv->def && recv->def != bind) {
+        int polarity = if1->callback->narrowing_wrapper_polarity(bind->rvals[3] ? bind->rvals[3]->sym : nullptr);
+        if (polarity && recv && recv->def && recv->def != bind) {
+          if (polarity < 0) *negated = !*negated;
           cur = recv;
           p = recv->def;
           advanced = true;
@@ -3105,7 +3162,8 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
       // isolation.  When disabled, narrow_operand stays
       // nullptr and the apply sites below fall through to
       // the unnarrowed flow_vars.
-      PNode *iso_def = ifa_narrow ? peel_wrapper_def(p->rvals.v[0]) : nullptr;
+      bool negated = false;
+      PNode *iso_def = ifa_narrow ? peel_wrapper_def(p->rvals.v[0], &negated) : nullptr;
       Var *operand_var = nullptr;
       Var *type_var = nullptr;
       bool is_none_check = false;   // narrowing target: nil_type
@@ -3224,6 +3282,15 @@ static void add_pnode_constraints(PNode *p, EntrySet *es, Vec<PNode *> &done) {
             else
               ft = type_union(ft, make_AType(cs1));
           }
+        }
+        // issues/185: under `not`, the IF's true branch is the test's false.
+        if (negated) {
+          AType *t = tt;
+          tt = ft;
+          ft = t;
+          AVarRestrictPred tp = narrow_true_pred;
+          narrow_true_pred = narrow_false_pred;
+          narrow_false_pred = tp;
         }
         if (tt != fa->type_world.bottom_type ||
             ft != fa->type_world.bottom_type ||
@@ -4119,14 +4186,9 @@ static void collect_member_violations() {
   }
 }
 
-bool mixed_basics(AVar *av) {
-  Vec<Sym *> basics;
-  for (CreationSet *cs : *av->out) if (cs) {
-    Sym *b = to_basic_type(cs->sym->type);
-    if (b) basics.set_add(b);
-  }
-  return basics.n > 1;
-}
+// ifa/201: these three are views of one census, `atype_repr` (repr.h), which
+// is the only place that decides what a union's members are.
+bool mixed_basics(AVar *av) { return atype_repr(av->out).mixed_basics(); }
 
 // ifa/188: a numeric scalar in one union with a pointer-shaped value (an
 // instance, a bound method, a list) has no representation either. Codegen
@@ -4137,31 +4199,8 @@ bool mixed_basics(AVar *av) {
 // pointer-shaped here -- {None, scalar} has its own rule (issues/048), since a
 // null test separates it except at a dispatch.
 //
-// The void and nil values are named differently by each frontend: pyc types
-// `sym_void` as `sym_void_type`, while the V prelude's `void : 0` makes
-// `sym_void` its own type, and its value's CreationSet then carries
-// `sym_void->meta_type`. Any of those is the unit, not a pointer. The meta
-// type counts only for a self-typed value: pyc's `sym_nil->meta_type` is
-// `type(None)`, a real object.
-static bool is_unit_value_sym(Sym *s) {
-  if (s == sym_nil_type || s == sym_void_type) return true;
-  for (Sym *u : {sym_void, sym_nil})
-    if (u && (s == u || s == u->type || (u->type == u && s == u->meta_type))) return true;
-  return false;
-}
-
-bool scalar_with_pointer(AType *t) {
-  bool scalar = false, pointer = false;
-  for (CreationSet *cs : *t) {
-    if (!cs || !cs->sym || !cs->sym->type) continue;
-    Sym *ty = cs->sym->type;
-    if (is_unit_value_sym(cs->sym) || is_unit_value_sym(ty)) continue;
-    Sym *b = to_basic_type(ty);
-    if (b) scalar |= b->num_kind != 0;
-    else pointer = true;
-  }
-  return scalar && pointer;
-}
+// What counts as None here is `repr_is_unit`.
+bool scalar_with_pointer(AType *t) { return atype_repr(t).scalar_with_pointer(); }
 
 static bool is_only_used_by_phy_or_phi(Var *v) {
   if (!v) return false;
@@ -4388,26 +4427,6 @@ static void collect_var_type_violations() {
   }
 }
 
-static void convert_NOTYPE_to_void() {
-  if (!fa->css_set.set_in(fa->type_world.void_type->v[0])) {
-    fa->css_set.set_add(fa->type_world.void_type->v[0]);
-    fa->css.add(fa->type_world.void_type->v[0]);
-  }
-  for (EntrySet *es : fa->ess) {
-    for (Var *v : es->fun->fa_all_Vars) {
-      AVar *av = make_AVar(v, es);
-      if (!av->var->is_internal && av->out == fa->type_world.bottom_type && !is_Sym_OUT(av->var->sym)) av->out = fa->type_world.void_type;
-    }
-  }
-  if (fa->no_unused_instance_variables) {
-    for (CreationSet *cs : fa->css) {
-      for (AVar *av : cs->vars) {
-        if (av->out == fa->type_world.bottom_type) av->out = fa->type_world.void_type;
-      }
-    }
-  }
-}
-
 void initialize_Sym_for_fa(Sym *s) {
   if (s->is_symbol || s->is_fun || s->type_kind) s->abstract_type = make_abstract_type(s);
   if (s->is_fun || s->is_pattern || s->type_kind) for (Sym *ss : s->has) if (!ss->var) ss->var = new Var(ss);
@@ -4508,8 +4527,21 @@ static void initialize() {
   build_patterns(fa);
 }
 
+// ifa/207: the flow runs that make up one numbered pass. The frontend's
+// structural reanalyze() can ask for another run without extend_analysis
+// running, so the pass counter does not advance (pass 0 on plcfrs is six
+// runs). pass_timer used to restart() here, which dropped every run but the
+// last from the pass's time while match_timer kept them, so -v printed
+// `match` larger than the pass. The numbered-pass boundary zeroes the timers
+// (accumulate()); within a pass, later runs snap() instead of restarting.
+static int pass_runs = 0;
 static void initialize_pass() {
-  pass_timer.restart();
+  ++standing_generation;  // ifa/207: a run re-derives its types from bottom
+  if (pass_runs)
+    pass_timer.snap();  // a later run of the same pass: keep the time since the last one
+  else
+    pass_timer.start();
+  ++pass_runs;
   fa->dbg_dispatch_fail_sites = 0;      // ifa/issues/098 second defect
   fa->dbg_dispatch_fail_reported = 0;
   fa->dbg_dispatch_total_sites = 0;
@@ -4716,21 +4748,7 @@ static int conflevel_probe() {
 // The level question, over a CONVERGED AType. Same shape as
 // `elem_irrepresentable`, which asks it of a container's element channel;
 // this asks it of any AVar.
-bool atype_irrepresentable(AType *t) {
-  if (!t) return false;
-  Vec<Sym *> basics;
-  int nonbasics = 0;
-  for (CreationSet *c : t->sorted) {
-    if (!c || !c->sym || c->sym == sym_nil_type) continue;
-    if (Sym *b = to_basic_type(c->sym->type))
-      basics.set_add(b);
-    else
-      ++nonbasics;
-  }
-  const int nb = basics.set_count();
-  if (nb >= 1 && nonbasics > 0) return true;  // scalar + object: no representation
-  return nb > 1;
-}
+bool atype_irrepresentable(AType *t) { return atype_repr(t).irrepresentable(); }
 
 // ifa/157 probe (IFA_DBG_SEED): where is a mixed-basic union CREATED?
 //
@@ -7316,10 +7334,56 @@ static void collect_setter_confluences(Accum<AVar *> &avs, Vec<AVar *> &setter_c
 
 
 
+// ifa/196: the SETTER stage splits only a contour something DEMANDS. Its
+// nomination -- the setters of a confluence differ -- is a fact. A split is
+// now taken only when the merged contour carries a demand, asked with
+// SETTER_OF_SETTER's tests (sos_*, built once per stage):
+//
+//   - a member that cannot be represented;
+//   - a member on the backward reach of a type violation;
+//   - a member holding two or more receivers, or two or more CALLED values,
+//     of one send that dispatches to two or more functions;
+//   - or a CreationSet a member holds carrying one of these, to any depth.
+//
+// The called-value clause is new here. Without it, `decorator_recursion`
+// segfaults: `counted`'s wrapper closure holds `f = {fact, down}`, and
+// `f(n)` dispatches to two functions, which no receiver test sees.
+//
+// Census (2026-11-08, 606 corpus and suite compiles): 120 of the 720
+// SETTER splits had none of these. Declining them: suite unchanged, every
+// corpus verdict unchanged, EntrySets and CreationSets down in 11 programs
+// and up in none.
+//
+// What this does NOT do is the counterfactual 196 asks for, and `go` keeps
+// its two UCTNode layouts. Its split is demanded: losses/pos/wins (one
+// contour each) lie on a violation's backward reach, and parent/bestchild
+// ({None, UCTNode}) are receivers of a truthiness dispatch. Counting only
+// members a split could partition (two or more contours) fixes go and loses
+// dijkstra2, plcfrs, pylife and sunfish, whose demand also arrives through
+// a one-contour member while the split partitions another. See 196.
+static void sos_build_demand();
+static bool sos_member_demanded(AVar *av);
+static bool sos_type_conflict(AVar *av);
+static bool sos_callee_demanded(AVar *av);
+static bool setter_contour_demanded(Vec<AVar *> &avs) {
+  for (AVar *a : avs) {
+    if (!a || !a->out) continue;
+    if (atype_irrepresentable(a->out) || sos_member_demanded(a) || sos_callee_demanded(a) || sos_type_conflict(a))
+      return true;
+  }
+  return false;
+}
+
 [[nodiscard]] static int split_ess_setters(Vec<AVar *> &confluences) {
   int analyze_again = 0;
+  if (confluences.n) sos_build_demand();
   for (AVar *av : confluences) {
     if (av->contour_is_entry_set) {
+      {  // ifa/196: only a demanded confluence
+        Vec<AVar *> one;
+        one.add(av);
+        if (!setter_contour_demanded(one)) continue;
+      }
       if (!av->is_lvalue) {
         //      This proved overly conservative for pyc.sf.net as one edge
         //      carried None which was
@@ -7432,6 +7496,7 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
 
 [[nodiscard]] static int split_css(Vec<AVar *> &starters) {
   int analyze_again = 0;
+  sos_build_demand();  // ifa/196
   Vec<CreationSet *> css;
   for (AVar *av : starters) form_Map(CSMapElem, x, *av->cs_map) if (fa->css_set.set_in(x->value)) css.set_add(x->value);
   // ifa/133: PYC_ELEMSETTER (offer an irrepresentable-element CreationSet
@@ -7488,6 +7553,12 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
       starter_set.move(save);
       Vec<AVar *> new_defs;
       cs->defs.set_difference(compatible_set, new_defs);
+      if (new_defs.n) {  // ifa/196: only a demanded CreationSet
+        Vec<AVar *> members;
+        for (AVar *m : cs->vars) members.add(m);
+        if (cs->added_element_var) members.add(get_element_avar(cs));
+        if (!setter_contour_demanded(members)) continue;
+      }
       if (new_defs.n) {
         // Issue 066 part 1 (enforcement): the CS-side analog of the
         // issue-033 ES product routing (4498-4513). cs_group_signature
@@ -7747,10 +7818,19 @@ static const ObjVec *objvec_intern(ObjVec v) {
 }
 // Edge lookups for the walk, rebuilt when the pass or the contour count
 // changes (a split mints contours, and with them edges).
+// Hashed, not ordered: both are only ever looked up, and they are rebuilt
+// every pass with an entry per edge argument (othello3: 0.4 s a pass as
+// std::map, ifa/186).
+struct CallIndexRetHash {
+  size_t operator()(const std::pair<AVar *, EntrySet *> &k) const {
+    return std::hash<void *>()(k.first) * 0x9e3779b97f4a7c15ULL ^ std::hash<void *>()(k.second);
+  }
+};
 struct CallIndex {
   int pass = -1, ness = -1, gen = 0;
-  std::map<AVar *, AEdge *> filtered;                      // filtered arg -> its edge
-  std::map<std::pair<AVar *, EntrySet *>, AEdge *> ret;  // (caller result, callee) -> edge
+  std::unordered_map<AVar *, AEdge *> filtered;                                        // filtered arg -> its edge
+  std::unordered_map<std::pair<AVar *, EntrySet *>, AEdge *, CallIndexRetHash> ret;  // (caller result, callee) -> edge
+  std::unordered_set<AVar *> ret_callers;                                              // the caller results in `ret`
 };
 static CallIndex &callindex() {
   static CallIndex ix;
@@ -7760,12 +7840,16 @@ static CallIndex &callindex() {
   ++ix.gen;
   ix.filtered.clear();
   ix.ret.clear();
+  ix.ret_callers.clear();
   for (EntrySet *es : fa->ess) {
     if (!es) continue;
     auto add = [&](AEdge *e) {
       if (!e || !e->to) return;
       form_Map(MapElemMPositionAVarPair, mp, e->filtered_args) if (mp->value) ix.filtered[mp->value] = e;
-      for (AVar *r : e->rets) if (r) ix.ret[{r, e->to}] = e;
+      for (AVar *r : e->rets) if (r) {
+        ix.ret[{r, e->to}] = e;
+        ix.ret_callers.insert(r);
+      }
     };
     for (AEdge *e : es->edges) if (e && e->to == es) add(e);
     for (AEdge *e : es->out_edges) add(e);
@@ -7931,8 +8015,7 @@ static CallCtx *callctx_step(AVar *a, AVar *x, CallCtx *c, bool &ok, int walk) {
       // stays in `backward` (measured on kmeanspp: e641 es198->es249, split
       // from es85, and av9502 still links es85's return). No execution
       // returns through it.
-      auto lo = r.lower_bound({a, nullptr});
-      if (lo != r.end() && lo->first.first == a) { ok = false; return nullptr; }
+      if (callindex().ret_callers.count(a)) { ok = false; return nullptr; }
     }
   }
   // A read: from a load's result into the content it read. Which objects
@@ -8707,21 +8790,9 @@ bool classes_are_related(Vec<Sym *> &classes) {
 
 static bool elem_irrepresentable(AVar *elem) {
   if (!elem || !elem->out) return false;
-  Vec<Sym *> basics;
-  int nonbasics = 0, all_num = 1;
-  for (CreationSet *e : *elem->out) {
-    if (!e || !e->sym || e->sym == sym_nil_type) continue;
-    if (Sym *b = to_basic_type(e->sym->type)) {
-      basics.set_add(b);
-      if (!b->num_kind) all_num = 0;
-    } else
-      ++nonbasics;
-  }
-  const int nb = basics.set_count();
   // A {container-or-class, scalar} union: pyc does not box, so it has no
   // representation (issues/018, and the message
   // `cg_fail_unrepresentable_container_union` emits downstream).
-  if (nb >= 1 && nonbasics > 0) return true;
   // Two distinct non-numeric basics, e.g. {int64, str}.
   //
   // ifa/156, author's directive 2026-09-15: SPLIT int FROM float WHERE
@@ -8735,7 +8806,7 @@ static bool elem_irrepresentable(AVar *elem) {
   // targets are ENTRYSET-contoured locals and formals (fysphun 283 ES / 15
   // CS, softrender 513 ES / 15 CS) and this predicate only ever sees
   // CreationSets. See ifa/156 for what the directive actually needs.
-  return nb > 1 && !all_num;
+  return atype_repr(elem->out).element_irrepresentable();
 }
 
 
@@ -10160,8 +10231,12 @@ static bool cs_demanded(CreationSet *cs);  // with the CreationSet merge (ifa/17
 // Rebuilt once per call of collect_cs_setter_confluences.
 static Vec<AVar *> sos_viol_reach;
 static std::vector<Vec<CreationSet *>> sos_poly_recvs;
+// ifa/196: the CALLED values of those sends. `f(n)` with `f` holding two
+// functions is the same unresolved dispatch, seen from the callee side.
+static std::vector<Vec<CreationSet *>> sos_poly_callees;
 static void sos_build_demand() {
   sos_viol_reach.clear();
+  sos_poly_callees.clear();
   Vec<AVar *> work;
   for (ATypeViolation *v : fa->type_violations)
     if (v && v->av && sos_viol_reach.set_add(v->av)) work.add(v->av);
@@ -10191,6 +10266,11 @@ static void sos_build_demand() {
         for (CreationSet *c : callee->out->sorted)
           if (c && c->sym == sym_closure)
             for (AVar *bv : c->vars) if (bv) recvs.add(bv);
+      if (callee->out) {
+        Vec<CreationSet *> fs;
+        for (CreationSet *c : callee->out->sorted) if (c && c->sym) fs.set_add(c);
+        if (fs.set_count() > 1) sos_poly_callees.push_back(fs);
+      }
       for (AVar *r : recvs) {
         if (!r || !r->out || r->out->sorted.n < 2) continue;
         Vec<CreationSet *> rs;
@@ -10207,6 +10287,15 @@ static bool sos_member_demanded(AVar *av) {
     int k = 0;
     for (CreationSet *c : av->out->sorted)
       if (c && rs.set_in(c) && ++k > 1) return true;
+  }
+  return false;
+}
+static bool sos_callee_demanded(AVar *av) {
+  if (!av || !av->out) return false;
+  for (Vec<CreationSet *> &fs : sos_poly_callees) {
+    int k = 0;
+    for (CreationSet *c : av->out->sorted)
+      if (c && fs.set_in(c) && ++k > 1) return true;
   }
   return false;
 }
@@ -11133,7 +11222,13 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
   for (int i = 0; i < work.n && i < 20000; i++)
     for (PNode *p : work.v[i]->cfg_pred)
       if (p && seen.set_add(p)) work.add(p);
+  // `seen` is every node that reaches `site`, so when the backward walk was
+  // not cut short, "does this successor reach the site" is membership. The
+  // forward walk per successor was a fresh node set per branch arm: 78% of
+  // ac_encode's compile and 54 GiB allocated (ifa/208).
+  const bool whole = work.n < 20000;
   auto reaches = [&](PNode *from) {
+    if (whole) return seen.set_in(from) != nullptr;
     Vec<PNode *> s2, w2;
     s2.set_add(from);
     w2.add(from);
@@ -12417,13 +12512,14 @@ static void probe_invalidation_closure() {
     printf(
         "PASS %d COMPLETE: %f seconds, %f flow (%d%%), %f match (%d%%), %f "
         "extend (%d%%), %d ess, %d css, %d violations, %d dup_splits, %d cs_dups, "
-        "%ld dirty/%ld examined avars\n",
+        "%ld dirty/%ld examined avars, %d runs\n",
         analysis_pass, pass_timer.time, flow, (int)(flow * 100.0 / pass_timer.time), match_timer.time,
         (int)(match_timer.time * 100.0 / pass_timer.time), extend_timer.time,
         (int)(extend_timer.time * 100.0 / pass_timer.time), fa->ess.n, fa->css.n,
         fa->type_violations.set_count(), fa->dup_split_attempts, fa->cs_dup_split_attempts, fa->dirty_avar_count,
-        fa->examined_avar_count);
+        fa->examined_avar_count, pass_runs);
   }
+  pass_runs = 0;
   // Per-pass violation histogram: totals by kind, then the most frequent
   // (kind, function, variable) groups. Names are for reading only; the
   // groups are diagnostic, never analysis keys.
@@ -12568,9 +12664,9 @@ static void probe_invalidation_closure() {
   if (getenv("PYC_DBG_WORK")) {
     static long prev_e = 0, prev_s = 0, prev_c = 0;
     if (census.work_edges < prev_e) prev_e = prev_s = prev_c = 0;  // a new analysis
-    fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f cum_edges=%ld cum_sends=%ld\n",
+    fprintf(stderr, "WORK pass=%d edges=%ld sends=%ld es_constraints=%ld pass_time=%f cum_edges=%ld cum_sends=%ld cum_rounds=%ld\n",
             analysis_pass, census.work_edges - prev_e, census.work_sends - prev_s, census.work_escons - prev_c,
-            pass_timer.time, census.work_edges, census.work_sends);
+            pass_timer.time, census.work_edges, census.work_sends, fa_rounds_total());
     prev_e = census.work_edges, prev_s = census.work_sends, prev_c = census.work_escons;
   }
   if (write_code_exit == analysis_pass) {
@@ -13946,6 +14042,10 @@ void constant_strip_census(int &nstrip, int &nmulti, int &nsame) {
 
 
 
+// ifa/207: rounds of the worklist loop, for PYC_DBG_WORK.
+static long fa_rounds = 0;
+static long fa_rounds_total() { return fa_rounds; }
+
 static void analyze_to_convergence() {
   // ifa/issues/098: the per-pass reset belongs here, unconditionally,
   // for two reasons. (1) Every pass must start from bottom, whether the
@@ -13959,6 +14059,7 @@ static void analyze_to_convergence() {
   // the world), and clearing there would drop the seeded globals.
   bool first_pass = true;
   bool loop_again = false;  // ifa/issues/055
+  bool arity_flipped = false;  // ifa/197
   do {
     // ifa/issues/111 M3: clear only the closure the last pass
     // invalidated, when that is armed and enabled. Falls back to the
@@ -13975,8 +14076,18 @@ static void analyze_to_convergence() {
     // split that should have given `False` landed, and the stale `bool`
     // still kept an `if isinstance(x, bool):` arm live in a contour where
     // x is a str -- its narrowed `x` then reported "has no type".
+    // ifa/197 item 1: a CreationSet losing its static arity (make_kind,
+    // prim_make) changes no AType, so the sends this pass already
+    // dispatched on the old arity are not re-enqueued and keep a stale
+    // target. On the last pass that reached codegen and aborted at run time
+    // ("arity dispatch: no branch matched"). A pass whose epoch moved is
+    // therefore never the last, and the next one starts from a full reset,
+    // so every send dispatches with the flag already set (the match cache
+    // keys on the epoch, pattern.cc).
+    if (arity_flipped) fa_selective_armed = false;
     if ((!first_pass || analysis_pass > 0) && !clear_results_selective()) clear_results();
     first_pass = false;
+    int arity_epoch_at_start = dispatch_arity_epoch;
     compute_es_can_raise();
     initialize_pass();
     // The top edge is enqueued even under selective invalidation, and
@@ -14002,6 +14113,7 @@ static void analyze_to_convergence() {
     fa->defer_flow = true;
     while (fa->edge_worklist.head || fa->send_worklist.head || fa->flow_worklist.head ||
            fa->es_worklist.head) {
+      ++fa_rounds;
       while (AEdge *e = fa->edge_worklist.pop()) {
         e->in_edge_worklist = 0;
         ++census.work_edges;  // ifa/111 probe
@@ -14025,6 +14137,7 @@ static void analyze_to_convergence() {
     fa->defer_flow = false;
     int pass_before_extend = analysis_pass;
     complete_pass();
+    arity_flipped = dispatch_arity_epoch != arity_epoch_at_start;
     bool raise_grew = compute_es_can_raise();  // on the converged graph; see its comment
     dbg_dump_contours(analysis_pass);  // ifa/issues/055
     // The pass cap bounds the WHOLE loop, including passes kept
@@ -14105,12 +14218,12 @@ static void analyze_to_convergence() {
       if (!ext && !rea && !fil && !ret) ow = decide_overwritten_stores();
       fa->last_pass_reanalyze = (rea != 0);
       if (getenv("PYC_DBG_STAGEDELTA"))
-        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d viol=%d\n",
-                analysis_pass, ext, rea, fil, ret, fa->type_violations.set_count());
+        fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d arity=%d viol=%d\n",
+                analysis_pass, ext, rea, fil, ret, arity_flipped ? 1 : 0, fa->type_violations.set_count());
       if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
         html_finalize_fa_pass(fa, pass_before_extend);
       }
-      loop_again = (ext || rea || fil || ret || ow || raise_grew);
+      loop_again = (ext || rea || fil || ret || ow || raise_grew || arity_flipped);
     }
   } while (loop_again && analysis_pass <= fa->pass_limit);
   if (getenv("PYC_DBG_OSC"))
@@ -14182,7 +14295,13 @@ int FA::analyze(Fun *top) {
   if1->callback->report_analysis_errors(type_violations);
   if (show_violation_output) show_violations(fa, stderr);
   if (show_violation_output && fruntime_errors) show_numeric_coercions(fa, stderr);
-  if (fruntime_errors) convert_NOTYPE_to_void();
+  // ifa/102: convert_NOTYPE_to_void, which set every remaining bottom AVar
+  // to void under fruntime_errors, is gone. A live NOTYPE is a fatal
+  // violation (strictviol, ifa/158), so what it touched was only ever dead
+  // text: the 2026-11-07 census found 93,534 such AVars across the 572
+  // compiling corpus and suite programs, all with a dead def and no live
+  // use. Codegen reads a NOTYPE Var as an absent type (c_type's `_CG_void`),
+  // as it always did under --strict, which never ran it.
   // ifa/issues/074: WHICH splitter stages this program actually demanded,
   // in cascade order, once for the whole analysis. Deliberately a SET and
   // not per-pass counts -- the counts move with every FA change, but "did

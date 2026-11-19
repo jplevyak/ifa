@@ -1,8 +1,10 @@
 # 093 — LLVM: an int MOVE into a float64 slot stores the raw bits (no `sitofp`)
 
+**CLOSED 2026-11-03: merged into [200](../200-llvm-backend-parity.md)** (row A5, the `sitofp` at a scalar MOVE whose source is integer and destination is float). The repro, the two-things distinction and the verification below are the record.
+
 **Status:** open, root-caused, small fix. Re-verified 2026-09-28.
 Rewritten; history in git:
-`git show 3f36072b:ifa/issues/093-CGEN-int-float-union-move-not-coerced.md`.
+`git show 3f36072b:ifa/issues/closed/093-CGEN-int-float-union-move-not-coerced.md`.
 
 ## Repro
 
@@ -37,7 +39,7 @@ the branch away.
    widening a genuine temporal `{int, float}` union. The union is real:
    `x` really is either. CPython keeps the value's own type, so matching
    it means NOT collapsing the union to one storage type (a split, or a
-   tagged scalar). That is [156](closed/156-FA-split-int-from-float-coerce-last.md)'s
+   tagged scalar). That is [156](156-FA-split-int-from-float-coerce-last.md)'s
    business, and coercion is permissive-only (`--strict` refuses this
    program).
 

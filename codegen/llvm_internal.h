@@ -16,6 +16,13 @@
 // and cg_ir_v2_emit_llvm.cc (the production emit path).
 extern std::unique_ptr<llvm::LLVMContext> TheContext;
 extern std::unique_ptr<llvm::Module> TheModule;
+
+// Optimize TheModule as `-b` does (clang -O2 with LTO; it also lowers the
+// coroutines). With `link_runtime` the runtime bitcode is linked in and the
+// module internalized; the JIT passes false. Returns the target machine it
+// optimized for. llvm.cc.
+namespace llvm { class TargetMachine; }
+std::unique_ptr<llvm::TargetMachine> llvm_optimize_module(bool link_runtime, bool *linked_runtime);
 extern std::unique_ptr<llvm::IRBuilder<>> Builder;
 extern std::unique_ptr<llvm::DIBuilder> DBuilder;
 extern llvm::DICompileUnit *CU;

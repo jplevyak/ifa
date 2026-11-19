@@ -30,6 +30,16 @@ EXTERN int codegen_debug EXTERN_INIT(0);
 // non-empty. Empty by default -- falls back to deriving the name from
 // the input filename, same as always.
 EXTERN char codegen_output[512] EXTERN_INIT("");
+// Extra flags for compiling and linking the generated program
+// (whitespace-separated; pyc --cflags / --libs), and what a frontend adds:
+// link entries for the foreign libraries a program names, and one extra C++
+// translation unit. The C backend reads its copy of that source through
+// IFACallbacks::c_codegen_pre_file; the LLVM backend compiles it beside the
+// program's object.
+EXTERN char codegen_extra_cflags[2048] EXTERN_INIT("");
+EXTERN char codegen_extra_libs[2048] EXTERN_INIT("");
+EXTERN Vec<cchar *> codegen_link_libs;
+EXTERN cchar *codegen_extra_source EXTERN_INIT(nullptr);
 
 #include "ast.h"
 #include "builtin.h"

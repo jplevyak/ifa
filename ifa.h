@@ -103,6 +103,14 @@ class IFACallbacks : public gc {
   virtual cchar *narrowing_isinstance_name() { return nullptr; }
   virtual cchar *narrowing_is_none_name() { return nullptr; }
   virtual cchar *narrowing_is_not_none_name() { return nullptr; }
+  // How a zero-argument method call on a discriminator passes its truth
+  // through, for the same narrowing: +1 when `x.sel()` is true exactly when
+  // x is (pyc: the truthiness wrappers an `if` adds), -1 when it inverts it
+  // (pyc: `not x`, which is `x.__not__()`), 0 when it is not a wrapper of
+  // x's truth at all. FA peels only through a nonzero one, and swaps the
+  // narrowed branches on an odd number of -1s. The default, 0, peels
+  // nothing.
+  virtual int narrowing_wrapper_polarity(Sym *selector) { return 0; }
   virtual int formal_to_generic(Sym *s, Sym **ret_generic, int *ret_bind_to_value) { return false; }
   virtual Sym *instantiate(Sym *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual Fun *order_wrapper(Fun *, Map<MPosition *, MPosition *> &substitutions) { return 0; }
@@ -111,13 +119,23 @@ class IFACallbacks : public gc {
   virtual Sym *coerce(Sym *actual, Sym *formal) { return NULL; }
   virtual Fun *coercion_wrapper(Fun *, Map<MPosition *, Sym *> &substitutions) { return 0; }
   virtual Fun *default_wrapper(Fun *, Vec<MPosition *> &defaults) { return 0; }
-  // A call of a `*args` function (Fun::is_varargs, its last formal the rest
-  // parameter) with `nactuals` top-level positional actuals: a wrapper
-  // taking exactly those actuals that packs the surplus into a tuple (the
-  // tuple's sym marked Sym::is_rest) and calls the function with it. The
-  // matcher binds a call whose rest-position actual is such a tuple
-  // directly, so the wrapper's own call does not wrap again.
-  virtual Fun *rest_wrapper(Fun *, int nactuals) { return 0; }
+  // A call of a function with a rest formal (`*args`, Fun::rest_pos) or a
+  // keyword-dict formal (`**kw`, Fun::kw_pos), made with `npositional`
+  // top-level positional actuals (the callee is the first) followed by one
+  // keyword actual per name in `keywords`. Returns a wrapper taking exactly
+  // those actuals, in that order, which binds them as the language does --
+  // surplus positionals into a tuple, unmatched keywords into a dict,
+  // defaults for the rest -- and calls the function with one positional
+  // actual per formal. The tuple's and the dict's syms are marked
+  // Sym::is_rest: the matcher binds such a call directly, so the wrapper's
+  // own call does not wrap again. Returns 0 when the call does not bind.
+  virtual Fun *signature_wrapper(Fun *, int npositional, Vec<cchar *> &keywords) { return 0; }
+  // issues/189: a call of `f` whose actual at top-level position `star_at`
+  // (1-based; the callee is position 1) is a tuple of `arity` elements to
+  // be bound like that many positionals. `names` holds each actual's
+  // keyword name, or null. Returns a wrapper taking exactly those actuals
+  // which calls again with the tuple's elements in its place, or 0.
+  virtual Fun *unpack_wrapper(Fun *, int star_at, int arity, Vec<cchar *> &names) { return 0; }
   virtual Fun *instantiate_generic(Fun *, Map<Sym *, Sym *> &substitutions) { return 0; }
   virtual bool reanalyze(Vec<ATypeViolation *> &type_violations) { return false; }
   // issues/128 step 2: take back frontend decisions that the CONVERGED
@@ -187,6 +205,7 @@ void ifa_init(IFACallbacks *callbacks);
 void ifa_reset();
 int ifa_analyze(cchar *fn);
 int ifa_optimize();
+void ifa_phase(cchar *tag);  // PYC_DBG_PHASES=1: wall seconds since the last call, per pipeline stage
 void ifa_dbg_bodies(cchar *tag);  // ifa/issues/112: per-Fun body-membership fingerprint
 void ifa_cg(cchar *fn);
 void ifa_compile(cchar *fn);

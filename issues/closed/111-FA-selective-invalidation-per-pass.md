@@ -5,7 +5,7 @@ does not grow with accumulated contours; it falls after the first passes and
 then stays flat. The September numbers that said otherwise were read off a
 counter that is a running total (below). The FA cost that does exist is call
 MATCHING in the first few passes, which is
-[185](../185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) /
+[185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) /
 [186](../186-FA-pass-one-confluence-through-shared-builtins.md)'s territory;
 whether the 12-15% type-duplicate EntrySets are still demanded is
 [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md)'s.
@@ -62,7 +62,7 @@ is about); `PYC_DBG_PASSCONT` contour counts.
   match); passes 9-66 take ~0.3 s each, mostly flow. So pass cost tracks the
   UNIONS early passes carry through matching, not the number of contours.
   That is the territory of
-  [185](../185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) and
+  [185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) and
   [186](../186-FA-pass-one-confluence-through-shared-builtins.md) (a merged
   union reaching shared builtins), not of this issue.
 - **Contours walked are not "every contour ever minted".** plcfrs has

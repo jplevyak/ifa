@@ -22,7 +22,7 @@ Two instances have bitten this repo, found weeks apart and by completely
 different routes:
 
 **1. `AType::type` maps a pure-nil type to bottom**
-([124](../124-FA-refuse-imprecise-inference.md)). `make_AType` strips
+([124](124-FA-refuse-imprecise-inference.md)). `make_AType` strips
 `nil_type` from the `->type` projection, so an AType of exactly
 `{None}` projects to `bottom` — the same value that means "nothing
 inferred yet". Every splitter comparison is guarded by `->n &&`, so an
@@ -112,7 +112,7 @@ reads returned null/corrupted at runtime with a clean compile"*:
 - rubik2, list-of-list vs list-of-record — which recurred because the
   original guard was record-only and `list` is `Type_PRIMITIVE`.
 
-Plus [124](../124-FA-refuse-imprecise-inference.md)'s nil-projects-to-bottom,
+Plus [124](124-FA-refuse-imprecise-inference.md)'s nil-projects-to-bottom,
 and [118](../118-union-field-representation-and-polymorphic-field-offset.md)'s
 zero element size on chess. Five occurrences, four of them silent.
 

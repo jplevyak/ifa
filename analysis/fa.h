@@ -1,6 +1,7 @@
 #ifndef _fa_H_
 #define _fa_H_
 
+#include <algorithm>
 #include <sys/types.h>
 #include "code.h"
 #include "ifadefs.h"
@@ -988,41 +989,14 @@ AType *make_size_constant_type(int n);
 void collect_types_and_globals(FA *fa, Vec<Sym *> &typesyms, Vec<Var *> &globalsyms);
 void fa_dump_types(FA *fa, FILE *fp);
 
+// std::sort, not the quicksort that was here: that one took the first
+// element as its pivot, so sorting an already sorted vector was quadratic,
+// and fa->css (11 500 CreationSets on othello3, in id order from the pass
+// before) cost 0.2 s a pass (ifa/186). Ids are unique, so the order is the
+// same.
 template <class C>
 void qsort_by_id(C **left, C **right) {
-Lagain:
-  if (right - left < 5) {
-    for (C **y = right - 1; y > left; y--) {
-      for (C **x = left; x < y; x++) {
-        if (x[0]->id > x[1]->id) {
-          C *t = x[0];
-          x[0] = x[1];
-          x[1] = t;
-        }
-      }
-    }
-  } else {
-    C **i = left + 1, **j = right - 1;
-    C *x = *left;
-    for (;;) {
-      while (x->id < (*j)->id) j--;
-      while (i < j && (*i)->id < x->id) i++;
-      if (i >= j) break;
-      C *t = *i;
-      *i = *j;
-      *j = t;
-      i++;
-      j--;
-    }
-    if (j == right - 1) {
-      *left = *(right - 1);
-      *(right - 1) = x;
-      right--;
-      goto Lagain;
-    }
-    if (left < j) qsort_by_id(left, j + 1);
-    if (j + 2 < right) qsort_by_id(j + 1, right);
-  }
+  std::sort(left, right, [](C *a, C *b) { return a->id < b->id; });
 }
 
 template <class C>

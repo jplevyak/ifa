@@ -1,11 +1,13 @@
 # Issue 010: split `Vec`'s two roles (array vs open-addressed set) into two types
 
+**CLOSED 2026-11-03: merged into [202](../202-health-docs-levers-probes-tests-and-ci.md)** (row "split `Vec` into `Vec` and `Set`"), which carries the five-step migration below as its plan. No behaviour change; the design is the record here.
+
 **Status:** open, CLEANUP. No behaviour change is intended. Rewritten
 2026-09-28; the full design sketch and the instrumentation writeup are in
-git: `git show 3f36072b:ifa/issues/010-CLEANUP-vec-set-api-cleanup.md`.
+git: `git show 3f36072b:ifa/issues/closed/010-CLEANUP-vec-set-api-cleanup.md`.
 The reproducibility half that used to live here (closed issues/021's
 unspecialized pointer-keyed sets) moved to
-[147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md), where
+[147](147-analysis-result-depends-on-the-binary-not-the-inputs.md), where
 it is a correctness concern.
 
 ## The smell

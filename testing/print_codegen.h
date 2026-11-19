@@ -18,7 +18,7 @@ class IF1;
 
 void print_codegen_c_normalized(FILE *fp, IF1 *p);
 
-// `print_codegen_llvm_normalized` and `print_cg_normalize_normalized`
-// retired alongside the v1 LLVM backend (issue 014).  v2 LLVM
-// goes through `cg_normalize_v2` + `cg_v2_emit_llvm_module`,
-// covered by ifa/testing/cg_ir_v2_test.cc.
+// The same pipeline into llvm_codegen_print_ir (cg_emit_llvm), with the
+// module header, target lines and debug metadata stripped so the golden
+// is host- and path-independent (ifa/issues/200 D3).
+void print_codegen_llvm_normalized(FILE *fp, IF1 *p);

@@ -191,16 +191,30 @@ static void mark_live_avars(FA *fa) {
   }
 }
 
+// Is an AVar within `dist` + 1 forward steps of `v` live? AVar liveness is
+// written only by mark_live_avars, so within one mark_live_pnodes the answer
+// is a function of (v, dist) and is remembered (0 unknown, 1 no, 2 yes). The
+// walk fans out by every contour's forward edges at each step, and every
+// dead setter asked again from scratch: 30 s on othello3.
+static Map<Var *, int> forward_live_memo[3];
+
 static bool forward_live(Var *v, int dist = 2) {
   if (dist < 0) return false;
+  if (int r = forward_live_memo[dist].get(v)) return r == 2;
+  bool live = false;
   form_AVarMapElem(x, v->avars) for (AVar *av : x->value->forward) if (av) {
-    if (av->live) return true;
-    if (forward_live(av->var, dist - 1)) return true;
+    if (av->live || forward_live(av->var, dist - 1)) {
+      live = true;
+      goto Ldone;
+    }
   }
-  return false;
+Ldone:
+  forward_live_memo[dist].put(v, live ? 2 : 1);
+  return live;
 }
 
 static void mark_live_pnodes(FA *fa) {
+  for (auto &m : forward_live_memo) m.clear();
   for (Fun *f : fa->funs) {
     for (PNode *p : f->fa_all_PNodes) {
       if (!p->live) {

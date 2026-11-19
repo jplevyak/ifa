@@ -5,7 +5,7 @@
 [154](154-FA-a-container-has-two-content-channels.md), which found the filter
 bug that was blinding it to a container's positional slots and measured the
 pair to a default. Measured on `chull`. Part of
-[129](../129-plan-demand-driven-creation-set-splitting.md)'s ladder.
+[129](129-plan-demand-driven-creation-set-splitting.md)'s ladder.
 
 ## The defect, in one sentence
 
@@ -124,7 +124,7 @@ Two filters, and both matter:
 
 ### Why this is a mechanism and not provenance
 
-[146](../146-remove-all-arbitrary-splitting.md)'s two-question test:
+[146](146-remove-all-arbitrary-splitting.md)'s two-question test:
 
 - **Would this split happen if the demand were absent?** No. The walk
   runs only from a candidate that was nominated by a demand and then

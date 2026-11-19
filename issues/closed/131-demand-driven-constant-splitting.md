@@ -16,19 +16,19 @@ with its own demand signal because step 1 below falsified this one's.
 the cap-strip measured `cstrip 0/0/0` on the very program it was designed
 for, so "the cap-strip is the demand signal" is dead and steps 2-4 must not
 be built on it. The plan and the ordering are
-[129](../129-plan-demand-driven-creation-set-splitting.md) step 4; the
+[129](129-plan-demand-driven-creation-set-splitting.md) step 4; the
 EntrySet half, which has a working demand signal, is
 [151](151-split-an-entryset-on-a-constant-argument-on-demand.md).
 
 **Status:** open, planned. Blocks
 [128](128-cs-identity-over-discriminates-vs-element-type.md)'s
 start-merged posture (`PYC_CSDCPA1`) and therefore
-[129](../129-plan-demand-driven-creation-set-splitting.md) step 4.
+[129](129-plan-demand-driven-creation-set-splitting.md) step 4.
 
 ## Symptom
 
 Under `PYC_CSDCPA1=2` (one CreationSet per sym,
-[129](../129-plan-demand-driven-creation-set-splitting.md)),
+[129](129-plan-demand-driven-creation-set-splitting.md)),
 `tests/empty_list_print.py` miscompiles:
 
 ```python
@@ -139,7 +139,7 @@ be per *CreationSet*, and it has to be driven by evidence.
 
 ## The plan — SUPERSEDED, built on the falsified premise above
 
-*Kept for the shape of steps 2-4, which is still roughly right, and for the stop conditions. The demand signal it names (the cap-strip) is dead. Sequencing is [129](../129-plan-demand-driven-creation-set-splitting.md) step 4; the working demand signal is in [151](151-split-an-entryset-on-a-constant-argument-on-demand.md).*
+*Kept for the shape of steps 2-4, which is still roughly right, and for the stop conditions. The demand signal it names (the cap-strip) is dead. Sequencing is [129](129-plan-demand-driven-creation-set-splitting.md) step 4; the working demand signal is in [151](151-split-an-entryset-on-a-constant-argument-on-demand.md).*
 
 
 ### The demand signal is the cap-strip itself
@@ -196,7 +196,7 @@ unannotated var, and therefore why nothing ever asks for the split. With
 the bit set, the constant difference becomes an ordinary confluence and
 the existing ladder — `TYPE_CONFL`, then `SETTER`, then `MARK_SETTER` —
 already knows what to do with a confluence. See
-[129](../129-plan-demand-driven-creation-set-splitting.md): the third clause
+[129](129-plan-demand-driven-creation-set-splitting.md): the third clause
 ("split ESs so the creation points separate") is **already implemented**
 and fires; it simply never sees this distinction.
 
@@ -250,6 +250,6 @@ the work, the detector in step 1 is wrong and should be fixed instead.
 start-merged posture. `PYC_CSDCPA1=2` already gives **−32% container
 CreationSets** corpus-wide (3748 → 2540, ratio 5.99 → 4.46) and, unlike
 every key-side experiment in
-[129](../129-plan-demand-driven-creation-set-splitting.md), takes `ess`
+[129](129-plan-demand-driven-creation-set-splitting.md), takes `ess`
 *down* rather than up. Its bill is 18 new compile failures and 30 suite
 failures, and constants are the largest identified share of them.

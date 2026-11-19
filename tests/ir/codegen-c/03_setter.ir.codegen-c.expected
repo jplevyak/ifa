@@ -1,33 +1,68 @@
 ;; phase: codegen-c
 
-(summary fa_rc=0 clone_rc=0 funs=1 bytes=341)
+(summary fa_rc=0 clone_rc=0 funs=1 bytes=882)
 
 ;; c-output (#include line stripped):
+
+/*
+ Type Declarations
+*/
+
+/* Point */ struct _CG_s77; typedef struct _CG_s77 *_CG_ps77;
 
 /*
  Function Prototypes
 */
 
 typedef _CG_function _CG_pf0;
-_CG_nil_type _CG_f_86_0/*__main__*/();
+_CG_nil_type _CG_f_88_0/*__main__*/();
+
+/*
+ Type Definitions
+*/
+
+struct _CG_s77 {
+  _CG_TypeObject *__pyc_tag;
+  _CG_int32 e0; /* px */;
+};
+
+/*
+ Type Objects
+*/
+
+_CG_TypeObject _CG_type_Point_77 = { PYC_TAG_OBJECT, "Point" };
+
+/*
+ Builtin Functions
+*/
 
 
 /*
  Global Variables
 */
 
+_CG_ps77 /* Point 77 */ g0;
 
 /*
  Functions
 */
 
-_CG_nil_type _CG_f_86_0/*__main__*/() {
+_CG_nil_type _CG_f_88_0/*__main__*/() {
+  _CG_int32 t0 = {};
+  _CG_int32 t1 = {};
+  _CG_ps77 t2 = {};
+
+  t2 = _CG_prim_new(_CG_ps77);
+  ((_CG_ps77)t2)->__pyc_tag = &_CG_type_Point_77;
+  t1 = (_CG_int32)42;
+  t0 = t1;
+  _CG_prim_primitive_observe(t0);
   return 0;
 }
 
 int main(int argc, char *argv[]) {
   MEM_INIT();
   _CG_set_argv(argc, argv);
-  _CG_f_86_0/*__main__*/();
+  _CG_f_88_0/*__main__*/();
   return 0;
 }

@@ -452,6 +452,8 @@ void show_violations(FA *fa, FILE *fp) {
                        v->send && v->send->var ? unexpected_keyword_at(v->send->var->def) : nullptr) {
           // issues/103: CPython's TypeError, as a compile error.
           fprintf(memfp, "%s() got an unexpected keyword argument '%s'\n", u->fun_name, u->keyword);
+        } else if (cchar *why = v->send && v->send->var ? unpacking_refusal_at(v->send->var->def) : nullptr) {
+          fprintf(memfp, "%s\n", why);
         } else {
           fprintf(memfp, "illegal call argument type ");
           show_illegal_type(memfp, v);

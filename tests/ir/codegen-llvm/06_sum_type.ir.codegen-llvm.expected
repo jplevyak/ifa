@@ -1,0 +1,44 @@
+;; phase: codegen-llvm
+
+(summary fa_rc=0 clone_rc=0 funs=1)
+
+;; llvm-output (module header, target, debug metadata stripped):
+%Point.77 = type { ptr, [0 x i8] }
+
+@Point = internal global ptr null
+@_CG_type_Point_77 = internal global i64 0
+
+define noundef ptr @_CG_f_85_0() {
+main_prelude:
+  %proto = call ptr @GC_malloc(i64 8)
+  store ptr %proto, ptr @Point, align 8
+  br label %entry
+
+entry:                                            ; preds = %main_prelude
+  %new = call ptr @GC_malloc(i64 8)
+  %0 = getelementptr inbounds nuw %Point.77, ptr %new, i32 0, i32 0
+  store ptr @_CG_type_Point_77, ptr %0, align 8
+  %1 = call i64 @_CG_observe(ptr %new)
+  ret ptr null
+}
+
+declare ptr @GC_malloc(i64)
+
+declare i64 @_CG_observe(ptr)
+
+define i32 @main(i32 %argc, ptr %argv) {
+entry:
+  call void @_CG_gc_init()
+  %0 = sext i32 %argc to i64
+  call void @_CG_set_argv(i64 %0, ptr %argv)
+  %1 = call ptr @_CG_f_85_0()
+  call void @_CG_event_loop_run(ptr null)
+  ret i32 0
+}
+
+declare void @_CG_gc_init()
+
+declare void @_CG_set_argv(i64, ptr)
+
+declare void @_CG_event_loop_run(ptr)
+

@@ -6,7 +6,7 @@ issue claimed is landed or settled: arity is part of CreationSet identity
 deleted (2026-10-15); quameon, which turned out to be an untagged dispatch
 ambiguity rather than arity, runs (2026-09-30). The one open item, a
 synthetic test of the untagged-dispatch demand, moves to
-[178](../178-FA-route4-declines-records-built-through-one-constructor.md). See
+[178](178-FA-route4-declines-records-built-through-one-constructor.md). See
 "Closed" at the end. Rewritten 2026-09-28; the earlier record is in git:
 `git show 3f36072b:ifa/issues/132-arity-is-representation-not-provenance.md`.
 
@@ -167,7 +167,7 @@ program whose contours moved (ess 925 -> 928, css 2594 -> 2617), and no
 other verdict changed. `make test`: 378 passed, 0 failed.
 
 **Open, filed separately:**
-- [178](../178-FA-route4-declines-records-built-through-one-constructor.md):
+- [178](178-FA-route4-declines-records-built-through-one-constructor.md):
   a synthetic test of this fix needs two separate records of a class, and
   in small programs both creation points merge through the constructor.
   Route 4 declines them ("every creation point on the same assign sets").

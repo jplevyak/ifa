@@ -1,17 +1,25 @@
-;; 01_baseline.ir — minimum codegen test. After full ifa pipeline,
-;; the C backend emits the .c file. The golden captures whatever
-;; comes out (modulo stripping `#include "c_runtime.h"`).
+;; 01_baseline.ir — minimum codegen test: a constant moved through two
+;; locals and handed to `observe`.
+;;
+;; Shared by the codegen-c and codegen-llvm phases (codegen-llvm/ holds
+;; symlinks). Every fixture ends by passing its result to `observe`, a
+;; visible primitive the codegen phases register (ifa_test_main.cc
+;; pre_parse_codegen): a visible primitive is never dead, so it roots
+;; DCE. Before it existed every body here was dead and both backends
+;; emitted an empty __main__ (ifa/issues/200 D3).
 
 (sym %k :is-constant :immediate (int32 42))
 
 (sym %x :is-local)
 (sym %r :is-local)
+(sym %o :is-local)
 (sym %tcont)
 (fun %top
   :rets (%r)
   :cont %tcont
   :body
     (move %k %x)
-    (move %x %r))
+    (move %x %r)
+    (send @primitive #observe %r => %o))
 
 (entry %top)
