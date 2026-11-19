@@ -1,12 +1,14 @@
 # 178 — route 4 cannot separate two creation points of a class built through one constructor
 
 **Status:** open. Filed 2026-09-30 from
-[132](132-arity-is-representation-not-provenance.md), whose synthetic test it
+[132](closed/132-arity-is-representation-not-provenance.md), whose synthetic test it
 blocks. **The repro passes by default since 2026-10-02**: None is kept in the
 type projection (see "Flipped" at the end), so `__init__` and `Pot` split on
 `{list}` vs `{None}`. It is `tests/none_default_arg_splits_record.py`.
 Still open: route 4's key is blind to a store's receiver (Root cause, fact 2),
-which the keep-nil split went around, not through.
+which the keep-nil split went around, not through. **No known program needs
+it** (2026-10-15, below). This issue also carries the general form, moved
+from 129 (its former section A): the *writer split*.
 
 ## Symptom
 
@@ -101,11 +103,59 @@ shared, an ES split of that contour per receiver creation point (the ES
 split as a MEANS, which AGENTS.md sanctions only under a demand). The
 demand is the member union that the violation backtracks to.
 
+## The writer split, in general (moved from 129, 2026-10-15)
+
+Route 4 partitions a CreationSet's creation points by which flow paths
+into its content each lies on. When every creation point's values pass
+through ONE shared writer contour (an `append` contour, a constructor),
+the signatures are identical and route 4 declines: *"1 group: every
+creation point on the same assign sets"*. The writer split is splitting
+that shared EntrySet as a MEANS, under the demand, so the creation points
+become separable. `PYC_ESBLOCK` (default on) already does this for
+container element writers; fact 2 above is the record-member case.
+
+Its witness was `sudoku4`, and it is gone. Measured 2026-10-15
+(`IFA_DBG_CSDEFSPLIT`, `IFA_DBG_RETCONF`): sudoku4 compiles warning-free and
+matches CPython, its "1 group" declines occur only up to pass 13, and its
+unresolved dispatches fall from 143 on pass 1 to 0 from pass 15. The
+default ladder resolves them before convergence. The ES-demand link that
+was meant to feed this decline (`PYC_RETDEMAND`) was measured inert and
+deleted ([157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md)
+item 3, [146](146-remove-all-arbitrary-splitting.md)).
+
+## A test without the None is NOT this issue (2026-10-15)
+
+`tests/record_member_shared_constructor.py` is the repro with `labels=None`
+replaced by a str list, so both calls pass identical argument types. It was
+first filed here as the receiver-key gap (fact 2). That was wrong. Traced
+(`IFA_DBG_CSVARS`, `IFA_DBG_FUNES`): Pot already gets one CreationSet per
+object, and `__init__` one contour per call with separate list
+CreationSets. The "1 group" and "confluence only" declines are early-pass
+only. What fails is that `if n > 2:` does not fold in either `__init__`
+contour, because the comparison runs in one shared `int.__gt__` contour
+whose `self` is not a constant; the second object's `__init__` stores both
+lists and appends ints into the str list. Constant-cloning `int.__gt__`
+(a probe, reverted) makes it print CPython's `5 4`. It is a constant demand
+([134](134-remove-the-frontend-forced-split-opt-in.md)), not a writer split,
+and it passes since CONST_DEMAND follows content to its writers (134,
+2026-10-15).
+
+Six shared-constructor variants with identical argument types were tried;
+in each, pyc either already separates the records or the program holds two
+types in one slot over time (`b.replace([...])` after construction: bh's
+temporal shape, which no split separates). **No program is known that
+needs fact 2's receiver-aware key.** It stays open as a description of the
+key, with no witness.
+
 ## Verification
 
 The repro prints `5` and `4` on both backends, with two `Pot`
-CreationSets. It then becomes 132's synthetic test, for the untagged-dispatch
-demand and the clone-collapse rule.
+CreationSets. A synthetic test of
+[132](closed/132-arity-is-representation-not-provenance.md)'s untagged-dispatch
+demand and clone-collapse rule now lives here: 132 closed 2026-10-16 with
+quameon as its witness, because a small program splits on `{None}` before the
+demand is reached. The test needs two instances whose constructor arguments
+agree in type, which is this issue's open half.
 
 ## Probe: keep None in the type projection (`PYC_KEEPNIL=1`), 2026-10-01
 

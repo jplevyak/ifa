@@ -19,9 +19,7 @@ An analysis run consists of alternating phases of constraint propagation to fixe
   - Canonical hash-cons tables and types in `TypeWorld`.
 
 #### 1.2 Cross-Pass Type Movement (`typemove`)
-A pass does not necessarily reach a final whole-program fixed point just because no splitter stage split a contour. Decisions from prior splits (`av->cs_map`, split ledger) persist across passes, so successive passes re-derive different types even when contour counts remain unchanged (issue 148).
-- `typemove_enabled()` hashes the positional formal types across all `EntrySet`s at the end of each pass.
-- If derived types moved (`h != prev_state_hash`), the analysis runs another pass (`analyze_again = 1`) even if no contour was split. This carries the analysis across plateaus to subsequent splitting work.
+Decisions from prior splits (`av->cs_map`, split ledger) persist across passes, so a pass where no stage splits is a fixed point only if another pass would re-derive the same types (issue 148). `PYC_TYPEMOVE` ran extra passes while the positional formal types of the live `EntrySet`s still moved. Measured 2026-10-15, the loop already stops at such a fixed point on every corpus program (identical results, one extra pass in which nothing moved), so the lever was deleted (issue 146). `IFA_DBG_TYPEMOVE` keeps the test as a per-pass probe (`formal_types_moved` in `fa.cc`).
 
 #### 1.3 Demand Evaluation at Quiescence
 - **All demand is evaluated at quiescence**: A demand is a property of converged types ("this AVar holds a union that blocks operation X"), evaluated at fixed point, never on the transient formation of a union during worklist draining (issue 157).
@@ -172,7 +170,7 @@ This section focuses strictly on open issues and active capability gaps for revi
   Per-branch SSU AVars (`v_v1`, `v_v2`) are successfully narrowed by `Code_IF`, but pyc's strict no-boxing default can emit `BOXING` violations on the original Var `v` before the narrowed views can gate downstream uses. Needs liveness-aware box-checking or SSU rewrite-and-prune.
 - **Permissive-Mode Voiding of NOTYPE ([ifa/issues/049](../issues/closed/049-FA-raise-only-contour-notype.md), [ifa/issues/124](../issues/124-FA-refuse-imprecise-inference.md), [ifa/issues/145](../issues/closed/145-numeric-coercion-is-not-gated-on-permissive-mode.md))**:
   `convert_NOTYPE_to_void()` silently salvages bottom-typed AVars under `fruntime_errors` (pyc default) by converting them to `void`, producing `return 0` clones rather than failing loudly. IFA should refuse imprecise inference or gate salvage strictly behind permissive runtime error flags.
-- **Splitter Stage Cascade and Quiescence Gating ([ifa/issues/146](../issues/146-remove-all-arbitrary-splitting.md), [ifa/issues/157](../issues/157-FA-all-demand-must-be-evaluated-at-quiescence.md))**:
+- **Splitter Stage Cascade and Quiescence Gating ([ifa/issues/146](../issues/146-remove-all-arbitrary-splitting.md), [ifa/issues/157](../issues/closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md))**:
   Auditing remaining splitters to eliminate any residual arbitrary/structural splitting, and ensuring all demand tests are evaluated once types have converged at quiescence.
 
 ### 2. Open Capability Gaps and Design Observations

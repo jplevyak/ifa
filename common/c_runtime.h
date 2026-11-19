@@ -69,6 +69,14 @@ typedef void *_CG_nil_type;
 #define _CG_make_tuple _CG_symbol
 #define _CG_Symbol(_x, _y) ((void *)(uintptr_t)_x)
 #define _CG_String(_x) ((char *)_x)
+// Length-aware _CG_String: cg.cc emits it for a string constant that may
+// hold an embedded NUL (ifa/issues/070), where strlen would stop short.
+static inline char *_CG_String_n(const void *x, size_t len) {
+  char *str = (char *)MALLOC(len + 1);
+  memcpy(str, x, len);
+  str[len] = 0;
+  return str;
+}
 #define null ((void *)0)
 #define bool int
 #define True 1
@@ -144,21 +152,60 @@ static inline char *_CG_char_from_string(void *s, int i) {
   return x;
 }
 
+// A float prints as the SHORTEST decimal that round-trips (CPython's repr),
+// as it does on the LLVM backend, which calls pyc's _CG_str_from_float. This
+// is a copy of pyc_c_runtime.h's _CG_float_repr_buf; keep the two identical.
+// It used to be %.17g, which printed 3.14 + 2.0 as 5.1400000000000006.
+static inline int _CG_float_repr_buf(double d, char *out) {
+  if (isnan(d)) { strcpy(out, "nan"); return 3; }
+  if (isinf(d)) { strcpy(out, d < 0 ? "-inf" : "inf"); return d < 0 ? 4 : 3; }
+  if (d == 0) { strcpy(out, signbit(d) ? "-0.0" : "0.0"); return signbit(d) ? 4 : 3; }
+  char e[48];
+  for (int p = 1; p <= 17; p++) {
+    snprintf(e, sizeof(e), "%.*e", p - 1, d);
+    if (strtod(e, 0) == d) break;
+  }
+  // e is [-]D[.DDD]e[+-]XX
+  const char *q = e;
+  int n = 0;
+  if (*q == '-') { out[n++] = '-'; q++; }
+  char dig[24];
+  int nd = 0;
+  for (; *q && *q != 'e'; q++)
+    if (*q != '.') dig[nd++] = *q;
+  int x = atoi(q + 1);
+  while (nd > 1 && dig[nd - 1] == '0') nd--;
+  if (x >= -4 && x < 16) {
+    if (x >= 0) {
+      for (int i = 0; i <= x; i++) out[n++] = i < nd ? dig[i] : '0';
+      out[n++] = '.';
+      if (nd > x + 1)
+        for (int i = x + 1; i < nd; i++) out[n++] = dig[i];
+      else
+        out[n++] = '0';
+    } else {
+      out[n++] = '0';
+      out[n++] = '.';
+      for (int i = 0; i < -x - 1; i++) out[n++] = '0';
+      for (int i = 0; i < nd; i++) out[n++] = dig[i];
+    }
+  } else {
+    out[n++] = dig[0];
+    if (nd > 1) {
+      out[n++] = '.';
+      for (int i = 1; i < nd; i++) out[n++] = dig[i];
+    }
+    n += snprintf(out + n, 8, "e%c%02d", x < 0 ? '-' : '+', x < 0 ? -x : x);
+  }
+  out[n] = 0;
+  return n;
+}
+
 static inline char *_CG_prim_primitive_to_string(double d) {
-  char s[100], *p = s;
-  snprintf(s, 100, "%.17g", d);
-  while (*p)
-    if (*p < '0' || *p > '9')
-      break;
-    else
-      p++;
-  if (!*p) {
-    *p++ = '.';
-    *p++ = '0';
-  } else
-    while (*p) p++;
-  char *r = (char *)MALLOC(p - s);
-  memcpy(r, s, p - s);
+  char s[48];
+  int n = _CG_float_repr_buf(d, s);
+  char *r = (char *)MALLOC(n + 1);
+  memcpy(r, s, n + 1);
   return r;
 }
 
@@ -182,6 +229,17 @@ static inline void _CG_float_printf(double d, bool ln) {
 #define _CG_list_total_len(_c, _l) (_CG_list_to_struct(_l)->total_len)
 #define _CG_list_ptr(_l) (_CG_list_to_struct(_l)->ptr)
 #define _CG_list_data(_l) (&_CG_list_to_struct(_l)->data[0])
+// ifa/185, ifa/102: the high bits of a tuple's total_len say whether it has
+// a static arity; cg.cc's P_prim_make sets them. pyc_c_runtime.h holds the
+// full commentary; these must stay identical to it.
+#define _CG_TUPLE_FIXED_ARITY 0x80000000u
+#define _CG_tuple_set_fixed(_l) (_CG_list_to_struct(_l)->total_len |= _CG_TUPLE_FIXED_ARITY)
+#define _CG_tuple_is_fixed(_l) ((_CG_list_to_struct(_l)->total_len & _CG_TUPLE_FIXED_ARITY) != 0)
+#define _CG_TUPLE_DYNAMIC 0x40000000u
+#define _CG_TUPLE_BITS (_CG_TUPLE_FIXED_ARITY | _CG_TUPLE_DYNAMIC)
+#define _CG_tuple_set_dynamic(_l) (_CG_list_to_struct(_l)->total_len |= _CG_TUPLE_DYNAMIC)
+#define _CG_tuple_is_dynamic(_l) ((_CG_list_to_struct(_l)->total_len & _CG_TUPLE_DYNAMIC) != 0)
+#define _CG_is_plain_list(_l) ((_CG_list_to_struct(_l)->total_len & _CG_TUPLE_BITS) == 0)
 #define _CG_prim_len(_c, _l) ((_l) ? _CG_list_len(_l) : 0)
 #define _CG_ptr_to_list(_l) ((_CG_list)(((char *)(_l)) + SIZEOF_LIST_HEADER))
 static inline _CG_list _CG_to_list(_CG_list l) { return l; }
@@ -371,3 +429,13 @@ typedef struct {
   const char *name;
 } _CG_TypeObject;
 #endif
+
+/* The emitted main() hands the process argv to the runtime before anything
+   runs (pyc reads it back through sys.argv). V has no way to read it, so the
+   ifa runtime only stores it; one translation unit, so static storage. */
+static int64 _cg_argc;
+static char **_cg_argv;
+static inline void _CG_set_argv(int64 argc, char **argv) {
+  _cg_argc = argc;
+  _cg_argv = argv;
+}

@@ -1,6 +1,6 @@
 # Issue 007: post-type splitter stages not triggered by any shape
 
-> **CLOSED 2026-09-28 (superseded).** The mark stages this tracked coverage for are being deleted as provenance (MARK_TYPE is gone; MARK_SETTER is the last one, [146](../146-remove-all-arbitrary-splitting.md) D). The residual question -- SETTER_OF_SETTER is reached only when every higher stage found nothing -- is the cascade-priority starvation in [157](../157-FA-all-demand-must-be-evaluated-at-quiescence.md). The `mark_*_skew` fixtures' `.known_issue` sidecars should be retired with MARK_SETTER.
+> **CLOSED 2026-09-28 (superseded).** The mark stages this tracked coverage for are being deleted as provenance (MARK_TYPE is gone; MARK_SETTER is the last one, [146](../146-remove-all-arbitrary-splitting.md) D). The residual question -- SETTER_OF_SETTER is reached only when every higher stage found nothing -- is the cascade-priority starvation in [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md). The `mark_*_skew` fixtures' `.known_issue` sidecars should be retired with MARK_SETTER.
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 

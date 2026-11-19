@@ -185,7 +185,7 @@ on, and reproducible builds generally.
 - [closed/009](009-fa-violations-nondeterminism.md) — FA
   violation-order nondeterminism, also fixed. FA state is stable here,
   so this is not that.
-- [111](../111-FA-selective-invalidation-per-pass.md) — found by its
+- [111](111-FA-selective-invalidation-per-pass.md) — found by its
   harness; that harness now works around this rather than waiting on it.
 
 ## Fixed 2026-08-30 — three sources, and the one that was not cosmetic
@@ -339,7 +339,7 @@ worth doing once the real root is fixed (`make_LUB_type` is still a
 default no-op, so structurally equal unions really are distinct Syms) —
 key it on the sorted component list, which `compar_syms` already
 provides. **Filed separately as
-[120](../120-union-types-are-never-interned.md)**, with the measurement:
+[120](120-union-types-are-never-interned.md)**, with the measurement:
 1323 SUM Syms for 27 distinct unions on msp_ss.
 
 **So the search moves upstream again:** what makes `clone` assign

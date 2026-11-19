@@ -154,4 +154,14 @@ extern int pattern_match_hits, pattern_match_complete, pattern_matches;
 // it was built at and is a miss once the epoch moves.
 extern int dispatch_arity_epoch;
 
+// issues/103: a call whose every candidate was rejected because a keyword
+// argument names no formal of it, keyed by the send's PNode: the callee's
+// name and the keyword, so the type violation at that call can say what
+// CPython says ("f() got an unexpected keyword argument 'k'").
+struct UnexpectedKeyword {
+  cchar *fun_name;
+  cchar *keyword;
+};
+UnexpectedKeyword *unexpected_keyword_at(PNode *send_pnode);
+
 #endif

@@ -1,6 +1,6 @@
 # 145 — automatic numeric coercion fires in `--strict`, and changes the answer
 
-> **CLOSED 2026-09-28 (merged into 156).** Piece 1 landed 2026-09-08: `coerce_annotate` is gated on `fruntime_errors`, and `--strict` reports the mix (`tests/strict_rejects_numeric_boxing.py`). Piece 2 was misscoped. The real open question (may this value be widened, given its uses?) is in [156](../156-FA-split-int-from-float-coerce-last.md).
+> **CLOSED 2026-09-28 (merged into 156).** Piece 1 landed 2026-09-08: `coerce_annotate` is gated on `fruntime_errors`, and `--strict` reports the mix (`tests/strict_rejects_numeric_boxing.py`). Piece 2 was misscoped. The real open question (may this value be widened, given its uses?) is in [156](156-FA-split-int-from-float-coerce-last.md).
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 

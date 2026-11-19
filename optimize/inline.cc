@@ -328,7 +328,13 @@ static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
   check_invariants(f);
 }
 
-static void convert_to_move(PNode *p, int i) {
+// ifa/121: the send is gone, so is its call. Its `f->calls` entry used to
+// survive, and mark_live_funs (which follows `calls` at every live node)
+// kept the identity callee live: every backend emitted it, named nowhere
+// (`str.__str__`, every `__iter__` returning self). inline_single_pnode and
+// inline_prim_chain already replace the entry with the inlined node's own.
+static void convert_to_move(Fun *f, PNode *p, int i) {
+  f->calls.put(p, nullptr);
   p->code = new Code(*p->code);
   p->code->kind = Code_MOVE;
   p->rvals[0] = p->rvals[i];
@@ -665,7 +671,7 @@ static int inline_single_sends(FA *fa) {
             }
             int i = identity_send.get(fn);
             if (i) {
-              convert_to_move(p, i - 1);
+              convert_to_move(f, p, i - 1);
               record_inline_event(INLINE_IDENTITY, f, p, fn); dbg_note_inline(INLINE_IDENTITY, f, p, fn);
             }
           }
@@ -701,7 +707,7 @@ static int inline_single_sends(FA *fa) {
               }
               int i = identity_send.get(fn);
               if (i) {
-                convert_to_move(p, i - 1);
+                convert_to_move(f, p, i - 1);
                 record_inline_event(INLINE_IDENTITY, f, p, fn); dbg_note_inline(INLINE_IDENTITY, f, p, fn);
               }
             }

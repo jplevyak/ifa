@@ -266,14 +266,50 @@ switch (p->prim->index) {
           if (all_applications(p, es, x, args, names, 0, (Partial_kind)p->code->partial) > 0)
             make_period_closure(result, x, args);
         }
+        // ifa/130 A1: a receiver whose member of this name holds DATA (no
+        // function value) was answered above, by that member: its class's
+        // prototype holds the attribute as the MRO resolves it
+        // (gen_class_pyda), and data defined on a class SHADOWS any method
+        // of that name it inherits. Dispatching on the selector matched the
+        // inherited method anyway, so `class B(A): f = 5` over a method
+        // `A.f` read B().f as {method, int} and was refused. Such receivers
+        // are left out of the selector dispatch; a receiver whose member is
+        // a method keeps it (super() calls, among others, reach the base
+        // method that way).
         {
-          Vec<AVar *> args;
-          Vec<cchar *> names;
-          names.add(0);
-          names.add(0);
-          args.add(obj);
-          if (all_applications(p, es, selector, args, names, 0, (Partial_kind)p->code->partial) > 0)
-            make_period_closure(result, selector, args);
+          Vec<CreationSet *> dispatch;
+          int data_only = 0;
+          for (CreationSet *cs : obj->out->sorted) {
+            if (!cs) continue;
+            bool data = false;
+            for (CreationSet *sel : selector->out->sorted) {
+              cchar *symbol = sel->sym->name;
+              if (!symbol) symbol = sel->sym->constant;
+              if (!symbol) symbol = sel->sym->imm.v_string;
+              AVar *iv = symbol ? cs->var_map.get(symbol) : nullptr;
+              if (iv && iv->out && iv->out->n &&
+                  type_intersection(iv->out, fa->type_world.function_type) == fa->type_world.bottom_type)
+                data = true;
+            }
+            if (data) data_only++;
+            else dispatch.add(cs);
+          }
+          AVar *recv = obj;
+          if (data_only && dispatch.n) {
+            fill_tvals(es->fun, p, 3);
+            recv = make_AVar(p->tvals[2], es);
+            flow_var_type_permit(recv, make_AType(dispatch));
+            flow_vars(obj, recv);
+          }
+          if (!data_only || dispatch.n) {
+            Vec<AVar *> args;
+            Vec<cchar *> names;
+            names.add(0);
+            names.add(0);
+            args.add(recv);
+            if (all_applications(p, es, selector, args, names, 0, (Partial_kind)p->code->partial) > 0)
+              make_period_closure(result, selector, args);
+          }
         }
         break;
       }
@@ -283,7 +319,9 @@ switch (p->prim->index) {
         AVar *val = make_AVar(p->rvals[4], es);
         fill_tvals(es->fun, p, 1);
         AVar *tval = make_AVar(p->tvals[0], es);
-        flow_vars(val, tval);
+        // ifa/191: a recorded store is never read before its overwrite, so its
+        // value is not part of the field's type (overwrite.cc).
+        if (!store_is_overwritten(p)) flow_vars(val, tval);
         set_container(tval, obj);
         for (CreationSet *sel : selector->out->sorted) {
           cchar *symbol = sel->sym->name;
@@ -598,7 +636,14 @@ switch (p->prim->index) {
           // the synthesised CS, `len(self)` folded to 0, so the very
           // first `n != len(t)` check returned False and `x == (1, 2)`
           // was silently False for a tuple that WAS (1, 2).
-          if (cs->no_static_arity || !cs->defs.n || (elem && elem->out != fa->type_world.bottom_type) ||
+          // A str/bytes CONSTANT has a known length, so len() of it is a
+          // constant too, and so is its truth (`self.__len__() != 0`). Not
+          // folding it left `b'' or bytearray(n)` typed {bytes, bytearray},
+          // a union with no run-time discriminator (ifa/102, softrender).
+          int ck = cs->sym->is_constant ? cs->sym->imm.const_kind : 0;
+          if (ck == IF1_CONST_KIND_STRING || ck == IF1_CONST_KIND_BYTES)
+            rtype = type_union(rtype, make_size_constant_type(cs->sym->imm.v_len));
+          else if (cs->no_static_arity || !cs->defs.n || (elem && elem->out != fa->type_world.bottom_type) ||
               sym_string->specializers.set_in(cs->sym) || sym_bytes->specializers.set_in(cs->sym))
             rtype = type_union(rtype, fa->type_world.size_type);
           else
@@ -622,30 +667,11 @@ switch (p->prim->index) {
       case P_prim_sizeof_element: {
         AVar *t = make_AVar(p->rvals[2], es);
         AType *rtype = fa->type_world.bottom_type;
-        // ifa/issues/109: sizeof_element needs ONE container layout. If
-        // the receiver spans CreationSets that will become distinct
-        // concrete types -- different sym, or different arity, which for
-        // a record-shaped tuple means a different type -- their sum has
-        // no `element` and codegen fails with "sizeof_element of
-        // non-container type". FA used to just union the sizes and say
-        // nothing, so the splitter had no reason to separate them.
-        //
-        // Recording a violation here is what makes the EXISTING backward
-        // machinery do the work: split_for_violations (stage 5) splits
-        // the offending AVar, and that split propagates back to the
-        // caller's contour automatically. No annotation, no special case
-        // in codegen -- FA simply has to know the constraint.
-        if (sizeof_viol_enabled() && t->out->sorted.n > 1) {
-          Sym *sym0 = nullptr;
-          int arity0 = -1;
-          bool uniform = true;
-          for (CreationSet *cs : t->out->sorted) {
-            if (!cs->sym) continue;
-            if (!sym0) { sym0 = cs->sym; arity0 = cs->vars.n; }
-            else if (sym0 != cs->sym || arity0 != cs->vars.n) { uniform = false; break; }
-          }
-          if (!uniform) type_violation(ATypeViolation_kind::BOXING, t, t->out, nullptr, nullptr);
-        }
+        // ifa/issues/109: PYC_SIZEOF_VIOL recorded a BOXING violation when the
+        // receiver spans CreationSets of different sym or arity (mode 2 also
+        // lifted stage 5's gate). It fixed no program; mode 1 broke 6 corpus
+        // programs and mode 2 broke 48 (sweeps
+        // check__PYC_SIZEOF_VIOL_{1,2}__e254f017+dcb2b1b0). Deleted by ifa/146.
         for (CreationSet *cs : t->out->sorted) {
           AVar *elem = get_element_avar(cs);
           if (elem) {

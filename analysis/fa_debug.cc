@@ -101,7 +101,6 @@ AVar::AVar(Var *v, void *acontour)
       container(nullptr),
       setters(nullptr),
       setter_class(nullptr),
-      mark_map(nullptr),
       cs_map(nullptr),
       match_cache(nullptr),
       type(nullptr),
@@ -449,6 +448,10 @@ void show_violations(FA *fa, FILE *fp) {
           if (ifa_verbose) fprintf(memfp, " send:%d", v->send->var->sym->id);
           fprintf(memfp, "\n");
           show_candidates(memfp, v->send->var->def, v->av->var->sym);
+        } else if (UnexpectedKeyword *u =
+                       v->send && v->send->var ? unexpected_keyword_at(v->send->var->def) : nullptr) {
+          // issues/103: CPython's TypeError, as a compile error.
+          fprintf(memfp, "%s() got an unexpected keyword argument '%s'\n", u->fun_name, u->keyword);
         } else {
           fprintf(memfp, "illegal call argument type ");
           show_illegal_type(memfp, v);
@@ -504,7 +507,17 @@ void show_violations(FA *fa, FILE *fp) {
         break;
       case ATypeViolation_kind::BOXING:
         show_name(memfp, v->av);
-        fprintf(memfp, "has mixed basic types:");
+        // ifa/188: a scalar beside an object is not two basics; say what it is.
+        if (v->type && scalar_with_pointer(v->type) && [&] {
+              Vec<Sym *> basics;  // mixed_basics, of the type the violation recorded
+              for (CreationSet *cs : *v->type)
+                if (cs && cs->sym)
+                  if (Sym *b = to_basic_type(cs->sym->type)) basics.set_add(b);
+              return basics.set_count() < 2;
+            }())
+          fprintf(memfp, "holds both a number and an object, which has no representation:");
+        else
+          fprintf(memfp, "has mixed basic types:");
         show_type(*v->type, memfp);
         fprintf(memfp, "\n");
         if (getenv("PYC_DBG_BOXWHY")) {
@@ -677,10 +690,21 @@ void dbg_confluence_probe(AVar *av, bool added) {
 
 // ifa/133 probe: IFA_DBG_AV=<id> dumps one AVar's identity and every
 // backward writer, with the writer's function and the type it contributes.
+// IFA_DBG_AV=<name> (not a number) dumps every AVar of a variable of that
+// name -- a diagnostic convenience, never an analysis key.
 void dbg_dump_av(AVar *av) {
   static int want = -2;
-  if (want == -2) { cchar *v = getenv("IFA_DBG_AV"); want = v ? atoi(v) : -1; }
-  if (want < 0 || !av || av->id != want) return;
+  static cchar *want_name = nullptr;
+  if (want == -2) {
+    cchar *v = getenv("IFA_DBG_AV");
+    want = v && isdigit((unsigned char)v[0]) ? atoi(v) : -1;
+    if (v && !isdigit((unsigned char)v[0])) want_name = v;
+  }
+  if (!av) return;
+  if (want_name) {
+    if (!av->var || !av->var->sym || !av->var->sym->name || strcmp(av->var->sym->name, want_name)) return;
+  } else if (want < 0 || av->id != want)
+    return;
   fprintf(stderr, "[av] p=%d %d var=%s in=%s type=", analysis_pass, av->id,
           (av->var && av->var->sym && av->var->sym->name) ? av->var->sym->name : "(anon)",
           (av->contour_is_entry_set && ((EntrySet *)av->contour)->fun &&
@@ -775,6 +799,178 @@ void report_recv_cardinality() {
   }
   fprintf(stderr, "RECVCARD total=%d over1=%d max=%d(%s) hist:", total, over1, maxn, maxfun);
   for (int i = 1; i < 9; i++) fprintf(stderr, " %d=%d", i, hist[i]);
+  fprintf(stderr, "\n");
+}
+
+// ifa/102 / ifa/190: WHERE does a dispatching receiver's union form? The
+// inventory for the soft dispatch demand. For every send whose non-None
+// receivers reach two or more functions, walk back from the receiver to the
+// points where its classes first meet -- an AVar holding two or more of
+// them none of whose backward links holds them all -- and classify each:
+//
+//   FORMAL    an EntrySet formal: its callers pass different classes, so an
+//             ES split could separate them;
+//   CS_MULTI  a CreationSet member or element with two or more creation
+//             points: a CS split could;
+//   CS_SINGLE the same with one creation point -- one container: no
+//             contour split separates what is inside it;
+//   LOCAL     a merge inside one contour (a phi): no contour split can;
+//   GLOBAL    a module-level variable.
+//
+// A send is SEPARABLE when EVERY meeting point is FORMAL or CS_MULTI.
+// "Reaches two or more" counts target EntrySets: a dispatch between
+// contours of ONE function (a method inherited by several subclasses) is a
+// dispatch too.
+void report_dispatch_origin() {
+  if (!getenv("IFA_DBG_DISPATCHORIGIN")) return;
+  int sends = 0, sep = 0, kinds[5] = {0};
+  static cchar *kname[5] = {"formal", "cs_multi", "cs_single", "local", "global"};
+  for (EntrySet *es : fa->ess) {
+    if (!es || !es->fun) continue;
+    for (int mi = 0; mi < es->out_edge_map.n; mi++) {
+      PNode *pn = es->out_edge_map.v[mi].key;
+      Vec<AEdge *> *edges = es->out_edge_map.v[mi].value;
+      if (!pn || !edges || edges->n < 2 || !pn->rvals.n) continue;
+      // The receiver: rvals[1] on a selector send, or the bound value of the
+      // bound-method closure a `recv.method(...)` call goes through (as
+      // SETTER_OF_SETTER's dispatch demand reads it).
+      AVar *r = nullptr;
+      if (pn->rvals[0]->sym && pn->rvals[0]->sym->is_symbol) {
+        if (pn->rvals.n > 1) r = make_AVar(pn->rvals[1], es);
+      } else {
+        AVar *callee = make_AVar(pn->rvals[0], es);
+        if (callee && callee->out)
+          for (CreationSet *c : callee->out->sorted)
+            if (c && c->sym == sym_closure && c->vars.n > 1 && c->vars[1]) { r = c->vars[1]; break; }  // [0] is the function
+      }
+      bool dbg2 = getenv("IFA_DBG_DISPATCHORIGIN")[0] == '2';
+      if (dbg2) {
+        Vec<Fun *> fs;
+        for (AEdge *e : *edges) if (e && e->fun) fs.set_add(e->fun);
+        if (edges->n > 1) {
+          fprintf(stderr, "DISPORIGIN-send %s:%d r=%d rv0=%s funs:", pn->code ? pn->code->pathname() : "?", pn->code ? pn->code->line() : 0,
+                  r ? r->id : -1, pn->rvals[0]->sym && pn->rvals[0]->sym->name ? pn->rvals[0]->sym->name : "?");
+          for (Fun *f : fs) fprintf(stderr, " %s", f->sym && f->sym->name ? f->sym->name : "?");
+          if (r && r->out) for (CreationSet *c : r->out->sorted) fprintf(stderr, " [%s]", c && c->sym && c->sym->name ? c->sym->name : "?");
+          fprintf(stderr, "\n");
+        }
+      }
+      if (!r || !r->out) continue;
+      // The receiver's non-None classes, and the functions they reach.
+      Vec<Sym *> R;
+      for (CreationSet *c : r->out->sorted)
+        if (c && c->sym && c->sym != sym_nil_type && c->sym != sym_closure) R.set_add(c->sym);
+      // The target CONTOURS, not functions: richards' `t.runTask()` reaches
+      // four EntrySets of the one `Task.runTask`, one per subclass, and that
+      // is the dispatch codegen emits.
+      Vec<EntrySet *> funs;
+      for (AEdge *e : *edges) {
+        if (!e || !e->fun || !e->to) continue;
+        Vec<MPosition *> &pp = e->fun->positional_arg_positions;
+        AVar *f = pp.n > 1 ? e->to->args.get(pp.v[1]) : nullptr;
+        bool nil_only = f && f->out && f->out->sorted.n == 1 && f->out->sorted[0]->sym == sym_nil_type;
+        if (!nil_only) funs.set_add(e->to);
+      }
+      if (funs.set_count() < 2 || R.set_count() < 2) continue;
+      ++sends;
+      auto classes_of = [&](AVar *a) {
+        int k = 0;
+        Vec<Sym *> seen;
+        if (a && a->out)
+          for (CreationSet *c : a->out->sorted)
+            if (c && c->sym && R.set_in(c->sym) && seen.set_add(c->sym)) k++;
+        return k;
+      };
+      int found[5] = {0};
+      Vec<AVar *> seen, work;
+      seen.set_add(r);
+      work.add(r);
+      for (int i = 0; i < work.n && i < 20000; i++) {
+        AVar *a = work.v[i];
+        int ka = classes_of(a);
+        if (ka < 2) continue;
+        // Follow every predecessor still holding two or more of the classes,
+        // carried or not: in a loop (`x = x.next`) a predecessor on the cycle
+        // carries the whole union, and stopping there never reaches where the
+        // classes enter.
+        // A call's result reaches the callee's return through `lvalue`, not
+        // `backward` (as CONST_DEMAND's walk follows it).
+        bool carried = false;
+        Vec<AVar *> preds;
+        for (AVar *b : a->backward) if (b) preds.add(b);
+        if (a->lvalue) preds.add(a->lvalue);
+        if (getenv("IFA_DBG_DISPATCHORIGIN")[0] == '3' && es->fun->sym && es->fun->sym->name &&
+            !strcmp(es->fun->sym->name, getenv("IFA_DBG_DISPATCHORIGIN") + 1)) {
+          fprintf(stderr, "  walk av=%d %s ka=%d var=%s preds:", a->id,
+                  a->contour == GLOBAL_CONTOUR ? "G" : a->contour_is_entry_set ? "ES" : "CS", ka,
+                  a->var && a->var->sym && a->var->sym->name ? a->var->sym->name : "_");
+          for (AVar *b : preds) fprintf(stderr, " %d(%s,%d)", b->id, b->contour_is_entry_set ? "ES" : "CS", classes_of(b));
+          fprintf(stderr, "\n");
+        }
+        // A predecessor on a cycle back through `a` (a list extended from its
+        // own contents) carries the union only because `a` does; it is not
+        // where the classes come from.
+        auto depends_on_a = [&](AVar *b) {
+          Vec<AVar *> sn, wk;
+          sn.set_add(b);
+          wk.add(b);
+          for (int j = 0; j < wk.n && j < 4000; j++) {
+            if (wk.v[j] == a) return true;
+            for (AVar *c : wk.v[j]->backward)
+              if (c && sn.set_add(c)) wk.add(c);
+            if (wk.v[j]->lvalue && sn.set_add(wk.v[j]->lvalue)) wk.add(wk.v[j]->lvalue);
+          }
+          return false;
+        };
+        for (AVar *b : preds) {
+          int kb = classes_of(b);
+          if (kb >= ka && !depends_on_a(b)) carried = true;
+          if (kb >= 2 && seen.set_add(b)) work.add(b);
+        }
+        if (carried) continue;
+        int k;
+        if (a->contour == GLOBAL_CONTOUR)
+          k = 4;
+        else if (!a->contour_is_entry_set) {
+          CreationSet *cs = (CreationSet *)a->contour;
+          k = cs && cs->defs.n >= 2 ? 1 : 2;
+        } else {
+          EntrySet *x = (EntrySet *)a->contour;
+          bool formal = false;
+          for (int ai = 0; ai < x->args.n && !formal; ai++)
+            if (x->args.v[ai].key && x->args.v[ai].value == a) formal = true;
+          k = formal ? 0 : 3;
+        }
+        found[k]++;
+      }
+      // Separable only if EVERY meeting point is: each contributes to the
+      // union, so one unsplittable point keeps it (bh's `self.subp[i]`, one
+      // Cell's list holding Cell and Body, also meets at a recursive formal).
+      bool s_ok = (found[0] || found[1]) && !found[2] && !found[3] && !found[4];
+      bool none = !found[0] && !found[1] && !found[2] && !found[3] && !found[4];
+      if (s_ok) ++sep;
+      for (int k = 0; k < 5; k++) if (found[k]) kinds[k]++;
+      fprintf(stderr, "DISPORIGIN %s:%d in %s classes=%d funs=%d formal=%d cs_multi=%d cs_single=%d local=%d global=%d -> %s\n",
+              pn->code ? pn->code->pathname() : "?", pn->code ? pn->code->line() : 0,
+              es->fun->sym && es->fun->sym->name ? es->fun->sym->name : "?", R.set_count(), funs.set_count(),
+              found[0], found[1], found[2], found[3], found[4], s_ok ? "SEPARABLE" : none ? "none-found" : "unseparable");
+    }
+  }
+  if (getenv("IFA_DBG_DISPATCHORIGIN")[0] == '2') {
+    int pns = 0, multi = 0;
+    for (EntrySet *es : fa->ess) if (es)
+      for (int mi = 0; mi < es->out_edge_map.n; mi++) {
+        Vec<AEdge *> *edges = es->out_edge_map.v[mi].value;
+        if (!edges) continue;
+        pns++;
+        Vec<Fun *> fs;
+        for (AEdge *e : *edges) if (e && e->fun) fs.set_add(e->fun);
+        if (fs.set_count() > 1) multi++;
+      }
+    fprintf(stderr, "DISPORIGIN-dbg ess=%d sends-with-edges=%d multi-fun=%d\n", fa->ess.n, pns, multi);
+  }
+  fprintf(stderr, "DISPORIGIN sends=%d separable=%d", sends, sep);
+  for (int k = 0; k < 5; k++) fprintf(stderr, " %s=%d", kname[k], kinds[k]);
   fprintf(stderr, "\n");
 }
 
@@ -1192,22 +1388,18 @@ void report_retconf() {
           "RETCONF p=%d skipped_rvals: ret_differ=%ld (1fun=%ld nfun=%ld) ret_same=%ld ret_one=%ld local=%ld other=%ld"
           " | receiver: FORMAL=%ld local=%ld CS=%ld none=%ld noedge=%ld"
           " | walk from local: ->FORMAL=%ld (avg hops %.1f) ->CS=%ld (avg hops %.1f) ->join=%ld capped=%ld"
-          " | ROUTED formal=%ld cs=%ld (1def=%ld ndef=%ld) declined_related=%ld none=%ld"
           " | KIND static=%ld funvar=%ld (avg %.1f fns) class/recv=%ld (avg %.1f classes) related=%ld distinct_unions=%d"
           " class/arg=%ld nonarrow=%ld noedge=%ld\n",
           analysis_pass, census.rc_ret_differ, census.rc_differ_1fun, census.rc_differ_nfun, census.rc_ret_same, census.rc_ret_one, census.rc_local, census.rc_other,
           census.rv_formal, census.rv_local, census.rv_cs, census.rv_none, census.rv_noedge,
           census.wk_formal, census.wk_formal ? (double)census.wk_hops_formal / census.wk_formal : 0.0,
           census.wk_cs, census.wk_cs ? (double)census.wk_hops_cs / census.wk_cs : 0.0, census.wk_join, census.wk_cap,
-          census.rd_formal, census.rd_cs, census.rd_cs_1def, census.rd_cs_ndef, census.rd_declined_related, census.rd_none,
           census.dk_static, census.dk_funvar, census.dk_funvar ? (double)census.dk_funvar_syms / census.dk_funvar : 0.0,
           census.dk_recv, census.dk_recv ? (double)census.dk_recv_syms / census.dk_recv : 0.0, census.dk_recv_related, dk_recv_types.set_count(), census.dk_arg, census.dk_nonarrow, census.dk_noedge);
   census.rc_ret_differ = census.rc_ret_same = census.rc_ret_one = census.rc_local = census.rc_other = 0;
   census.rc_differ_1fun = census.rc_differ_nfun = 0;
   census.rv_formal = census.rv_local = census.rv_cs = census.rv_none = census.rv_noedge = 0;
   census.wk_formal = census.wk_cs = census.wk_join = census.wk_cap = census.wk_hops_formal = census.wk_hops_cs = 0;
-  census.rd_formal = census.rd_cs = census.rd_declined_related = census.rd_none = 0;
-  census.rd_cs_1def = census.rd_cs_ndef = 0;
   census.dk_static = census.dk_funvar = census.dk_recv = census.dk_arg = census.dk_nonarrow = census.dk_noedge = 0;
   census.dk_funvar_syms = census.dk_recv_syms = census.dk_recv_related = 0;
   dk_recv_types.clear();
@@ -1272,47 +1464,6 @@ void report_degenerate_avars() {
   for (auto &kv : by_site) fprintf(stderr, "[degen] %s x%d\n", kv.first.c_str(), kv.second);
 }
 
-// ifa/issues/074: the structural shape of a type, spelled `list<list<int64>>`.
-//
-// Reads the DURABLE elem_key (captured at the end of the previous pass),
-// never the live element AVar: every container starts out empty and
-// acquires its elements later, so a live read would call two containers
-// equal merely because neither has filled in yet -- the same trap the
-// mode-1 key comments already record. The depth is capped: an unbounded
-// structural walk is the very non-termination this is meant to fix, and the
-// cap alone bounds it -- a container that holds itself simply reaches
-// `<...>` like any other 6-deep nest.
-
-// A sub-shape is emitted as an ID, never as its own text (ifa/issues/130).
-//
-// Unfolding the whole structure into one flat string is exponential in
-// (union width)^(depth) on any type whose members repeat, and the repeats
-// are not exotic -- they are ifa/128's over-discrimination arriving here as
-// type width. Measured on `kanoodle` under PYC_CSELEM=3: a 93-member union
-// at EVERY depth 1..6 (77 of the 93 are CreationSets of one class, `list`),
-// 1131 bytes of output per call, 1.13 GB of string at 10^6 calls, on a walk
-// needing 93^5 ~ 7e9 calls -- about 8 TB. It does not finish slowly, it does
-// not finish: one `pyc` reached 47 GB RSS and the kernel OOM-killer took the
-// whole corpus sweep with it, nine times over one afternoon. `plcfrs`,
-// `quameon` and `rdb` are the same failure.
-//
-// Ids are handed out by CONTENT, so two structurally equal sub-shapes always
-// get the same id and two different ones never do. The key therefore compares
-// exactly as the unfolded string did -- same merges, same splits -- at
-// O(width) per level instead of O(width^depth). Content-keyed and not
-// pointer-keyed on purpose: the shape deliberately erases CreationSet
-// identity (it emits the CLASS, `name#id`), so two distinct CSs of one class
-// with equal element shapes must land on one id. That is the whole point of
-// the mode, and a pointer-keyed table would miss exactly those.
-//
-// `cselem_shape_ids` is global and monotone ON PURPOSE, like the
-// `cselem_shape_canon` that consumes its output. Clearing it per pass would
-// let id 7 name one structure in pass 3 and a different one in pass 5, and
-// since the canon map never revisits an entry, that is a permanent mis-merge
-// -- the same hazard ifa/130 A2 fixed for `Sym::name`. The (AType, depth)
-// memo below is the opposite: it MUST be cleared per pass, because elem_key
-// moves.
-
 void report_incompat() {
   if (!getenv("IFA_DBG_INCOMPAT")) return;
   fprintf(stderr,
@@ -1323,12 +1474,6 @@ void report_incompat() {
   fprintf(stderr, "LEDGER p=%d dup_es=%d dup_cs=%d churn=%d\n", analysis_pass, census.ld_dup_es, census.ld_dup_cs, census.ld_churn);
   census.ic_arg = census.ic_ret = census.ic_retn = census.tc_formal = census.tc_return = 0;
   census.tc_seen = census.tc_skip_rval = census.tc_skip_lval = census.tc_skip_cs = census.tc_dec = census.tc_defer = 0;
-}
-
-void report_markwhy() {
-  if (!mark_why_enabled()) return;
-  fprintf(stderr, "MARKWHY p=%d cs_differ=%ld cs_same=%ld\n", analysis_pass, census.mark_cs_differ, census.mark_cs_same);
-  census.mark_cs_differ = census.mark_cs_same = 0;
 }
 
 void report_keydrift() {
@@ -1347,12 +1492,6 @@ void report_keydrift() {
   kd_flip_funs.clear();
 }
 
-void report_canon_stats() {
-  if (!canon_enabled() || !getenv("IFA_DBG_CANON")) return;
-  fprintf(stderr, "CANON p=%d hit=%ld miss=%ld conflict=%ld conflict_honored=%ld\n", analysis_pass, census.canon_hit,
-          census.canon_miss, census.canon_conflict, census.canon_conflict_honored);
-  census.canon_hit = census.canon_miss = census.canon_conflict = census.canon_conflict_honored = 0;
-}
 
 // ifa/issues/074: how many contours would each NAMING scheme give this
 // function, versus how many IFA actually built?
@@ -1412,14 +1551,6 @@ void report_keyspace() {
 }
 
 
-// TEMP probe: which splitter STAGE is producing the per-pass churn.
-// ifa/issues/101: per-pass CreationSet population, grouped by the SYM of
-// the allocation site. Tests whether contour growth is feeding CS growth
-// -- creation_point mints one CS per (site x contour), so a self-
-// amplifying loop would show a handful of syms with CS counts tracking
-// the contour count. Probe-only.
-
-// TEMP probe: which splitter STAGE is producing the per-pass churn.
 // ifa/issues/101: per-pass CreationSet population, grouped by the SYM of
 // the allocation site. Tests whether contour growth is feeding CS growth
 // -- creation_point mints one CS per (site x contour), so a self-
@@ -1427,13 +1558,20 @@ void report_keyspace() {
 // the contour count. Probe-only.
 void report_cs_population() {
   if (!getenv("IFA_DBG_CSPOP")) return;
-  std::map<std::string, int> by_sym;
-  for (CreationSet *cs : fa->css) if (cs)
-    by_sym[cs->sym && cs->sym->name ? cs->sym->name : "(anon)"]++;
-  std::vector<std::pair<std::string, int>> v(by_sym.begin(), by_sym.end());
-  std::sort(v.begin(), v.end(), [](auto &a, auto &b) { return a.second > b.second; });
+  // Keyed on the Sym, not its name: two classes can share a name, and a
+  // name bucket would report them as one (ifa/130 C). The name is display.
+  std::map<Sym *, int> by_sym;
+  for (CreationSet *cs : fa->css) if (cs) by_sym[cs->sym]++;
+  std::vector<std::pair<Sym *, int>> v(by_sym.begin(), by_sym.end());
+  std::sort(v.begin(), v.end(), [](auto &a, auto &b) {
+    if (a.second != b.second) return a.second > b.second;
+    return (a.first ? a.first->id : -1) < (b.first ? b.first->id : -1);
+  });
   fprintf(stderr, "CSPOP p=%d css=%d syms=%d |", analysis_pass, fa->css.n, (int)v.size());
-  for (int i = 0; i < 8 && i < (int)v.size(); i++) fprintf(stderr, " %s:%d", v[i].first.c_str(), v[i].second);
+  for (int i = 0; i < 8 && i < (int)v.size(); i++) {
+    Sym *s = v[i].first;
+    fprintf(stderr, " %s#%d:%d", s && s->name ? s->name : "(anon)", s ? s->id : -1, v[i].second);
+  }
   fprintf(stderr, "\n");
 }
 
@@ -2159,49 +2297,25 @@ void report_demand_ratio() {
   report_cs_vars();
   report_elem_confluence();
   report_recv_cardinality();
+  report_dispatch_origin();
   if (!getenv("IFA_DBG_DEMAND")) return;
   ElemCensus c;
   element_census(c);
   int shapes = c.total_shapes(), pshapes = c.total_pshapes();
-  int unkmint = 0, unkres = 0, unkjoin = 0, unkstill = 0;
-  cselem_unknown_mint_census(unkmint, unkres, unkjoin, unkstill);
   // Same question over EVERY CreationSet, not just containers: a gate that
   // is vacuous on containers but not in general would be worth knowing about.
   int multidef_all = 0;
   for (CreationSet *x : fa->css) if (x && x->defs.set_count() > 1) ++multidef_all;
-  // ifa/129 step 4: how much of the canon's size is the PER-SITE component?
-  // cselem_shape_key composes `v<id>|name#id|shape`, so the canon is keyed
-  // per allocation site and the floor on CS count is the number of distinct
-  // (site, class, shape) triples rather than of (class, shape) pairs. Strip
-  // the leading `v<id>|` and count what is left: `canonsiteless` is the
-  // number of contours a site-free key would keep, and canon/canonsiteless
-  // is the fragmentation the site component costs. Counterfactual only --
-  // nothing here changes a decision.
   int nstrip = 0, nmulti = 0, nsame = 0;
   constant_strip_census(nstrip, nmulti, nsame);
-  int canon = (int)cselem_shape_canon.size(), canon_siteless = 0;
-  if (cssiteless_enabled()) {
-    canon_siteless = canon;  // the key already is site-free; nothing to strip
-  } else {
-    std::set<std::string> sl;
-    for (auto &kv : cselem_shape_canon) {
-      size_t bar = kv.first.find('|');
-      sl.insert(bar == std::string::npos ? kv.first : kv.first.substr(bar + 1));
-    }
-    canon_siteless = (int)sl.size();
-  }
   fprintf(stderr,
           "DEMAND passes=%d ess=%d css=%d container_cs=%d shapes=%d pshapes=%d ratio=%.2f pratio=%.2f "
-          "elemtypes=%d empty=%d mixed=%d novar=%d unkmint=%d unkres=%d unkjoin=%d unkstill=%d "
-          "multidef=%d multidefall=%d rejoin=%d mintwhy=%d/%d/%d/%d canon=%d canonsiteless=%d resplit=%d/%d cstrip=%d/%d/%d capstrip=%ld\n",
+          "elemtypes=%d empty=%d mixed=%d novar=%d "
+          "multidef=%d multidefall=%d cstrip=%d/%d/%d capstrip=%ld\n",
           analysis_pass, fa->ess.n, fa->css.n, c.n_cs, shapes, pshapes,
           shapes ? (double)c.n_cs / shapes : 0.0, pshapes ? (double)c.n_cs / pshapes : 0.0, c.total_types(),
-          c.n_empty, c.n_mixed, c.n_novar, unkmint, unkres, unkjoin, unkstill, c.n_multidef, multidef_all,
-          census.cselem_rejoins, census.cselem_mint_why[kMintNoSiteCS], census.cselem_mint_why[kMintMoldSplitChild],
-          census.cselem_mint_why[kMintMoldCMC], census.cselem_mint_why[kMintMoldIneligible], canon, canon_siteless, census.cselem_resplits,
-          census.cselem_resplit_mints, nstrip, nmulti, nsame, census.fa_cap_strips);
-  if (getenv("PYC_ELEMSETTER") && (census.es_added + census.es_seeded))
-    fprintf(stderr, "ELEMSETTER demand_added=%d starters_seeded=%d\n", census.es_added, census.es_seeded);
+          c.n_empty, c.n_mixed, c.n_novar, c.n_multidef, multidef_all,
+          nstrip, nmulti, nsame, census.fa_cap_strips);
   // ifa/133: IFA_DBG_CSDUMP=<csid>, or -1 for every list CS -- dump the
   // and every backward writer, with the writer's function and contribution.
   if (cchar *cw = getenv("IFA_DBG_CSDUMP")) {
@@ -2269,7 +2383,6 @@ void report_demand_ratio() {
       if (e->value > 1) ++multi;
       if (e->value > mx) { mx = e->value; worst = e->key; }
     }
-    if (census.cd_kept + census.cd_dropped) fprintf(stderr, "CONFDEMAND kept=%d dropped=%d prospective_differs=%d no_trigger=%d\n", census.cd_kept, census.cd_dropped, census.cd_prospective_differs, census.cd_no_trigger);
   if (census.ck_single + census.ck_irrep + census.ck_samesym + census.ck_repr)
     fprintf(stderr, "CONFKIND single=%d IRREPRESENTABLE=%d same_sym=%d representable_union=%d\n", census.ck_single, census.ck_irrep, census.ck_samesym, census.ck_repr);
   if (census.grp_total) fprintf(stderr, "GROUPSPLIT total=%d scattered=%d\n", census.grp_total, census.grp_scattered);
@@ -2286,3 +2399,85 @@ void report_demand_ratio() {
     fprintf(stderr, " census.esl_hit=%d census.esl_walk=%d census.mint_in_child=%d mint_child_noparentbinding=%d census.mint_child_cmc=%d census.esl_reached=%d census.esl_decline=%d\n", census.esl_hit, census.esl_walk, census.mint_in_child, census.mint_child_novar, census.mint_child_cmc, census.esl_reached, census.esl_decline);
   }
 }
+
+// ifa/191 census: a field store that a later store to the same receiver
+// Var and field kills on every CFG path, with no use of the receiver in
+// between. Read-only, after convergence; decides nothing. Each candidate
+// prints KILL (no send on any path between) or CALL (a send between,
+// which might raise or observe the object), the two values, and per
+// EntrySet whether the first value adds a type the killing stores' do not.
+static Sym *setter_field(PNode *n) {
+  if (!n || !n->code || n->code->kind != Code_SEND || !n->prim || n->prim->index != P_prim_setter) return nullptr;
+  if (n->rvals.n < 5 || !n->rvals[3]) return nullptr;
+  return n->rvals[3]->sym;
+}
+
+static bool pnode_reads(PNode *n, Var *o) {
+  for (Var *v : n->rvals) if (v == o) return true;
+  for (Var *v : n->lvals) if (v == o) return true;
+  for (PNode *m : n->phi) { for (Var *v : m->rvals) if (v == o) return true; }
+  for (PNode *m : n->phy) { for (Var *v : m->rvals) if (v == o) return true; }
+  return false;
+}
+
+void report_dead_stores() {
+  static int want = getenv("IFA_DBG_DEADSTORE") ? 1 : 0;
+  if (!want) return;
+  int n_set = 0, n_kill = 0, n_call = 0, n_adds = 0;
+  for (Fun *f : fa->funs) {
+    if (!f) continue;
+    for (PNode *p : f->fa_send_PNodes) {
+      Sym *field = setter_field(p);
+      if (!field) continue;
+      n_set++;
+      Var *o = p->rvals[1];
+      Vec<PNode *> killers, work;
+      Vec<PNode *> seen;
+      bool ok = true, call = false;
+      for (PNode *s : p->cfg_succ) if (s && seen.set_add(s)) work.add(s);
+      for (int i = 0; ok && i < work.n; i++) {
+        PNode *n = work[i];
+        if (n == f->exit) { ok = false; break; }
+        if (setter_field(n) == field && n->rvals[1] == o) { killers.add(n); continue; }
+        if (pnode_reads(n, o)) {
+          // A store to ANOTHER field of o whose value is not o is not a read.
+          Sym *g = setter_field(n);
+          if (!(g && n->rvals[1] == o && n->rvals[4] != o)) { ok = false; break; }
+        }
+        if (n->code && n->code->kind == Code_SEND && !setter_field(n)) call = true;
+        if (!n->cfg_succ.n) { ok = false; break; }
+        for (PNode *s : n->cfg_succ) if (s && seen.set_add(s)) work.add(s);
+      }
+      if (!ok || !killers.n) continue;
+      if (call) n_call++; else n_kill++;
+      bool adds_any = false;
+      for (EntrySet *es : f->ess) {
+        AVar *v1 = make_AVar(p->rvals[4], es);
+        if (!v1 || !v1->out) continue;
+        Vec<CreationSet *> later;
+        for (PNode *k : killers) {
+          AVar *v2 = make_AVar(k->rvals[4], es);
+          if (v2 && v2->out) for (CreationSet *c : v2->out->sorted) later.set_add(c);
+        }
+        bool adds = false, slot = v1->out->sorted.n > 0;
+        for (CreationSet *c : v1->out->sorted) {
+          if (c && !later.set_in(c)) adds = true;
+          if (!c || !c->sym || !c->sym->is_fun) slot = false;  // a method-slot store: every value a function
+        }
+        if (adds) adds_any = true;
+        fprintf(stderr, "[deadstore] %s%s fun=%s es=%d field=%s recv=%s killers=%d adds=%d first=",
+                call ? "CALL" : "KILL", slot ? "-SLOT" : "", f->sym && f->sym->name ? f->sym->name : "?", es->id,
+                field->name ? field->name : "?", o->sym && o->sym->name ? o->sym->name : "?", killers.n, adds);
+        show_type(v1->out->sorted, stderr, 0);
+        fprintf(stderr, " later=");
+        Vec<CreationSet *> lv;
+        for (CreationSet *c : later) if (c) lv.add(c);
+        show_type(lv, stderr, 0);
+        fprintf(stderr, "\n");
+      }
+      if (adds_any) n_adds++;
+    }
+  }
+  fprintf(stderr, "[deadstore] summary setters=%d kill=%d call=%d adds_type=%d\n", n_set, n_kill, n_call, n_adds);
+}
+

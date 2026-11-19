@@ -411,8 +411,29 @@ static Sym *new_constant(IF1 *i, cchar *string, cchar *constant_type) {
       s++;
     return if1_make_symbol(i, s, e);
   }
-  char *str = dupstr(s, e);
   Sym *type = if1_get_builtin(i, constant_type);
+  // A string literal's token keeps its quotes and escapes (v.g's `string`).
+  // The constant is its VALUE, as pyc's frontend makes it: the backends
+  // print and measure v_string, and must not have to guess at quotes.
+  if (type == sym_string && e - s >= 2 && s[0] == '"' && e[-1] == '"') {
+    char *v = (char *)MALLOC(e - s), *o = v;
+    for (cchar *p = s + 1; p < e - 1; p++) {
+      if (*p != '\\' || p + 1 >= e - 1) {
+        *o++ = *p;
+        continue;
+      }
+      switch (*++p) {
+        case 'n': *o++ = '\n'; break;
+        case 't': *o++ = '\t'; break;
+        case 'r': *o++ = '\r'; break;
+        case '0': *o++ = '\0'; break;
+        default: *o++ = *p; break;  // \\, \", and any other char as itself
+      }
+    }
+    *o = 0;
+    return if1_const(i, type, v, nullptr, nullptr, (int)(o - v));
+  }
+  char *str = dupstr(s, e);
   if (type == sym_int) type = sym_int32;
   if (type == sym_uint) type = sym_uint32;
   if (type == sym_float) type = sym_float64;

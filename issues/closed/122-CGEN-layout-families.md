@@ -6,7 +6,7 @@
 [123](123-CGEN-union-receiver-field-access-has-no-discrimination.md)
 rather than here, and by a different route than planned — see "How it
 actually landed" at the bottom. Written 2026-09-01 after
-[121](../121-CGEN-dead-clones-emitted.md)'s category 2 measured the prize
+[121](121-CGEN-dead-clones-emitted.md)'s category 2 measured the prize
 (**269 of pygmy's 275 candidate slots are provably dead**), built a
 working analysis for it, and then failed at run time on
 `tests/method_override_field_offset.py`.

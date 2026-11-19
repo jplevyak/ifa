@@ -5,7 +5,7 @@
 git: `git show 3f36072b:ifa/issues/010-CLEANUP-vec-set-api-cleanup.md`.
 The reproducibility half that used to live here (closed issues/021's
 unspecialized pointer-keyed sets) moved to
-[147](147-analysis-result-depends-on-the-binary-not-the-inputs.md), where
+[147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md), where
 it is a correctness concern.
 
 ## The smell

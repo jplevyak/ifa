@@ -226,6 +226,6 @@ Defect 3 is the one to reach for first when a record's data is silently zero:
 every positional record slot in the program shared one elision verdict per
 index, so any program mixing tuple arities could lose a field with no
 diagnostic at all. Defect 1 removes a whole class of `_CG_void` members —
-[132](../132-arity-is-representation-not-provenance.md)'s census counts 976
+[132](132-arity-is-representation-not-provenance.md)'s census counts 976
 untyped-slot conflicts in 13 corpus programs, and a merge that manufactures
 a union is one of the ways they arise.

@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <math.h>
+#include <map>
 #include <set>
 #include <string>
 #include <tuple>
@@ -364,7 +365,7 @@ static bool cg_ptrish_ct(cchar *t) {
   if (!strncmp(t, "_CG_ps", 6) || !strncmp(t, "_CG_pf", 6)) return true;
   return !strcmp(t, "_CG_any") || !strcmp(t, "_CG_void") || !strcmp(t, "_CG_nil_type") ||
          !strcmp(t, "_CG_list") || !strcmp(t, "_CG_string") || !strcmp(t, "_CG_bytes") ||
-         !strcmp(t, "_CG_function");
+         !strcmp(t, "_CG_function") || !strcmp(t, "_CG_tuple") || !strcmp(t, "_CG_vector");
 }
 
 // ifa/153: a list literal's element store needs the same cast the RECORD path
@@ -437,6 +438,7 @@ static int cg_ctype_width(cchar *t) {
   struct { cchar *n; int w; } kW[] = {
       {"_CG_void", 8},   {"_CG_void_type", 8}, {"_CG_any", 8},    {"_CG_list", 8},
       {"_CG_string", 8}, {"_CG_bytes", 8},     {"_CG_function", 8}, {"_CG_nil_type", 8},
+      {"_CG_tuple", 8},  {"_CG_vector", 8},  // void * in both runtimes (ifa/124: list-layout clones now name them)
       {"_CG_int64", 8},  {"_CG_uint64", 8},    {"_CG_float64", 8},
       {"_CG_int32", 4},  {"_CG_uint32", 4},    {"_CG_float32", 4}, {"_CG_int", 4},
       {"_CG_int16", 2},  {"_CG_uint16", 2},
@@ -513,6 +515,12 @@ static void cg_sprint_imm(char *ss, size_t n, Immediate &imm) {
     double d = imm.num_index == IF1_FLOAT_TYPE_32 ? (double)imm.v_float32 : imm.v_float64;
     if (isinf(d)) { snprintf(ss, n, "%s__builtin_inf()", d < 0 ? "-" : ""); return; }
     if (isnan(d)) { snprintf(ss, n, "__builtin_nan(\"\")"); return; }
+  }
+  // INT64_MIN has no C literal: `-9223372036854775808` is unary minus on a
+  // literal too large for int64, which C reads as unsigned.
+  if (imm.const_kind == IF1_NUM_KIND_INT && imm.num_index == IF1_INT_TYPE_64 && imm.v_int64 == INT64_MIN) {
+    snprintf(ss, n, "(-9223372036854775807LL - 1)");
+    return;
   }
   sprint_imm(ss, n, imm);
 }
@@ -764,6 +772,10 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       fprintf(fp, "  %s = (_CG_list)_CG_list_getslice(%s, sizeof(%s), 0, _CG_prim_len(0,%s), 1);\n",
               cg_get_string(n->lvals[0]), cg_get_string(n->rvals[3]), ety ? ety : "void*",
               cg_get_string(n->rvals[3]));
+      // ifa/102: a make_seq tuple has no static arity, and says so in its
+      // header, for the layout dispatch (poly_dispatch_arity_plan).
+      if (sym_tuple->specializers.set_in(n->rvals[2]->sym))
+        fprintf(fp, "  _CG_tuple_set_dynamic(%s);\n", cg_get_string(n->lvals[0]));
       break;
     }
     case P_prim_make: {
@@ -1404,8 +1416,8 @@ static int write_c_prim(FILE *fp, FA *fa, Fun *f, PNode *n) {
       {
         Sym *t = n->lvals[0]->type;
         if (cg_has_classtag(t) && cg_get_string(n->lvals[0]))
-          fprintf(fp, "  ((%s)%s)->__pyc_tag = &_CG_type_%s;\n", cg_get_string(t), cg_get_string(n->lvals[0]),
-                  t->name);
+          fprintf(fp, "  ((%s)%s)->__pyc_tag = &%s;\n", cg_get_string(t), cg_get_string(n->lvals[0]),
+                  cg_tag_name(t));
       }
       break;
     }
@@ -2069,15 +2081,16 @@ class CBackendEmitter : public VirtualCGEmitter {
                          : cls->meta_type                              ? cls->meta_type
                                                                         : cls;
         Vec<Sym *> concrete;
-        for (Sym *impl : cls_type->implementors)
-          if (impl && cg_has_classtag(impl)) concrete.add(impl);
+        int decided = cg_isinstance_tag_targets(pn, cls_type, concrete);
         fprintf(fp, "  %s = ", cg_get_string(pn->lvals[0]));
-        if (!opnd || !concrete.n) {
+        if (decided >= 0) {
+          fprintf(fp, "%d;\n", decided);
+        } else if (!opnd || !concrete.n) {
           fputs("0;\n", fp);
         } else {
           fputs("(0", fp);
           for (Sym *impl : concrete)
-            fprintf(fp, " || (*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s", opnd, impl->name);
+            fprintf(fp, " || (*(_CG_TypeObject**)(void*)%s) == &%s", opnd, cg_tag_name(impl));
           fputs(");\n", fp);
         }
       } else {
@@ -2347,6 +2360,14 @@ class CBackendEmitter : public VirtualCGEmitter {
                 fprintf(fp, "((void*)%s && !_CG_tuple_is_fixed(%s))", op, op);
               else if (c->tests[ti].arity == -3)
                 fprintf(fp, "!(void*)%s", op);
+              else if (int m = layout_mask(c->tests[ti].arity)) {
+                fprintf(fp, "((void*)%s && (", op);
+                cchar *sep = "";
+                if (m & LAYOUT_FIXED_TUPLE) { fprintf(fp, "%s_CG_tuple_is_fixed(%s)", sep, op); sep = " || "; }
+                if (m & LAYOUT_DYNAMIC_TUPLE) { fprintf(fp, "%s_CG_tuple_is_dynamic(%s)", sep, op); sep = " || "; }
+                if (m & LAYOUT_LIST) fprintf(fp, "%s_CG_is_plain_list(%s)", sep, op);
+                fputs("))", fp);
+              }
               else
                 fprintf(fp, "(void*)%s", op);
             }
@@ -2543,7 +2564,7 @@ class CBackendEmitter : public VirtualCGEmitter {
                 bool same = false, collide = false;
                 for (int ci = 0; ci < classes.n; ci++) {
                   if (classes[ci] == carrier_recv) { same = true; break; }
-                  if (!strcmp(classes[ci]->name, carrier_recv->name)) { collide = true; break; }
+                  if (cg_tag_family(classes[ci]) == cg_tag_family(carrier_recv)) { collide = true; break; }
                 }
                 if (collide) { ok = false; break; }
                 if (!same) {
@@ -2574,7 +2595,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               added_any = true;
               bool found = false;
               for (int ci = 0; ci < classes.n; ci++)
-                if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
+                if (cg_tag_family(classes[ci]) == cg_tag_family(rt)) { found = true; break; }
               if (!found) {
                 classes.add(rt);
                 slots.add(rt_slots[ri]);
@@ -2638,12 +2659,15 @@ class CBackendEmitter : public VirtualCGEmitter {
           }
           ok = false;
         }
+        // ifa/121: an arm whose slot may hold a different clone than this
+        // site chose calls the site's clone directly.
+        if (ok) apply_dispatch_arm_plans(pn, fns, classes, slots, class_funs);
         // Two untagged candidates can't be told apart at runtime unless
         // they are indistinguishable clones of the same function.
         if (directs.n > 1) {
           bool all_same = true;
           for (int i = 1; i < directs.n; i++) {
-            if (!identical_c_signature(directs[0], directs[i])) {
+            if (!identical_c_signature(directs[0], directs[i]) || !clones_interchangeable(directs[0], directs[i])) {
               all_same = false;
               break;
             }
@@ -2675,6 +2699,22 @@ class CBackendEmitter : public VirtualCGEmitter {
               }
             }
           }
+        }
+        // A nullable receiver: after the null test every remaining receiver
+        // calls the one non-None candidate, so its arm is a direct call, not a tag compare and a slot
+        // call -- the untagged-direct `else` arm below, which is exactly that.
+        bool nil_tested = ok && nil_fn && classes.n && !plains.n && !directs.n;
+        if (nil_tested) {
+          Fun *t = nil_tested_target(pn, f, nullptr);
+          for (int ci = 0; ci < classes.n && nil_tested; ci++)
+            if (slots[ci] == -1 || class_funs[ci] != t) nil_tested = false;
+        }
+        if (nil_tested) {
+          directs.add(class_funs[0]);
+          classes.clear();
+          slots.clear();
+          recv_types.clear();
+          class_funs.clear();
         }
         if (ok && recv_str && (classes.n || plains.n || nil_fn)) {
           cchar *lhs = (pn->lvals.n && cg_get_string(pn->lvals[0])) ? cg_get_string(pn->lvals[0]) : nullptr;
@@ -2784,8 +2824,8 @@ class CBackendEmitter : public VirtualCGEmitter {
             return;
           }
           for (int ci = 0; ci < classes.n; ci++, nb++) {
-            fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &_CG_type_%s) {\n", nb ? "else " : "", recv_str,
-                    classes[ci]->name);
+            fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &%s) {\n", nb ? "else " : "", recv_str,
+                    cg_tag_name(classes[ci]));
             fputs("    ", fp);
             if (slots[ci] == -1) {
               // ifa/issues/030(a): carrier-dispatched candidate --
@@ -2902,7 +2942,7 @@ class CBackendEmitter : public VirtualCGEmitter {
         }
       }
       if (getenv("PYC_DBG_DISPATCH")) {
-        fprintf(stderr, "DISPATCH FAIL in %s: fns=%d rvals=%d |", f->sym->name ? f->sym->name : "?",
+        fprintf(stderr, "DISPATCH FAIL pn=%d in %s: fns=%d rvals=%d |", pn->id, f->sym->name ? f->sym->name : "?",
                 fns ? fns->n : -1, pn->rvals.n);
         if (fns)
           for (Fun *fv : *fns) {
@@ -2922,7 +2962,8 @@ class CBackendEmitter : public VirtualCGEmitter {
       // get_target_fun. Failing there refused every legitimate
       // polymorphic call (a generator's `e.__str__()` on the exception
       // slot) before dispatch was even tried.
-      if (!fruntime_errors) codegen_fail(pn, "unable to resolve to a single function at call site");
+      codegen_unresolved_send(pn, fns, fns && fns->n ? "no dispatch plan can tell the candidates apart at run time"
+                                                     : "the analysis found no target");
       fputs("  assert(!\"runtime error: matching function not found\");\n", fp);
     }
   }
@@ -3896,12 +3937,14 @@ static void build_type_strings(FILE *fp, FA *fa, Vec<Var *> &globals) {
     }
   }
   if (allsyms.n) fputs("\n/*\n Type Objects\n*/\n\n", fp);
+  // ifa/130 A3: one tag per class FAMILY (cg_tag_name), not per name.
   std::set<std::string> emitted_types;
   for (Sym *s : allsyms) {
     if (s->type_kind == Type_RECORD && !s->is_system_type) {
-      if (emitted_types.find(s->name) == emitted_types.end()) {
-        fprintf(fp, "_CG_TypeObject _CG_type_%s = { PYC_TAG_OBJECT, \"%s\" };\n", s->name, s->name);
-        emitted_types.insert(s->name);
+      std::string tn = cg_tag_name(s);
+      if (emitted_types.find(tn) == emitted_types.end()) {
+        fprintf(fp, "_CG_TypeObject %s = { PYC_TAG_OBJECT, \"%s\" };\n", tn.c_str(), s->name);
+        emitted_types.insert(tn);
       }
     }
   }
@@ -3926,6 +3969,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   cg_elide_unread_slots(fa);
   build_type_strings(fp, fa, globals);
   cg_build_new_to_val_map(fa);
+  cg_build_dispatch_arm_plans(fa);  // ifa/121
   if (globals.n) {
     fputs("\n/*\n Global Variables\n*/\n\n", fp);
   }
@@ -4077,6 +4121,42 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   fwrite(init_buf, 1, init_len, fp);
   if (getenv("PYC_DBG_CGDCE"))
     fprintf(stderr, "CGDCE emitted=%d dropped=%d (named by no emitted body)\n", body_funs.n + 1 - dropped, dropped);
+  // ifa/121: WHY is each dropped body unnamed? For every call site that
+  // lists it as a candidate, in a function that IS emitted, classify the
+  // site; and note whether it is referenced only as a constructor's
+  // method value (no call site at all).
+  if (getenv("PYC_DBG_CGDCE") && getenv("PYC_DBG_CGDCE")[0] == '2') {
+    std::map<std::string, int> why;
+    for (int k = 0; k < by_index.n; k++) {
+      if (keep.v[k] || buf_of.v[k] < 0) continue;
+      Fun *g = by_index.v[k];
+      int sites = 0, dead_site = 0, live_site_multi = 0, live_site_single = 0, from_dropped = 0;
+      for (Fun *h : fa->funs) if (h && h->live) {
+        int hk = -1;
+        for (int j = 0; j < by_index.n; j++) if (by_index.v[j] == h) { hk = j; break; }
+        bool h_emitted = h == init || (hk >= 0 && keep.v[hk]);
+        for (int ci = 0; ci < h->calls.n; ci++) {
+          PNode *pn = h->calls.v[ci].key;
+          Vec<Fun *> *fs = h->calls.v[ci].value;
+          if (!pn || !fs || !fs->set_in(g)) continue;
+          sites++;
+          if (!h_emitted) from_dropped++;
+          else if (!pn->live || !pn->fa_live) dead_site++;
+          else if (fs->n > 1) live_site_multi++;
+          else live_site_single++;
+        }
+      }
+      cchar *w = !sites ? "no-call-site" : live_site_single ? "LIVE-single-site(unexplained)"
+                 : live_site_multi ? "multi-candidate-site" : dead_site ? "dead-site" : "only-from-dropped";
+      why[w]++;
+      if (getenv("PYC_DBG_CGDCE")[1] == 'v')
+        fprintf(stderr, "CGDCE-drop %s %s sites=%d dead=%d multi=%d single=%d fromdropped=%d\n", cg_get_string(g), w,
+                sites, dead_site, live_site_multi, live_site_single, from_dropped);
+    }
+    fprintf(stderr, "CGDCE-why");
+    for (auto &kv : why) fprintf(stderr, " %s=%d", kv.first.c_str(), kv.second);
+    fprintf(stderr, "\n");
+  }
   fprintf(fp,
           "\nint main(int argc, char *argv[]) {\n"
           "  MEM_INIT();\n"

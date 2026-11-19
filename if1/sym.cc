@@ -397,7 +397,11 @@ Sym *Sym::coerce_to(Sym *to) {
 }
 
 void Sym::convert_constant_string_to_immediate() {
-  if (!is_constant) return;
+  // Only a number is parsed from its text. A string, bytes or symbol has no
+  // num_kind, and resetting const_kind to it erased the IF1_CONST_KIND_STRING
+  // that if1_const set: the LLVM backend then found no string constant and
+  // printed every V string literal as "(null)".
+  if (!is_constant || !type || !type->num_kind) return;
   imm.const_kind = type->num_kind;
   imm.num_index = type->num_index;
   convert_string_to_immediate(constant, &imm);

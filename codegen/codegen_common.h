@@ -58,6 +58,24 @@ Sym *closure_fun_type(Var *v);
 // identified structurally (only unnamed fields) since tuple clones
 // aren't always in sym_tuple->specializers.
 bool cg_has_classtag(Sym *s);
+// ifa/130 A3: a class tag's identity is the CLASS, not its name. Clones of
+// one class share a tag (the slot pointer tells them apart); unrelated
+// classes that share a name -- two modules' `Node` -- must not, or
+// isinstance and tag dispatch fuse them. The family is the class a
+// concrete type was cloned from (its CreationSets' `sym`), and the tag is
+// named `_CG_type_<name>_<family id>`.
+Sym *cg_tag_family(Sym *t);
+cchar *cg_tag_name(Sym *t);
+// issues/173 #1: decide `isinstance(x, cls)` for a test the analysis did
+// not fold, from the members of x's type. Returns 1 or 0 when every member
+// gives the same answer, else -1 with `concrete` set to the tagged
+// implementors of `cls` (`cls_type`) to compare x's class tag against. The
+// test reads the word at `x`, so it is only an answer when every member
+// that IS an instance carries a tag; an untagged member's word is not a
+// tag. When such a member exists (`{list, str}` against `list`) no run-time
+// test can answer, and this refuses the program -- as an undispatchable
+// `len(x)` on the same value is refused -- rather than fold it to False.
+int cg_isinstance_tag_targets(PNode *pn, Sym *cls_type, Vec<Sym *> &concrete);
 
 // Is field i of record s live (present in the emitted struct)?
 // Shared by struct emission, field access elision, and the
@@ -85,6 +103,16 @@ struct PolymorphicSlot {
 };
 extern Map<Fun *, Vec<PolymorphicSlot> *> cg_new_to_val_map;
 void cg_build_new_to_val_map(FA *fa);
+// ifa/121: how each class-tag arm of a dispatch calls its target (see
+// codegen_common.cc). Built after cg_build_new_to_val_map, before emission.
+enum { ARM_SLOT = 0, ARM_DIRECT = 1, ARM_AMBIGUOUS = 2 };
+void cg_build_dispatch_arm_plans(FA *fa);
+int dispatch_arm_plan(PNode *pn, Sym *cls);
+// Rewrite a dispatch's class-tag arms by those plans: an ARM_DIRECT arm
+// becomes a direct call to the site's clone (slot -1, the route a closure
+// carrier already takes); an ARM_AMBIGUOUS one is refused.
+void apply_dispatch_arm_plans(PNode *pn, Vec<Fun *> *fns, Vec<Sym *> &classes, Vec<int> &slots,
+                              Vec<Fun *> &class_funs);
 
 // Resolve a SEND PNode to its single concrete target Fun, or
 // nullptr if the call site has zero or multiple resolutions.
@@ -95,7 +123,17 @@ void cg_build_new_to_val_map(FA *fa);
 // list. `get_target_fun_core` is the shared core; the LLVM
 // wrapper lives in `llvm_primitives.cc` and adds the fallback.
 bool identical_c_signature(Fun *a, Fun *b);
+// ifa/121: partition the live clones into interchangeable classes; run
+// after optimization, before codegen (IFA_DBG_CLONEEQ reports it).
+void compute_clone_equivalence(FA *fa);
+// Are two clones the same function (same class of that partition)? Every
+// point that collapses several candidates onto one clone requires it as
+// well as an identical C signature.
+bool clones_interchangeable(Fun *a, Fun *b);
 Fun *get_target_fun_core(PNode *n, Fun *f);
+// A nullable receiver (one tagged class or None): the non-None target, or
+// null. See codegen_common.cc.
+Fun *nil_tested_target(PNode *n, Fun *f, Fun **nil_fn);
 // ifa/129: direct-vs-polymorphic call census, under PYC_DBG_CALLS.
 void report_call_resolution(FA *fa);
 
@@ -159,7 +197,9 @@ bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx);
 //   arity >= 0   operand non-null, fixed arity, exactly that length;
 //   arity == -1  operand non-null;
 //   arity == -2  operand non-null with no fixed arity;
-//   arity == -3  operand null: the candidate is a None method.
+//   arity == -3  operand null: the candidate is a None method;
+//   arity <= -16 operand non-null, and its header names one of the kinds
+//                in layout_mask(arity) (ifa/102's layout plan).
 // "Fixed arity" is the header bit _CG_tuple_set_fixed writes: a record
 // 2-tuple and tuple([a, b]) have the same length, so the length alone
 // cannot reproduce FA's choice.
@@ -168,15 +208,27 @@ bool poly_dispatch_is_nil_receiver(Fun *candidate, PNode *pn, int *rval_idx);
 // machinery) if no candidate has an arity-constrained formal, a tested
 // operand could hold anything other than a tuple or None, or two cases
 // cannot be told apart at run time.
+// With no arity-constrained formal, it tries the LAYOUT plan instead
+// (ifa/102): a receiver whose members are lists and tuples (and None)
+// shares one header, and the fixed-arity bit is set on every fixed-arity
+// tuple and on nothing else, and the dynamic bit on every make_seq tuple
+// and tuple slice, so the header names one of three kinds. Each candidate
+// covers a set of kinds; the sets must be disjoint.
 
 struct ArityDispatchTest {
   int ridx;   // call-site rval index of the tested operand
-  int arity;  // >= 0: fixed arity, that length; -1: non-null; -2: no fixed arity; -3: null (None)
+  int arity;  // >= 0: fixed arity, that length; -1: non-null; -2: no fixed arity; -3: null (None);
+              // <= -16: a layout test, see layout_mask
 };
 // Does a tuple of type `t` have a static arity (every CreationSet it was
 // cloned from has one)? Decides the header's fixed-arity bit at
 // construction (_CG_tuple_set_fixed), so it matches what FA dispatched on.
 bool cg_tuple_type_fixed_arity(Sym *t);
+// ifa/102: the header kinds of the layout plan, as a mask, and its
+// encoding in ArityDispatchTest::arity.
+enum { LAYOUT_FIXED_TUPLE = 1, LAYOUT_DYNAMIC_TUPLE = 2, LAYOUT_LIST = 4 };
+inline int layout_test(int mask) { return -16 - mask; }
+inline int layout_mask(int arity) { return arity <= -16 ? -16 - arity : 0; }
 struct ArityDispatchCase {
   Fun *fun;
   Vec<ArityDispatchTest> tests;
@@ -265,6 +317,13 @@ void codegen_fail(PNode *n, cchar *fmt, ...) __attribute__((noreturn, format(pri
 
 // Same for Var-level errors (variable's source line if available).
 void codegen_fail(Var *v, cchar *fmt, ...) __attribute__((noreturn, format(printf, 2, 3)));
+// ifa/102: a send codegen cannot resolve to code -- no candidate, or
+// candidates it has no run-time way to tell apart. It used to become a
+// run-time stub (`matching function not found`, an LLVM trap) and the
+// compile succeeded, so a condition the compiler had detected became a
+// crash. It is refused, in every mode; PYC_DISPATCH_STUB=1 restores the
+// stub, for debugging only. Returns only in that case.
+void codegen_unresolved_send(PNode *pn, Vec<Fun *> *candidates, cchar *why);
 
 // -------------------------------------------------------------
 // Primitive emission contract (phase 2.3 stub)

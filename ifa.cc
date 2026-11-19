@@ -67,6 +67,7 @@ int ifa_analyze(cchar *fn) {
   if (mark_live_code(fa) < 0) return -1;
   if (get_int_config("alog.test.fa") > 0) log_test_fa(fa);
   frequency_estimation(fa);
+  sum_audit_check("after-clone");  // ifa/120
   ifa_dbg_bodies("after-clone");
   return 0;
 }
@@ -117,6 +118,32 @@ void ifa_dbg_bodies(cchar *tag) {
       if (!dup) sigs.add(k);
     }
     fprintf(stderr, "SUMDUP %s sum_syms=%d distinct_unions=%d\n", tag, nsum, sigs.n);
+    // ifa/120: the union Syms IN USE -- the type of a live Fun's Var, or a
+    // list element's type -- against the distinct unions they stand for,
+    // keyed on component IDS (names are not unique). sum_syms above counts
+    // every Sym ever minted, including duplicates interning discarded.
+    Vec<Sym *> used;
+    for (Fun *f : pdb->fa->funs) if (f && f->live)
+      for (Var *v : f->fa_all_Vars) if (v && v->type) {
+        Sym *t = v->type;
+        if (t->type_kind == Type_SUM) used.set_add(t);
+        if (t->element && t->element->type && t->element->type->type_kind == Type_SUM) used.set_add(t->element->type);
+      }
+    used.set_to_vec();
+    Vec<cchar *> idsigs;
+    for (Sym *t : used) {
+      Vec<int> ids;
+      for (Sym *m : t->has) ids.add(m ? m->id : -1);
+      if (ids.n > 1) qsort(ids.v, ids.n, sizeof(int), [](const void *a, const void *b) {
+        return *(const int *)a - *(const int *)b;
+      });
+      std::string key = t->creators.n ? "cs:" : "";
+      for (int id : ids) key += std::to_string(id) + ",";
+      cchar *k = if1_cannonicalize_string(if1, key.c_str(), key.c_str() + key.size());
+      idsigs.set_add((char *)k);
+    }
+    idsigs.set_to_vec();
+    fprintf(stderr, "SUMDUP %s used_sum_syms=%d distinct_by_id=%d\n", tag, used.n, idsigs.n);
   }
   Vec<Fun *> funs;
   for (Fun *f : pdb->fa->funs) if (f) funs.add(f);
@@ -231,6 +258,7 @@ int ifa_optimize() {
 void ifa_cg(cchar *fn) {
   ifa_dbg_bodies("before-cg");
   c_codegen_write_c(pdb->fa, if1->top->fun, fn);
+  sum_audit_check("after-cg");  // ifa/120
 }
 
 void ifa_compile(cchar *fn) { c_codegen_compile(fn); }

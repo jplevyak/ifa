@@ -2,8 +2,8 @@
 
 (summary
   rc:              -1
-  entry-sets:      4
-  creation-sets:   19
+  entry-sets:      3
+  creation-sets:   17
   global-avars:    0
   funs:            3
   basic-types:     0
@@ -12,7 +12,6 @@
 (entry-sets
   @__main__ args=1 rets=1 edges=4 creates=1
   %relay args=2 rets=1 edges=4 creates=0
-  %sink args=2 rets=1 edges=4 creates=0
   %sink args=2 rets=1 edges=4 creates=0
 )
 

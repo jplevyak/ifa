@@ -36,7 +36,7 @@ one is a lesson this directory paid for.
    off.**
 4. **Types are already converged when the split stages run.** "When" is
    not the defect. The cascade-priority gate is (it starves every lower
-   stage). ([157](157-FA-all-demand-must-be-evaluated-at-quiescence.md))
+   stage). ([157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md))
 5. **The confluence is a CONTOUR, and the demand is observed where the
    union is USED**, usually far from the merge. Backtrack it. Do not act
    at the symptom. (AGENTS.md; closed/152)
@@ -47,11 +47,12 @@ one is a lesson this directory paid for.
 7. **Never identity by provenance or by name.** Types and CS
    partitioning are identity. Arity and other representation properties
    are legitimate (behind `IFACallbacks`). Allocation site, call site and
-   depth are handles at most. ([130](130-FA-identity-keyed-on-sym-name.md),
-   [132](132-arity-is-representation-not-provenance.md))
+   depth are handles at most. ([130](closed/130-FA-identity-keyed-on-sym-name.md),
+   [132](closed/132-arity-is-representation-not-provenance.md))
 8. **Measure on the corpus, same binary, env toggled.** The suite is
-   blind to most of this area, and a 1–2 program delta between two
-   builds is noise. ([147](147-analysis-result-depends-on-the-binary-not-the-inputs.md))
+   blind to most of this area. Two builds of one tree that differ only in
+   dead code now give identical sweeps, but a one-binary A/B is still the
+   cleanest attribution. ([147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md))
 9. **Check for a missing builtin before blaming FA.** `list.copy`,
    `dict.copy` and `str.rstrip` were each the first error of a corpus
    program whose failure was being read as a splitting problem.
@@ -64,44 +65,36 @@ one is a lesson this directory paid for.
 
 | issue | what |
 | --- | --- |
-| [129](129-plan-demand-driven-creation-set-splitting.md) | **the plan**: start-merged CreationSets, demand-driven separation, a ledger. What landed, what is open (the shared-writer decline, the one-creation-point family), what is settled. |
-| [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (MARK_SETTER is LIVE, stage 5's per-CS fan), and a verdict for every off-by-default splitting lever. |
-| [157](157-FA-all-demand-must-be-evaluated-at-quiescence.md) | **when demand is asked**: the gate is a cascade priority, not quiescence. Give each stage route 4's shape; route ES-side demands to an actuator; terminate on a fixed point. |
+| [129](129-plan-demand-driven-creation-set-splitting.md) | **the plan**: start-merged CreationSets, demand-driven separation, a ledger. Landed; open only on the one-creation-point family (no current corpus case); the shared-writer decline moved to 178. What is settled. |
+| [146](146-remove-all-arbitrary-splitting.md) | **the audit**: what was removed, what is still in the tree (no default-path violation is known as of 2026-10-13), and a verdict for every off-by-default splitting lever. Every DELETE and MEASURE lever was deleted 2026-10-15, then SLOTARITY, TYPEMOVE and RETDEMAND; the inventory is empty. |
 | [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) | decisions taken on transient types (pass-0 unions, momentarily empty contours) are never revisited. Re-derive them at convergence. |
-| [156](156-FA-split-int-from-float-coerce-last.md) | numeric: coercion's failure-to-be-exact is the demand. Backtrack to the pure/mixed boundary and split. Coerce last, permissive-only. |
 | [134](134-remove-the-frontend-forced-split-opt-in.md) | constants: 9 `__pyc_clone_constants__` annotations remain, each with a named replacement. |
-| [132](132-arity-is-representation-not-provenance.md) | arity in CS identity (landed); open: one slot holding two same-sym CSs of different arity. |
+| [190](190-CODEGEN-run-time-dispatch-census.md) | **zero run-time dispatch**: census of the corpus's dynamic calls, 272 → 95. Nullable receivers are null tests (177). Of the 95: 71 class hierarchies (legitimate), 4 clones of one class (each a merge no contour split can separate), 7 exception printer, 13 builtin shapes; none unrelated. |
 
 ### FA: typing and precision
 
 | issue | what |
 | --- | --- |
+| [191](191-FA-an-always-overwritten-initial-value-stays-in-the-field-type.md) | partial: a `None` never read before its overwrite no longer stays in the field's type (direction 2, `overwrite.cc`, 2026-10-17; fixed 191's rows 2-4 and three issues/048 tests). Open: `[None] * n` with scalar elements (row 5). |
 | [072](072-FA-empty-container-notype-current-mechanism-and-plan.md) | a never-written container's bottom element reaching live code. Derive "zero-trip" and "raises" from it. |
-| [178](178-FA-route4-declines-records-built-through-one-constructor.md) | route 4 cannot separate two creation points of a class built through one constructor; the merged member then contaminates both lists. |
-| [177](177-FA-narrowing-does-not-reach-a-module-global.md) | an `isinstance` / `is None` guard does not narrow a module-level variable: each read is a fresh load of the cell. |
+| [178](178-FA-route4-declines-records-built-through-one-constructor.md) | route 4 cannot separate two creation points of a class built through one constructor; also the general writer split (moved from 129). No known program needs either (2026-10-15). |
 | [025](025-FA-intra-function-union-narrowing.md) | branch correlation over a class union: now refused. Tail duplication, or a permissive runtime check. |
 | [050](050-FA-general-constant-propagation-unreachable-code.md) | a global slot's value is not call-graph precise. Stages 2-3 (mod-set, per-ES summary). |
 | [119](119-sccp-as-an-outer-fixed-point-over-fa.md) | SCCP: explicit executability, dead edges as a between-pass decision, fact providers. |
 | [039](039-FA-uninitialized-local-reads-silent.md) | unbound locals: analysis done, `--safe` fill done. Open: the runtime check, DEFINITELY-unbound on by default. |
-| [124](124-FA-refuse-imprecise-inference.md) | `--refuse-imprecise`: a nil-only-formal false positive. `go` compiles now (`str.rstrip` landed); re-measure it. |
+| [124](124-FA-refuse-imprecise-inference.md) | `--refuse-imprecise`: its false positive was a C naming gap (a list/tuple type clone named `_CG_any`), fixed 2026-10-17. `go` has 6 sites left to classify. |
 | [165](165-none-reaching-an-operation-is-silently-accepted.md) | a `None` that does arrive at an operation reads as zero. Permissive runtime check, strict refusal. |
-| [147](147-analysis-result-depends-on-the-binary-not-the-inputs.md) | determinism: the result depends on the binary layout. Canonicalise every order that reaches a decision. |
 | [185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md) | performance: sunfish compiles in 537 s. A tuple receiver merged across every arity keeps all 64 steps of the unrolled tuple methods live for ~13 passes; capping the unroll at 8 gives 48 s. |
 | [186](186-FA-pass-one-confluence-through-shared-builtins.md) | performance: othello3 never finishes pass 1. Shared builtin contours (`__list_iter__.__next__`, `len`, `__eq__`) carry a ~2,039-CS whole-program union, rebuilt one CS at a time at tens of thousands of AVars. |
-| [111](111-FA-selective-invalidation-per-pass.md) | performance: pass cost tracks accumulated contours (selective invalidation, blocked on setter classing; or rebuild from decisions). Re-measure first. |
 
 ### Codegen, dispatch, representation
 
 | issue | what |
 | --- | --- |
-| [179](179-LLVM-quameon-computes-nan.md) | LLVM: quameon runs but computes `nan` (C matches CPython); latent, independent of 132. |
 | [102](102-corpus-programs-compile-then-abort-at-runtime.md) | an unresolved call becomes a silent runtime stub. Make it an FA violation. Also the untyped-value work list. |
-| [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | the single-candidate fast path casts past union members that lack the method. |
+| [079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) | cleanup: the single-candidate fast path casts with no blind-cast record and no no-match guard. The crash it was filed for is refused by FA since closed/158; the correlated-branch case is 025. |
 | [118](118-union-field-representation-and-polymorphic-field-offset.md) | `{bool, None}`: a tri-state sentinel representation (bool has spare codes; int64 does not). |
-| [121](121-CGEN-dead-clones-emitted.md) | LLVM still emits dead clones; call-site narrowing assumes candidate equivalence it never checks. |
 | [093](093-CGEN-int-float-union-move-not-coerced.md) | LLVM: an int MOVE into a float64 slot stores raw bits (missing `sitofp`). |
-| [120](120-union-types-are-never-interned.md) | union Syms are never interned; an ownership audit is needed first. |
-| [130](130-FA-identity-keyed-on-sym-name.md) | `var_map` and the classtag are keyed on names. |
 | [030](030-DISPATCH-polymorphic-dispatch-fat-pointers.md) | performance: high fan-out dispatch has no table. |
 | [054](054-CGEN-remove-unconditional-tuple-list-header.md) | performance: every tuple carries a 16-byte list header. |
 
@@ -133,6 +126,7 @@ one is a lesson this directory paid for.
 | [125](closed/125-sunfish-degenerate-dict-setitem-clones.md) | symptom gone | 102 |
 | [126](closed/126-assess-residual-method-slot-reads.md), [127](closed/127-audit-zero-means-unknown-and-a-real-answer.md) | assessments complete | — |
 | [128](closed/128-cs-identity-over-discriminates-vs-element-type.md) | `PYC_CSDCPA1=2` is the default | 129 |
+| [130](closed/130-FA-identity-keyed-on-sym-name.md) | C3 MRO resolution, class tags per family, name-pointer member lookup | 146 (`PYC_CSELEM`) |
 | [131](closed/131-demand-driven-constant-splitting.md) | premise falsified | 134 |
 | [133](closed/133-split-a-container-on-its-element-type.md) | separator landed | 129 |
 | [135](closed/135-empty-sibling-contour-wins-the-clone-merge.md) | fixed 2026-09-06 | — |
@@ -146,7 +140,18 @@ one is a lesson this directory paid for.
 | [149](closed/149-the-largest-diagnostic-class-reports-nothing.md) | diagnostic fixes landed | 102 |
 | [150](closed/150-is-not-none-never-folds.md) | fixed | 134 |
 | [151](closed/151-split-an-entryset-on-a-constant-argument-on-demand.md) | CONST_DEMAND landed | 134 |
+| [156](closed/156-FA-split-int-from-float-coerce-last.md) | split side complete: every remaining mix is a genuine flow or temporal merge | 189 |
+| [157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md) | the gate renamed (cascade, not quiescence); RETDEMAND and TYPEMOVE inert, deleted; the stage census found no starved demand | 134 (PER_CS_RECEIVER) |
+| [188](closed/188-FA-field-and-method-of-one-name-on-two-classes.md) | a number and an object in one value had no BOXING check (silent miscompile); now refused | — |
+| [189](closed/189-FA-coercion-warns-per-expression-not-per-origin.md) | one coercion warning per origin, naming its source lines and reach | — |
 | [171](closed/171-FA-numeric-union-sustains-itself-through-a-shared-contour.md) | merged | 156 |
+| [177](closed/177-FA-narrowing-does-not-reach-a-module-global.md) | fixed: a guard's load is reused in its true branch | — |
+| [147](closed/147-analysis-result-depends-on-the-binary-not-the-inputs.md) | two builds differing only in dead code give identical sweeps (all 77 rows) and byte-identical C; repeat compiles are identical under ASLR | — (oracle recorded in the issue) |
+| [111](closed/111-FA-selective-invalidation-per-pass.md) | premise false: per-pass work falls and stays flat; the "grows 48x" figures were a running-total counter (PYC_DBG_WORK, fixed). FA time is early-pass call matching | 185, 186 (matching cost), 170 (type-duplicate EntrySets) |
+| [132](closed/132-arity-is-representation-not-provenance.md) | arity in CS identity landed; a two-arity slot is sound (`PYC_SLOTARITY` deleted); quameon runs. Closed with quameon as the witness: a small program splits upstream on `{None}` before the demand is reached | 178 (synthetic test) |
+| [179](closed/179-LLVM-quameon-computes-nan.md) | fixed by 180 (`**` had no LLVM emitter) | — |
+| [120](closed/120-union-types-are-never-interned.md) | value unions interned; the audit found no post-handout write but codegen's C name, and the segfault no longer reproduces | — |
+| [121](closed/121-CGEN-dead-clones-emitted.md) | dead clones fixed before codegen; every narrowing to one clone is proven or calls the site's clone; the argument-chosen residual is warned (190) | 190 |
 
 Each archived file starts with a dated closure note. The body below it
 is the historical record and is not maintained.

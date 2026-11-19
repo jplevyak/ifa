@@ -393,6 +393,30 @@ Lnotdone:;
     fail("inconsistent precedence graph in C3 linearization");
 }
 
+// ifa/130 A1: the same linearization, computed without caching it into
+// `dispatch_types`, for a caller that needs a class's MRO before the type
+// hierarchy is final (the pyc frontend building a class's prototype: a
+// class's `specializes` can still grow after that, and the cache would
+// freeze it). A base whose cache is already built is read from it.
+void c3_mro(Sym *c, Vec<Sym *> &out) {
+  out.clear();
+  if (!c->specializes.n) return;
+  Vec<Sym *> rdone;
+  Vec<Vec<Sym *> *> todo;
+  rdone.add(c);
+  for (Sym *x : c->specializes) {
+    Vec<Sym *> *xm = new Vec<Sym *>;
+    if (x->dispatch_types_built)
+      xm->copy(x->dispatch_types);
+    else
+      c3_mro(x, *xm);
+    todo.add(xm);
+  }
+  todo.add(new Vec<Sym *>(c->specializes));
+  merge(rdone, todo);
+  out.move(rdone);
+}
+
 static void c3_linearization(Sym *c) {
   if (c->dispatch_types_built) return;
   c->dispatch_types_built = 1;

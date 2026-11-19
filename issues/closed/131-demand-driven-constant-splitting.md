@@ -1,6 +1,6 @@
 # 131 — Demand-driven constant splitting (CreationSet side)
 
-> **CLOSED 2026-09-28 (premise falsified).** Its own step 1 measured the cap-strip signal at 0/0/0, and the `[]` vs `[2,3]` case was arity ([132](../132-arity-is-representation-not-provenance.md), landed). The remaining CreationSet-field constant (`range(0)` vs `range(2)`) is tracked in [134](../134-remove-the-frontend-forced-split-opt-in.md).
+> **CLOSED 2026-09-28 (premise falsified).** Its own step 1 measured the cap-strip signal at 0/0/0, and the `[]` vs `[2,3]` case was arity ([132](132-arity-is-representation-not-provenance.md), landed). The remaining CreationSet-field constant (`range(0)` vs `range(2)`) is tracked in [134](../134-remove-the-frontend-forced-split-opt-in.md).
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
@@ -96,7 +96,7 @@ on the merged path**, not evidence that a split was owed.
 
 Which makes the next step root-causing the blind cast, not building a
 splitter — and only then asking whether any split is owed at all. **Done:
-[132](../132-arity-is-representation-not-provenance.md).** The blind cast is
+[132](132-arity-is-representation-not-provenance.md).** The blind cast is
 ifa/055's correct handling of `sizeof` on a zero-field record; the defect
 is upstream, where `make_kind` lets two creation points of different
 arity share one CreationSet and the CS silently keeps the larger arity.

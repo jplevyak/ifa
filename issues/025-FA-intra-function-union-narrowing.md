@@ -69,3 +69,20 @@ domain grafted onto a non-relational analysis.
 
 The fixture flips KNOWN → PASS (no warnings), and the two working
 fixtures above keep passing.
+
+## From 079 (2026-10-16)
+
+[079](079-DISPATCH-single-candidate-dispatch-unchecked-cast.md) was shrunk to
+its codegen safeguard, and its permissive remedy moved here. Once a correlated
+arm can arrive with a union member that has no candidate for a method,
+permissive mode should emit a tag test for the candidate's class with a final
+`else` raising `AttributeError`, CPython's behaviour, and `--strict` should
+refuse. Its probe, refused today in every mode although CPython prints `done`:
+
+```python
+c = len(sys.argv) > 1
+x = A() if c else B()      # only A defines m
+if c:
+    print(x.m())
+print("done")
+```

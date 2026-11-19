@@ -130,8 +130,8 @@ AVar live transitively marks its *defining* PNode live and every AVar
 it reads from. Constants don't propagate (they're free; their defs
 don't matter).
 
-`is_fake` Syms (e.g., pyc's `sym_declare`) are skipped — they're
-declaration markers, not real runtime values.
+`is_fake` Syms (frontend placeholders such as pyc's selector symbols)
+are skipped — they're markers, not real runtime values.
 
 ### 3.5 `mark_live_pnodes(fa)` (`dead.cc:109`)
 
@@ -424,8 +424,8 @@ which doesn't exist as a field).
 ## 8. Gotchas
 
 ### 8.1 `is_fake` Syms skipped from liveness
-`mark_live_avar` returns early on `av->var->sym->is_fake`. pyc uses
-this for `sym_declare` (the `__pyc_declare__` marker). If you add a
+`mark_live_avar` returns early on `av->var->sym->is_fake`. pyc's
+frontend sets it on its placeholder sends' selector symbols. If you add a
 new pseudo-symbol that shouldn't propagate liveness, set `is_fake`.
 If you forget, the marker will pull in random things.
 

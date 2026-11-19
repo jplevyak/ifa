@@ -1,7 +1,30 @@
 # 179 — LLVM backend: quameon compiles and runs but computes `nan`
 
-**Status:** open. Filed 2026-09-30, found while fixing
+**Status: CLOSED 2026-10-12. Fixed by `c479bd6d`
+([180](180-LLVM-pow-operator-emitted-nothing.md)): `**` had no LLVM emitter
+and was silently dropped.** Filed 2026-09-30, found while fixing
 [132](132-arity-is-representation-not-provenance.md).
+
+## Closure (2026-10-12)
+
+Bisected by building the two commits in a worktree and running
+`pyc -b quameon.py` on each:
+
+| compiler | `after warm-up, average energy` | `-.5*potential energy` | `acceptance ratio` |
+| --- | --- | --- | --- |
+| `c479bd6d^` | `nan nan` | `0.0094...` | `1.0` |
+| `c479bd6d` | `-2.1328... 0.2673...` | `1.6957...` | `0.5740...` |
+
+The second row is CPython's answer. quameon's orbital normalisation is all
+`**`: `2**(3 / 4.0) * math.pi**(-3 / 4.0) * alpha**(3 / 4.0)` and
+`r**-1` in `orbital/atomic_sto_primitive.py`. With no code emitted for
+the operator, every wave-function value was garbage, the Metropolis step
+accepted every move (`acceptance ratio = 1.0`), and the energies were
+`nan`. At HEAD (`9e3fb17f`), `-b` output matches the C backend and CPython
+on all 90 non-`TIME` lines. `tests/pow_operator.py` (from 180) guards the
+emitter on both backends.
+
+The original report is kept below.
 
 ## Symptom
 

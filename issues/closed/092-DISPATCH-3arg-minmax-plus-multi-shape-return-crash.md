@@ -1,7 +1,7 @@
 # 092 — 3-arg `max`/`min` inside a function with more than one differently-shaped `return` crashes the caller: "matching function not found"
 
 **Status:** fixed 2026-08-10 (see "Fix" section at the end) — found 2026-08-08 while porting
-[issues/041](../../../issues/041-stdlib-shim-stubs-silently-wrong.md)'s
+[issues/041](../../../issues/closed/041-stdlib-shim-stubs-silently-wrong.md)'s
 `colorsys` shim — CPython's own `rgb_to_hls`/`rgb_to_hsv` use
 `max(r, g, b)`/`min(r, g, b)` inside a function with two `return`
 statements (one for the achromatic/gray case, one for the general

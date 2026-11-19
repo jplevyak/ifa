@@ -1,3 +1,6 @@
+#include <time.h>
+#include <map>
+#include <string>
 // SPDX-License-Identifier: BSD-3-Clause
 //
 // See `codegen_common.h` for the header-level contract.
@@ -100,6 +103,19 @@ cchar *num_string(Sym *s) {
 // Closure / dispatch helpers
 // -------------------------------------------------------------
 
+// See codegen_common.h.
+Sym *cg_tag_family(Sym *t) {
+  if (t && t->creators.n && t->creators[0] && t->creators[0]->sym) return t->creators[0]->sym;
+  return t;
+}
+
+cchar *cg_tag_name(Sym *t) {
+  Sym *f = cg_tag_family(t);
+  char buf[256];
+  snprintf(buf, sizeof(buf), "_CG_type_%s_%d", t && t->name ? t->name : "anon", f ? f->id : 0);
+  return dupstr(buf);
+}
+
 bool cg_has_classtag(Sym *s) {
   if (!(s && s->type_kind == Type_RECORD && !s->is_system_type && s->name && s->has.n && !s->is_vector &&
         !sym_tuple->specializers.set_in(s) && !(s->creators.n && s->creators[0]->sym == sym_list)))
@@ -109,6 +125,48 @@ bool cg_has_classtag(Sym *s) {
   // while class records always carry named fields/methods.
   for (Sym *h : s->has) if (h && h->name) return true;
   return false;
+}
+
+// See codegen_common.h.
+int cg_isinstance_tag_targets(PNode *pn, Sym *cls_type, Vec<Sym *> &concrete) {
+  // A builtin class reaches here as its meta Sym (`list` the value); the
+  // type whose implementors are the instances is its meta_type.
+  if (cls_type->is_meta_type && cls_type->meta_type) cls_type = cls_type->meta_type;
+  for (Sym *impl : cls_type->implementors)
+    if (impl && cg_has_classtag(impl)) concrete.add(impl);
+  Sym *t = pn->rvals.n >= 3 ? pn->rvals[2]->type : nullptr;
+  Vec<Sym *> members;
+  if (t && t->type_kind == Type_SUM) {
+    for (Sym *m : t->has) if (m) members.add(m);
+  } else if (t)
+    members.add(t);
+  if (!members.n) return -1;
+  // A member is an instance when it, or the class it was cloned from, is
+  // an implementor -- clones are not in the implementor set themselves.
+  auto is_instance = [&](Sym *m) {
+    return cls_type->implementors.in(m) || cls_type->implementors.in(cg_tag_family(m));
+  };
+  int yes = 0, untagged_yes = 0;
+  Sym *culprit = nullptr;
+  for (Sym *m : members)
+    if (is_instance(m)) {
+      ++yes;
+      if (!cg_has_classtag(m)) { ++untagged_yes; culprit = m; }
+    }
+  if (yes == members.n) return 1;
+  if (!yes) return 0;
+  if (untagged_yes) {
+    std::string un;
+    for (Sym *m : members) {
+      if (!un.empty()) un += ", ";
+      un += m->name ? m->name : "?";
+    }
+    codegen_fail(pn,
+                 "isinstance(x, %s) cannot be decided at run time: x is {%s}, and '%s' carries no class tag to test. "
+                 "pyc refuses it rather than fold the test to False (issues/173)",
+                 cls_type->name ? cls_type->name : "?", un.c_str(), culprit->name ? culprit->name : "?");
+  }
+  return -1;
 }
 
 // See codegen_common.h.
@@ -182,6 +240,7 @@ int cg_field_live(Sym *s, int i) {
   return 1;
 }
 
+static bool clones_same_class(Fun *a, Fun *b);  // ifa/121, below
 Map<Fun *, Vec<PolymorphicSlot> *> cg_new_to_val_map;
 Vec<cchar *> poly_names;  // ifa/123: filled by cg_build_new_to_val_map, read by cg_report_slot_use
 extern Vec<Sym *> cg_slot_use_cls;
@@ -445,6 +504,21 @@ void cg_build_new_to_val_map(FA *fa) {
             }
           if (existing >= 0) {
             if ((*slots)[existing].fun_val == fun_val) continue;  // exact dup
+            // ifa/121: two clones compete for one object's slot; the loser
+            // is never called through it. Sound only if they are
+            // interchangeable (or one overrides the other).
+            if (getenv("IFA_DBG_CLONEEQ")) {
+              Fun *prev = (*slots)[existing].fun_val;
+              bool same_decl = prev && prev->sym == fun_val->sym;
+              if (getenv("IFA_DBG_CLONEEQ")[0] == '2' && same_decl && !clones_same_class(prev, fun_val)) {
+                extern void clone_eq_dump(Fun *, Fun *);
+                clone_eq_dump(prev, fun_val);
+              }
+              fprintf(stderr, "CLONEEQ slot-compete %s ctor=%s slot=%d %s\n", method_name,
+                      fun_new->sym && fun_new->sym->name ? fun_new->sym->name : "?", slot,
+                      !same_decl ? "different-method(override)" : clones_same_class(prev, fun_val) ? "interchangeable"
+                                                                                                   : "NOT-INTERCHANGEABLE");
+            }
             // An OVERRIDE beats what it overrides, whatever order the two
             // register in. Both candidates passed the ancestor filter above,
             // so each is declared on `cs->sym` or an ancestor of it; Python
@@ -492,6 +566,239 @@ void cg_build_new_to_val_map(FA *fa) {
     }
   }
 
+}
+
+// ifa/121: THE DISPATCH-ARM PLAN. A class-tag arm used to call through the
+// receiver's method slot, and cg_build_new_to_val_map fills each
+// (constructor, slot) with ONE clone. Where two clones of a method compete
+// for that slot, the loser is never called -- even at a site whose FA edge
+// chose it. So each arm is decided from what the SITE chose:
+//
+//   ARM_SLOT     every clone installed in that class's slot is
+//                interchangeable with the site's clone: the slot call is
+//                right (and ifa/186 can make the whole chain one call);
+//   ARM_DIRECT   the site has one clone for the class and the slot may hold
+//                another: call the site's clone directly after the tag test;
+//   ARM_AMBIGUOUS the site itself has two non-interchangeable clones for one
+//                class, which no tag test separates.
+//
+// The objects reaching an arm are those whose tag is that class's
+// (cg_tag_name, shared by all clones of a class), so the installed
+// clones are read from every CreationSet whose concrete type carries it.
+struct ArmPlanRec {
+  int plan;
+  Fun *fun;  // ARM_DIRECT: the clone the site chose for the class
+};
+static Map<PNode *, Map<Sym *, ArmPlanRec *> *> dispatch_arm_plans;  // keyed by tag family
+static int arm_plan_counts[3];
+
+// The clones the constructors of `cs` install in its slot for `method_name`.
+static void installed_slot_clones(CreationSet *cs, cchar *method_name, Vec<Fun *> &out) {
+  Sym *ct = cs->type ? cs->type : cs->sym;
+  int slot = -1;
+  for (int k = 0; k < ct->has.n; k++)
+    if (ct->has[k] && ct->has[k]->name == method_name && cg_field_live(ct, k)) { slot = k; break; }
+  static int dbg3 = -1;
+  if (dbg3 < 0) { cchar *e = getenv("IFA_DBG_DISPATCHARMS"); dbg3 = e && e[0] == '3'; }
+  if (dbg3) {
+    fprintf(stderr, "  inst cs=%d ct=%s#%d slot=%d defs=%d:", cs->id, ct->name ? ct->name : "?", ct->id, slot, cs->defs.n);
+    for (AVar *d : cs->defs) if (d) {
+      Fun *fn = d->contour_is_entry_set ? ((EntrySet *)d->contour)->fun : nullptr;
+      Vec<PolymorphicSlot> *ps = fn ? cg_new_to_val_map.get(fn) : nullptr;
+      fprintf(stderr, " [es=%d fun=%d live=%d map=%d", d->contour_is_entry_set, fn ? fn->id : -1, fn ? fn->live : -1, ps ? ps->n : -1);
+      if (ps) for (PolymorphicSlot &q : *ps) fprintf(stderr, " s%d", q.slot);
+      fprintf(stderr, "]");
+    }
+    fprintf(stderr, "\n");
+  }
+  if (slot < 0) return;
+  for (AVar *def_av : cs->defs) {
+    if (!def_av || !def_av->contour_is_entry_set) continue;
+    Fun *fun_new = ((EntrySet *)def_av->contour)->fun;
+    Vec<PolymorphicSlot> *slots = fun_new ? cg_new_to_val_map.get(fun_new) : nullptr;
+    if (slots)
+      for (PolymorphicSlot &ps : *slots)
+        if (ps.slot == slot && ps.fun_val) out.set_add(ps.fun_val);
+  }
+}
+
+static bool all_interchangeable(Vec<Fun *> &v, Fun *with) {
+  for (Fun *g : v)
+    if (g && !clones_interchangeable(with, g)) return false;
+  return true;
+}
+
+void cg_build_dispatch_arm_plans(FA *fa) {
+  dispatch_arm_plans.clear();
+  arm_plan_counts[0] = arm_plan_counts[1] = arm_plan_counts[2] = 0;
+  const bool dbg = getenv("IFA_DBG_DISPATCHARMS") != nullptr;
+  for (Fun *f : fa->funs) {
+    if (!f || !f->live) continue;
+    for (int ci = 0; ci < f->calls.n; ci++) {
+      PNode *pn = f->calls[ci].key;
+      Vec<Fun *> *fns = f->calls[ci].value;
+      if (!pn || !fns || fns->n < 2) continue;
+      Vec<cchar *> directly_owned;
+      poly_dispatch_directly_owned(fns, directly_owned);
+      // Per receiver CreationSet, the site's candidates for it -- read from
+      // each candidate's EntrySets (its receiver formal's CreationSets), so a
+      // class with two clones split by creation point is resolved per object.
+      Map<CreationSet *, Vec<Fun *> *> by_cs;
+      Map<Sym *, Vec<Sym *> *> types_of;  // tag family -> its concrete types
+      Vec<Sym *> names;
+      for (Fun *c : *fns) {
+        if (!c || !c->sym || !c->sym->name) continue;
+        Vec<Sym *> rts;
+        Vec<int> sl, ri;
+        poly_dispatch_classtag_targets(c, pn, directly_owned, rts, sl, ri);
+        for (int k = 0; k < rts.n; k++) {
+          Sym *rt = rts[k];
+          if (!rt || !rt->name || rt->is_system_type || !cg_has_classtag(rt)) continue;
+          Sym *fam = cg_tag_family(rt);
+          Vec<Sym *> *ts = types_of.get(fam);
+          if (!ts) { ts = new Vec<Sym *>; types_of.put(fam, ts); names.add(fam); }
+          ts->set_add(rt);
+          MPosition mp;
+          mp.push(ri[k] + 1);
+          MPosition *cp = cannonicalize_mposition(mp);
+          auto note = [&](AVar *a) {
+            if (!a || !a->out) return;
+            for (CreationSet *cs : a->out->sorted) {
+              if (!cs || (cs->type ? cs->type : cs->sym) != rt) continue;
+              Vec<Fun *> *v = by_cs.get(cs);
+              if (!v) { v = new Vec<Fun *>; by_cs.put(cs, v); }
+              v->set_add(c);
+            }
+          };
+          // What THIS site passes: the candidate's in-edges from this
+          // caller's contours at this call (codegen's PNode is the clone's
+          // copy; it shares the original's `code`), filtered per edge. An
+          // EntrySet's own receiver set is the union over all its callers,
+          // so it is only the fallback when no edge is matched.
+          bool matched = false;
+          for (EntrySet *es : c->ess) {
+            if (!es) continue;
+            for (AEdge *e : es->edges) {
+              if (!e || !e->from || !e->pnode || e->pnode->code != pn->code || !f->ess.in(e->from)) continue;
+              AVar *a = e->filtered_args.get(cp);
+              if (!a) a = e->args.get(cp);
+              if (a) { matched = true; note(a); }
+            }
+          }
+          if (!matched)
+            for (EntrySet *es : c->ess)
+              if (es) note(es->args.get(cp));
+        }
+      }
+      if (!names.n) continue;
+      Map<Sym *, ArmPlanRec *> *plans = new Map<Sym *, ArmPlanRec *>;
+      for (Sym *fam : names) {
+        cchar *nm = fam->name ? fam->name : "?";
+        Vec<Sym *> *ts = types_of.get(fam);
+        ts->set_to_vec();
+        bool cs_ambiguous = false, one_for_tag = true, slot_ok = true;
+        Fun *tag_fun = nullptr;
+        int reached = 0;
+        for (Sym *t : *ts)
+          for (CreationSet *cs : t->creators) {
+            if (!cs) continue;
+            Vec<Fun *> *cands = by_cs.get(cs);
+            if (!cands || !cands->n) continue;  // never reaches this site
+            reached++;
+            cands->set_to_vec();
+            // One object, two non-interchangeable clones: chosen by something
+            // other than the receiver, which neither a tag nor a slot carries.
+            if (!all_interchangeable(*cands, cands->v[0])) {
+              cs_ambiguous = true;
+              if (dbg && getenv("IFA_DBG_DISPATCHARMS")[0] == '2') {
+                fprintf(stderr, "  ambiguous cs=%d ct=%d defs=%d:", cs->id, t->id, cs->defs.n);
+                for (Fun *g : *cands) fprintf(stderr, " fun%d", g->id);
+                fprintf(stderr, "\n");
+              }
+            }
+            if (!tag_fun) tag_fun = cands->v[0];
+            else if (!clones_interchangeable(tag_fun, cands->v[0])) one_for_tag = false;
+            Vec<Fun *> inst;
+            installed_slot_clones(cs, cands->v[0]->sym->name, inst);
+            if (!inst.n || !all_interchangeable(inst, cands->v[0])) {
+              slot_ok = false;
+              if (dbg && getenv("IFA_DBG_DISPATCHARMS")[0] == '2')
+                fprintf(stderr, "  why %s.%s cs=%d: %s (installed %d)\n", nm, cands->v[0]->sym->name, cs->id,
+                        !inst.n ? "nothing installed" : "installed clone differs", inst.n);
+            }
+          }
+        // No receiver CreationSet traced to this tag (a candidate reached by
+        // a union formal the walk above does not see): the slot is unproven,
+        // and the emitter's own candidate is the one to call.
+        if (!reached) slot_ok = false;
+        int plan = cs_ambiguous ? ARM_AMBIGUOUS : slot_ok ? ARM_SLOT : one_for_tag ? ARM_DIRECT : ARM_AMBIGUOUS;
+        ArmPlanRec *rec = new ArmPlanRec;
+        rec->plan = plan;
+        rec->fun = tag_fun;
+        plans->put(fam, rec);
+        arm_plan_counts[plan]++;
+        if (dbg && plan != ARM_SLOT)
+          fprintf(stderr, "DISPATCHARM %s %s:%d %s.%s types=%d reached=%d%s\n", plan == ARM_DIRECT ? "direct" : "AMBIGUOUS",
+                  pn->code ? pn->code->pathname() : "?", pn->code ? pn->code->line() : 0, nm,
+                  tag_fun && tag_fun->sym->name ? tag_fun->sym->name : "?", ts->n, reached,
+                  cs_ambiguous ? " (one object, two clones)" : "");
+      }
+      dispatch_arm_plans.put(pn, plans);
+    }
+  }
+  if (dbg)
+    fprintf(stderr, "DISPATCHARM arms slot=%d direct=%d ambiguous=%d\n", arm_plan_counts[0], arm_plan_counts[1],
+            arm_plan_counts[2]);
+}
+
+static ArmPlanRec *dispatch_arm_rec(PNode *pn, Sym *cls) {
+  Map<Sym *, ArmPlanRec *> *plans = pn ? dispatch_arm_plans.get(pn) : nullptr;
+  if (!plans || !cls) return nullptr;
+  return plans->get(cg_tag_family(cls));
+}
+
+int dispatch_arm_plan(PNode *pn, Sym *cls) {
+  ArmPlanRec *r = dispatch_arm_rec(pn, cls);
+  return r ? r->plan : ARM_SLOT;
+}
+
+// See codegen_common.h.
+void apply_dispatch_arm_plans(PNode *pn, Vec<Fun *> *fns, Vec<Sym *> &classes, Vec<int> &slots, Vec<Fun *> &class_funs) {
+  static int on = -1;
+  if (on < 0) { cchar *e = getenv("PYC_DISPATCH_ARM_PLANS"); on = e ? atoi(e) : 1; }  // 0: the old slot-only arms, for A/B
+  if (!on) return;
+  for (int ci = 0; ci < classes.n; ci++) {
+    if (slots[ci] == -1) continue;  // already a direct call (a closure carrier)
+    ArmPlanRec *r = dispatch_arm_rec(pn, classes[ci]);
+    if (!r || r->plan == ARM_SLOT) continue;
+    if (r->plan == ARM_AMBIGUOUS) {
+      // One receiver object reaches two clones that differ in behaviour,
+      // chosen by a non-receiver argument (softrender's Vector4.add over
+      // int- and float-field Vector4s). Both share one class tag, so no
+      // test separates them, and the slot holds the one its constructor
+      // installed. Calling it is the old behaviour, sound only if the
+      // argument's concrete type is that clone's at run time: an
+      // accommodation, so permissive mode keeps it and says so, and
+      // --strict refuses (issues/171).
+      if (!fruntime_errors)
+        codegen_unresolved_send(pn, fns,
+                                "one receiver object reaches two clones that are not interchangeable, chosen by an "
+                                "argument that neither its class tag nor its method slot carries (ifa/121)");
+      static Vec<PNode *> warned;
+      if (warned.set_add(pn))
+        fprintf(stderr,
+                "%s:%d: warning: the call to '%s' reaches two versions of it for one receiver object, chosen by an "
+                "argument's type; the object's method slot decides, which is right only if that argument has the type "
+                "its version expects. Permissive, refused under --strict (ifa/121)\n",
+                pn->code ? pn->code->pathname() : "?", pn->code ? pn->code->line() : 0,
+                r->fun && r->fun->sym && r->fun->sym->name ? r->fun->sym->name : "?");
+      continue;
+    }
+    if (r->fun) {
+      slots[ci] = -1;
+      class_funs[ci] = r->fun;
+    }
+  }
 }
 
 Sym *closure_fun_type(Var *v) {
@@ -615,9 +922,10 @@ bool identical_c_signature(Fun *a, Fun *b) {
 // golden is shared by both. The resolver is what both consult, and
 // resolvability is a fact about the analysis result rather than about who
 // prints it.
+static Sym *method_receiver_type(Fun *cand, PNode *pn);
 void report_call_resolution(FA *fa) {
   if (!getenv("PYC_DBG_CALLS")) return;
-  long direct = 0, dynamic = 0;
+  long direct = 0, dynamic = 0, niltest = 0;
   for (Fun *f : fa->pdb->funs) {
     if (!f->live) continue;
     Vec<PNode *> nodes;
@@ -631,11 +939,68 @@ void report_call_resolution(FA *fa) {
         // PYC_DBG_CALLS=2 names each direct call, to attribute a count change.
         if (atoi(getenv("PYC_DBG_CALLS")) >= 2)
           fprintf(stderr, "CALL %s -> %s\n", f->sym->name ? f->sym->name : "?", t->sym->name ? t->sym->name : "?");
-      } else
+      } else if (nil_tested_target(n, f, nullptr)) {
+        ++niltest;
+      } else {
         ++dynamic;
+        // PYC_DBG_CALLS=3 names each dynamic call and its candidates.
+        if (atoi(getenv("PYC_DBG_CALLS")) >= 3) {
+          fprintf(stderr, "DYNCALL %s:%d in %s ->", n->code->pathname(), n->code->line(),
+                  f->sym->name ? f->sym->name : "?");
+          for (Fun *c : *fns)
+            if (Sym *rt = method_receiver_type(c, n))
+              fprintf(stderr, " %s#%d(%s:%d)[%s]", c->sym->name ? c->sym->name : "?", c->id, c->sym->pathname(),
+                      c->sym->line(), rt->name ? rt->name : (rt->type_kind == Type_SUM ? "union" : "?"));
+            else
+              fprintf(stderr, " %s#%d(%s:%d)", c->sym->name ? c->sym->name : "?", c->id, c->sym->pathname(), c->sym->line());
+          // The receivers' common user-defined ancestor, if any:
+          // shared-ancestor polymorphism is hoisted, an unrelated union is
+          // a precision failure (AGENTS.md).
+          Vec<Sym *> recvs;
+          for (Fun *c : *fns)
+            if (Sym *rt = method_receiver_type(c, n)) {
+              if (rt->type_kind == Type_SUM) {
+                for (Sym *m : rt->has) if (m) recvs.set_add(m);
+              } else
+                recvs.set_add(rt);
+            }
+          Vec<Sym *> common;
+          bool first = true;
+          for (Sym *r : recvs) {
+            if (!r || r == sym_nil_type) continue;
+            // A clone's `specializes` names the ORIGINAL parents; compare
+            // originals, which a clone's creators carry.
+            if (r->creators.n && r->creators[0] && r->creators[0]->sym) r = r->creators[0]->sym;
+            Vec<Sym *> anc, work;
+            anc.set_add(r);
+            work.add(r);
+            for (int i = 0; i < work.n; i++)
+              for (Sym *p : work[i]->specializes)
+                if (p && anc.set_add(p)) work.add(p);
+            if (first) {
+              for (Sym *a : anc) if (a) common.set_add(a);
+              first = false;
+            } else {
+              Vec<Sym *> keep;
+              for (Sym *a : common) if (a && anc.set_in(a)) keep.set_add(a);
+              common.move(keep);
+            }
+          }
+          fprintf(stderr, " ancestors:");
+          for (Sym *a : common)
+            if (a && !a->is_builtin && !a->is_system_type) fprintf(stderr, " %s", a->name ? a->name : "?");
+          fprintf(stderr, "\n");
+        }
+      }
     }
   }
-  fprintf(stderr, "CALLS: direct=%ld dynamic=%ld\n", direct, dynamic);
+  // A nullable receiver decided by a null test (nil_tested_target) is not a
+  // dispatch; it is reported apart, and only when there is one, so a program
+  // without one keeps its line.
+  if (niltest)
+    fprintf(stderr, "CALLS: direct=%ld dynamic=%ld niltest=%ld\n", direct, dynamic, niltest);
+  else
+    fprintf(stderr, "CALLS: direct=%ld dynamic=%ld\n", direct, dynamic);
 }
 
 // ifa/132: identical C signatures do not make two clones interchangeable
@@ -682,16 +1047,236 @@ static bool clones_see_same_record_contents(Fun *a, Fun *b) {
   return true;
 }
 
+// The type of a method candidate's RECEIVER formal: on a method send, the
+// first formal after the selector.
+static Sym *method_receiver_type(Fun *cand, PNode *pn) {
+  if (!cand || !cand->sym || !pn || !pn->rvals.n || !pn->rvals[0] || !pn->rvals[0]->sym ||
+      !pn->rvals[0]->sym->is_symbol)
+    return nullptr;
+  MPosition p;
+  p.push(1);
+  for (int pi = 0; pi < cand->sym->has.n + 2; pi++) {
+    MPosition *cp = cannonicalize_mposition(p);
+    p.inc();
+    Var *av = cand->args.get(cp);
+    if (!av || !av->type) continue;
+    if (av->type == sym_symbol) continue;
+    return av->type;
+  }
+  return nullptr;
+}
+
+// A method send on a NULLABLE receiver -- pointer types sharing one method, or
+// None -- is not a
+// dispatch: the null test decides it, and each arm calls one known function.
+// Returns the non-None target (and the None class's method in `*nil_fn`) when
+// the candidates are exactly that pair. Shared by the C emitter and the call
+// census so the two agree.
+Fun *nil_tested_target(PNode *n, Fun *f, Fun **nil_fn) {
+  Vec<Fun *> *fns = f ? f->calls.get(n) : nullptr;
+  if (!fns || fns->n != 2) return nullptr;
+  Fun *nil = nullptr, *other = nullptr;
+  for (Fun *c : *fns) {
+    Sym *rt = method_receiver_type(c, n);
+    if (!rt) return nullptr;
+    if (rt == sym_nil_type) {
+      if (nil) return nullptr;
+      nil = c;
+    } else {
+      // A union receiver is several types sharing ONE method, which is what
+      // a single candidate with a union `self` already is. Every member must
+      // be a pointer, so that NULL means None and nothing else: a scalar
+      // shares 0 with None. And the members must be all tagged (the emitter's
+      // classtag arms, all calling this one candidate) or all untagged (its
+      // untagged-direct arm), not a mix.
+      if (other) return nullptr;
+      int tagged = 0, untagged = 0;
+      auto member = [&](Sym *m) {
+        if (!m || m == sym_nil_type || m->num_kind) return false;
+        if (cg_has_classtag(m)) ++tagged;
+        else ++untagged;
+        return true;
+      };
+      if (rt->type_kind == Type_SUM) {
+        for (Sym *m : rt->has)
+          if (!member(m)) return nullptr;
+      } else if (!member(rt))
+        return nullptr;
+      if (tagged && untagged) return nullptr;
+      other = c;
+    }
+  }
+  if (!nil || !other) return nullptr;
+  if (nil_fn) *nil_fn = nil;
+  return other;
+}
+
+// ifa/121: CLONE EQUIVALENCE, before codegen. Two clones of one source
+// function are INTERCHANGEABLE when their bodies are the same program:
+// the same nodes in the same order, the same primitives, variables of the
+// same types (numbered locally, in walk order), the same constants and
+// globals, and calls to interchangeable targets. That last clause is
+// recursive, so it is a partition refinement: start from the body with
+// callees left out, then split classes by their callees' classes until
+// nothing moves. Types are compared as Syms (union Syms are interned,
+// ifa/120); a C type string is not needed.
+//
+// IFA_DBG_CLONEEQ=1 reports the partition, and get_target_fun_core reports
+// each call site it collapses onto one clone whose candidates are NOT all
+// in one class -- the narrowing ifa/121 says assumes an equivalence it
+// never checks.
+static Map<Fun *, int> clone_class_map;
+static int clone_classes_ready = 0;
+static std::string clone_body_key(Fun *f, bool with_callees) {
+  std::string k;
+  Map<Var *, int> vnum;
+  auto var = [&](Var *v) {
+    if (!v) { k += "_;"; return; }
+    int id = vnum.get(v);
+    if (!id) { id = vnum.n + 1; vnum.put(v, id); }
+    k += "v" + std::to_string(id) + ":" + std::to_string(v->type ? v->type->id : 0) + (v->live ? "L" : "d");
+    Sym *c = v->constant ? v->constant : (v->sym && v->sym->is_constant ? v->sym : nullptr);
+    if (c) k += std::string("=") + (c->constant ? c->constant : "?") + "#" + std::to_string(c->type ? c->type->id : 0);
+    else if (v->sym && !v->sym->is_local) k += "g" + std::to_string(v->sym->id);
+    k += ";";
+  };
+  for (int i = 0; i < f->args.n; i++)
+    if (f->args[i].key) { k += "a" + std::to_string(Position2int(f->args[i].key->pos[0])); var(f->args[i].value); }
+  for (Var *r : f->rets) { k += "r"; var(r); }
+  Map<PNode *, int> pnum;
+  Vec<PNode *> order;
+  if (f->entry) { pnum.put(f->entry, 1); order.add(f->entry); }
+  for (int i = 0; i < order.n; i++)
+    for (PNode *q : order[i]->cfg_succ)
+      if (q && !pnum.get(q)) { pnum.put(q, order.n + 1); order.add(q); }
+  for (PNode *n : order) {
+    k += "|" + std::to_string(n->code ? (int)n->code->kind : -1) + "p" + std::to_string(n->prim ? n->prim->index : -1) +
+         (n->live ? "L" : "d") + (n->fa_live ? "F" : "f") + ":";
+    for (Var *v : n->lvals) var(v);
+    k += "<";
+    for (Var *v : n->rvals) var(v);
+    for (PNode *m : n->phi) { k += "phi"; for (Var *v : m->lvals) var(v); for (Var *v : m->rvals) var(v); }
+    for (PNode *m : n->phy) { k += "phy"; for (Var *v : m->lvals) var(v); for (Var *v : m->rvals) var(v); }
+    k += ">";
+    for (PNode *q : n->cfg_succ) k += std::to_string(q ? pnum.get(q) : 0) + ",";
+    if (with_callees)
+      if (Vec<Fun *> *fs = f->calls.get(n)) {
+        Vec<int> cls;
+        for (Fun *t : *fs) cls.set_add(t ? clone_class_map.get(t) : 0);
+        cls.set_to_vec();
+        if (cls.n > 1) qsort(cls.v, cls.n, sizeof(int), [](const void *a, const void *b) { return *(const int *)a - *(const int *)b; });
+        k += "c";
+        for (int c : cls) k += std::to_string(c) + ",";
+      }
+  }
+  return std::to_string(f->sym ? f->sym->id : 0) + "#" + k;
+}
+
+void compute_clone_equivalence(FA *fa) {
+  struct timespec t0, t1;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  clone_class_map.clear();
+  Vec<Fun *> funs;
+  for (Fun *f : fa->funs) if (f && f->live) funs.add(f);
+  std::map<std::string, int> ids;
+  for (Fun *f : funs) {
+    std::string key = clone_body_key(f, false);
+    auto it = ids.find(key);
+    int c = it != ids.end() ? it->second : (ids[key] = (int)ids.size() + 1);
+    clone_class_map.put(f, c);
+  }
+  int nclasses = (int)ids.size(), rounds = 0;
+  for (;;) {
+    rounds++;
+    std::map<std::string, int> next;
+    Map<Fun *, int> nm;
+    for (Fun *f : funs) {
+      std::string key = std::to_string(clone_class_map.get(f)) + "@" + clone_body_key(f, true);
+      auto it = next.find(key);
+      int c = it != next.end() ? it->second : (next[key] = (int)next.size() + 1);
+      nm.put(f, c);
+    }
+    for (Fun *f : funs) clone_class_map.put(f, nm.get(f));
+    if ((int)next.size() == nclasses) break;
+    nclasses = (int)next.size();
+  }
+  clone_classes_ready = 1;
+  if (getenv("IFA_DBG_CLONEEQ")) {
+    std::map<int, int> sz;
+    for (Fun *f : funs) sz[clone_class_map.get(f)]++;
+    int dup = 0;
+    for (auto &kv : sz) dup += kv.second - 1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    fprintf(stderr, "CLONEEQ live_funs=%d classes=%d interchangeable_duplicates=%d rounds=%d ms=%.1f\n", funs.n, nclasses,
+            dup, rounds, (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6);
+  }
+}
+
+void clone_eq_dump(Fun *a, Fun *b) {
+  std::string ka = clone_body_key(a, false), kb = clone_body_key(b, false);
+  // first differing token, and the arg/ret types of both
+  size_t i = 0;
+  while (i < ka.size() && i < kb.size() && ka[i] == kb[i]) i++;
+  size_t st = i > 120 ? i - 120 : 0;
+  fprintf(stderr, "CLONEEQ-diff fun %d vs %d (len %zu vs %zu) at %zu:\n  A ...%s\n  B ...%s\n", a->id, b->id, ka.size(),
+          kb.size(), i, ka.substr(st, 260).c_str(), kb.substr(st, 260).c_str());
+  for (Fun *f : {a, b}) {
+    fprintf(stderr, "  fun %d args:", f->id);
+    for (int j = 0; j < f->args.n; j++)
+      if (f->args[j].key && f->args[j].value)
+        fprintf(stderr, " %s:%s%s", f->args[j].value->sym && f->args[j].value->sym->name ? f->args[j].value->sym->name : "_",
+                f->args[j].value->type && f->args[j].value->type->name ? f->args[j].value->type->name : "?",
+                f->args[j].value->live ? "" : "(dead)");
+    fprintf(stderr, "\n");
+  }
+}
+
+static bool clones_same_class(Fun *a, Fun *b) {
+  if (!clone_classes_ready) return false;
+  int c = clone_class_map.get(a);
+  return c && c == clone_class_map.get(b);
+}
+
+// See codegen_common.h.
+bool clones_interchangeable(Fun *a, Fun *b) {
+  if (a == b) return true;
+  if (!clone_classes_ready) return true;  // a caller that never computed them (the V frontend): no claim
+  bool same = clones_same_class(a, b);
+  if (!same && getenv("IFA_DBG_CLONEEQ"))
+    fprintf(stderr, "CLONEEQ refuse-collapse %s: fun %d vs %d are not interchangeable\n",
+            a->sym && a->sym->name ? a->sym->name : "?", a->id, b->id);
+  return same;
+}
+
+static bool candidates_interchangeable(Vec<Fun *> *fns) {
+  if (!clone_classes_ready) return true;  // not computed: no claim
+  int c = clone_class_map.get(fns->v[0]);
+  for (int i = 1; i < fns->n; i++)
+    if (!c || clone_class_map.get(fns->v[i]) != c) return false;
+  return true;
+}
+
 Fun *get_target_fun_core(PNode *n, Fun *f) {
   Vec<Fun *> *fns = f->calls.get(n);
   if (!fns || !fns->n) return nullptr;
   if (fns->n == 1) return fns->v[0];
+  // ifa/121: agreeing on the C signature lets a caller be EMITTED against
+  // either clone; it does not make them the same function. Collapsing
+  // onto fns->v[0] also needs them interchangeable (compute_clone_equivalence).
   for (int i = 1; i < fns->n; i++)
-    if (!identical_c_signature(fns->v[0], fns->v[i]) || !clones_see_same_record_contents(fns->v[0], fns->v[i]))
+    if (!identical_c_signature(fns->v[0], fns->v[i]) || !clones_see_same_record_contents(fns->v[0], fns->v[i]) ||
+        !clones_interchangeable(fns->v[0], fns->v[i]))
       return nullptr;
   if (getenv("PYC_DBG_DISPATCH"))
     fprintf(stderr, "[dispatch] %d indistinguishable clones of %s collapsed\n", fns->n,
             fns->v[0]->sym->name ? fns->v[0]->sym->name : "?");
+  if (getenv("IFA_DBG_CLONEEQ")) {
+    static Vec<PNode *> reported;
+    if (reported.set_add(n))
+      fprintf(stderr, "CLONEEQ collapse%s %s:%d %s candidates=%d\n", candidates_interchangeable(fns) ? "" : "-not-equivalent",
+              n->code ? n->code->pathname() : "?", n->code ? n->code->line() : 0,
+              fns->v[0]->sym->name ? fns->v[0]->sym->name : "?", fns->n);
+  }
   return fns->v[0];
 }
 
@@ -733,12 +1318,20 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
   MPosition argp;
   argp.push(1);
   bool found = false;
+  // On a METHOD send the receiver is the first formal after the selector,
+  // and only it is asked. Scanning on past it found `__pyc_None_type__
+  // .__eq__(self, x)`'s `x : V` when `self` (None) carries no `__eq__`, so
+  // the None method was taken for a V-tag candidate, its nil branch was
+  // never emitted, and `None == v` on a {V, None} receiver read a tag
+  // through NULL (chull's `fv.vertex[i] != e.endpts[0]`).
+  const bool method_send = pn->rvals.n && pn->rvals[0] && pn->rvals[0]->sym && pn->rvals[0]->sym->is_symbol;
   for (int pi = 0; pi < candidate->sym->has.n + 2 && !found; pi++) {
     MPosition *cp = cannonicalize_mposition(argp);
     argp.inc();
     Var *argv = candidate->args.get(cp);
     if (!argv || !argv->type) continue;
     Sym *csym = argv->type;
+    if (method_send && csym == sym_symbol) continue;  // the selector
     Vec<Sym *> members;  // classes to search: the type itself, or its union members
     bool from_union = csym->type_kind == Type_SUM;
     if (from_union) {
@@ -761,6 +1354,7 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
         }
       }
     }
+    if (method_send) break;
   }
 }
 
@@ -819,6 +1413,103 @@ static bool operand_may_be_nil(Var *v) {
   return false;
 }
 
+// A list's layout: the shared header a tuple also has (pyc_c_runtime.h).
+static bool cg_is_list_type(Sym *t) { return t && t->creators.n && t->creators[0]->sym == sym_list; }
+
+// Every member of `v`'s type a list, a tuple or None: its header can be
+// tested (ifa/102).
+static bool layout_testable_operand(Var *v) {
+  Sym *t = v ? v->type : nullptr;
+  if (!t) return false;
+  if (t->type_kind != Type_SUM) return cg_is_tuple_type(t) || cg_is_list_type(t);
+  for (Sym *m : t->has)
+    if (!m || (m != sym_nil_type && !cg_is_tuple_type(m) && !cg_is_list_type(m))) return false;
+  return true;
+}
+
+// The header kinds a formal covers (LAYOUT_* bits), or -1 when it covers
+// something that is not a list or a tuple.
+static int formal_layout_mask(Var *av) {
+  if (!av || !av->type) return -1;
+  Vec<Sym *> ms;
+  if (av->type->type_kind == Type_SUM) for (Sym *m : av->type->has) ms.add(m);
+  else ms.add(av->type);
+  int mask = 0;
+  for (Sym *m : ms) {
+    if (!m || m == sym_nil_type) return -1;
+    if (cg_tuple_type_fixed_arity(m)) mask |= LAYOUT_FIXED_TUPLE;
+    else if (cg_is_tuple_type(m)) mask |= LAYOUT_DYNAMIC_TUPLE;
+    else if (cg_is_list_type(m)) mask |= LAYOUT_LIST;
+    else return -1;
+  }
+  return mask;
+}
+
+// ifa/102: the layout plan (see codegen_common.h). Each candidate's
+// receiver formal decides its case: a None method, or every member a
+// set of the three header kinds (fixed-arity tuple, dynamic tuple, list).
+// Every case is tested positively, so a value whose header carries no
+// expected mark falls to the "no branch matched" assert instead of a
+// wrong arm. Refuses
+// when the receiver can hold anything else, when the candidates disagree
+// on which operand is the receiver, or when two cases share a test.
+static bool poly_dispatch_layout_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase *> &cases) {
+  const bool dbg = getenv("PYC_DBG_ARITYDISPATCH") != nullptr;
+  auto refuse = [&](cchar *why) {
+    if (dbg) fprintf(stderr, "ARITYDISPATCH layout refuse pn=%d: %s\n", pn->id, why);
+    return false;
+  };
+  int recv = -1, covered = 0;
+  bool nil_case = false;
+  Vec<ArityDispatchCase *> out;
+  for (Fun *f : *fns) {
+    if (!f) return false;
+    Var *av = nullptr;
+    int ridx = -1;
+    for (MPosition *p : f->positional_arg_positions) {
+      Var *a = f->args.get(p);
+      if (!a || !a->sym || p->pos.n != 1) continue;
+      int i = (int)Position2int(p->pos[0]) - 1;
+      if (i < 0 || i >= pn->rvals.n || !pn->rvals[i]) return false;
+      if (pn->rvals[i]->sym->is_symbol) continue;  // the selector
+      av = a;
+      ridx = i;
+      break;
+    }
+    if (!av || !av->type) return false;
+    if (recv < 0) {
+      recv = ridx;
+      if (!layout_testable_operand(pn->rvals[recv])) return refuse("receiver is not lists, tuples and None");
+    } else if (ridx != recv)
+      return false;
+    int test;
+    if (av->type == sym_nil_type) {
+      if (nil_case) return false;
+      nil_case = true;
+      test = -3;
+    } else {
+      // The kinds this candidate's receiver formal covers.
+      int mask = formal_layout_mask(av);
+      if (mask < 0) return refuse("formal member is not a list or tuple");
+      if (!mask || (mask & covered)) return refuse("two candidates cover one kind");  // two candidates for one kind: no test separates them
+      covered |= mask;
+      test = layout_test(mask);
+    }
+    ArityDispatchCase *c = new ArityDispatchCase;
+    c->fun = f;
+    c->tests.add({ridx, test});
+    out.add(c);
+  }
+  // One non-None candidate needs no header test: a null test and a direct
+  // call decide it (the classtag machinery's nil-tested route).
+  if (out.n - (nil_case ? 1 : 0) < 2) return refuse("fewer than two non-None candidates");
+  // The null test first, so the header reads after it are null-safe.
+  for (ArityDispatchCase *c : out) if (c->tests[0].arity == -3) cases.add(c);
+  for (ArityDispatchCase *c : out) if (c->tests[0].arity != -3) cases.add(c);
+  if (getenv("PYC_DBG_ARITYDISPATCH")) fprintf(stderr, "ARITYDISPATCH layout plan pn=%d cases=%d\n", pn->id, cases.n);
+  return true;
+}
+
 // See codegen_common.h.
 bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase *> &cases) {
   if (!pn || !fns || fns->n < 2) return false;
@@ -842,7 +1533,7 @@ bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase 
     }
     fprintf(stderr, "\n");
   }
-  if (!any) return false;
+  if (!any) return poly_dispatch_layout_plan(pn, fns, cases);
   Vec<int> nlen, ndyn;
   for (Fun *f : *fns) {
     ArityDispatchCase *c = new ArityDispatchCase;
@@ -859,7 +1550,14 @@ bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase 
       bool typed = fs->must_specialize && !fs->must_specialize->is_symbol;
       bool nil_formal = av->type == sym_nil_type;  // a None method (poly_dispatch_is_nil_receiver)
       if (a == -1 && !typed && !nil_formal) continue;
-      if (!arity_testable_operand(pn->rvals[ridx])) {
+      // ifa/102: an operand that may also hold a LIST. A length test still
+      // separates a fixed-arity tuple (it requires the fixed bit, which a
+      // list never has), but "non-null", "no fixed arity" and an untested
+      // case would each take a list too, so those become layout tests on
+      // what this candidate's formal covers.
+      bool lists = false;
+      if (!arity_testable_operand(pn->rvals[ridx]) && layout_testable_operand(pn->rvals[ridx])) lists = true;
+      else if (!arity_testable_operand(pn->rvals[ridx])) {
         if (getenv("PYC_DBG_ARITYDISPATCH")) {
           Sym *t = pn->rvals[ridx]->type;
           fprintf(stderr, "ARITYDISPATCH refuse: operand %d not tuple|None:", ridx);
@@ -875,6 +1573,11 @@ bool poly_dispatch_arity_plan(PNode *pn, Vec<Fun *> *fns, Vec<ArityDispatchCase 
       } else if (a >= 0) {
         c->tests.add({ridx, a});
         len_tests++;
+      } else if (lists) {
+        int m = formal_layout_mask(av);
+        if (m <= 0) return false;
+        c->tests.add({ridx, layout_test(m)});
+        dyn_tests++;
       } else if (a == DISPATCH_ARITY_DYNAMIC) {
         c->tests.add({ridx, -2});
         dyn_tests++;
@@ -1008,6 +1711,18 @@ void assign_fun_cg_strings(FA *fa, bool annotate, Vec<Var *> *globals) {
 }
 
 void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp) {
+  // ifa/124: clone.cc gives a container group with an element its own copy
+  // of the builtin's type sym (`list` -> a new `list`), and it does so before
+  // codegen names the builtins (`_CG_list`), so the copy has no C name and
+  // fell to `_CG_any` below: `xs = [1, 2]; xs.append(3)` declared xs
+  // `_CG_any`, and --refuse-imprecise reported it as untyped. A copy keeps
+  // its builtin's meta type, so a primitive type with no name of its own
+  // takes the name of the named primitive of the same meta type -- the same
+  // class, hence the same representation.
+  Map<Sym *, cchar *> primitive_name;
+  for (Sym *s : allsyms)
+    if (s->type_kind == Type_PRIMITIVE && !s->num_kind && s->meta_type && cg_get_string(s))
+      primitive_name.put(s->meta_type, cg_get_string(s));
   for (Sym *s : allsyms) {
     if (s->num_kind) {
       cg_set_string(s, num_string(s));
@@ -1016,7 +1731,10 @@ void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp) {
     } else if (!cg_get_string(s)) {
       switch (s->type_kind) {
         default:
-          cg_set_string(s, dupstr("_CG_any"));
+          if (cchar *n = (s->type_kind == Type_PRIMITIVE && s->meta_type) ? primitive_name.get(s->meta_type) : nullptr)
+            cg_set_string(s, n);
+          else
+            cg_set_string(s, dupstr("_CG_any"));
           break;
         case Type_FUN:
           if (s->fun) break;
@@ -1043,6 +1761,31 @@ void assign_type_cg_strings_pass1(Vec<Sym *> &allsyms, FILE *fp) {
 // -------------------------------------------------------------
 // Failure reporting with PNode / Var context (phase 5.3)
 // -------------------------------------------------------------
+
+void codegen_unresolved_send(PNode *pn, Vec<Fun *> *candidates, cchar *why) {
+  static int stub = -1;
+  if (stub < 0) {
+    cchar *e = getenv("PYC_DISPATCH_STUB");
+    stub = e && atoi(e);
+  }
+  if (stub) return;
+  // Names are for the human reading the diagnostic only.
+  cchar *sel = "?";
+  if (pn && pn->rvals.n && pn->rvals[0] && pn->rvals[0]->sym && pn->rvals[0]->sym->is_symbol && pn->rvals[0]->sym->name)
+    sel = pn->rvals[0]->sym->name;
+  std::string cands;
+  if (candidates)
+    for (Fun *f : *candidates) {
+      if (!f || !f->sym) continue;
+      Sym *cls = f->sym->has.n > 1 && f->sym->has[1] ? f->sym->has[1]->must_specialize : nullptr;
+      if (!cands.empty()) cands += ", ";
+      if (cls && cls->name) cands += std::string(cls->name) + ".";
+      cands += f->sym->name ? f->sym->name : "?";
+    }
+  if (cands.empty()) cands = "none";
+  codegen_fail(pn, "cannot resolve the call to '%s' (candidates: %s): %s. pyc refuses it rather than emit a run-time "
+               "stub (ifa/102)", sel, cands.c_str(), why);
+}
 
 void codegen_fail(PNode *n, cchar *fmt, ...) {
   fflush(stdout);

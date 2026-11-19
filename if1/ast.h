@@ -27,6 +27,8 @@ void init_default_builtin_types();       // will not overwrite/modify pre-set bu
                                          // types
 void finalize_types(IF1 *, int import_included_ivars = true);
 void build_type_hierarchy(int compute_structural_value_hierarchy = 0);
+// C3 method resolution order of `c` (c first), uncached (see ast.cc).
+void c3_mro(Sym *c, Vec<Sym *> &out);
 
 void unalias_sym(Sym *s);
 void make_meta_type(Sym *s);

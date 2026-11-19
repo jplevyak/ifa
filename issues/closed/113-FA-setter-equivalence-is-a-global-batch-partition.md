@@ -1,11 +1,11 @@
 # 113 — setter equivalence classing is a global, per-pass batch partition, so nothing incremental can be built on FA
 
-> **CLOSED 2026-09-28 (merged into 111).** The setter-classing blocker is now a section of [111](../111-FA-selective-invalidation-per-pass.md), the only thing it blocks.
+> **CLOSED 2026-09-28 (merged into 111).** The setter-classing blocker is now a section of [111](111-FA-selective-invalidation-per-pass.md), the only thing it blocks.
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 
 **Status:** open, filed 2026-08-23. Extracted from
-[111](../111-FA-selective-invalidation-per-pass.md) M3, which is **blocked
+[111](111-FA-selective-invalidation-per-pass.md) M3, which is **blocked
 on this** after seven attempts that all failed for this one reason.
 **Affects:** `ifa/analysis/fa.cc` — `AVar::setter_class`,
 `AVar::setters`, `Setters`, `TypeWorld::cannonical_setters`,
@@ -99,7 +99,7 @@ justified on its own terms — not merely as a prerequisite for 111.
 
 ## What this unblocks
 
-[111](../111-FA-selective-invalidation-per-pass.md) directly — hq2x spends
+[111](111-FA-selective-invalidation-per-pass.md) directly — hq2x spends
 48% of its FA time on four passes whose real closure is at most 6 AVars
 out of ~100 000, and pyc loses to shedskin (31.0 s against 14.0 s) on
 that program today.
@@ -110,7 +110,7 @@ premise ifa/111 set out to remove.
 
 ## Related
 
-- [111](../111-FA-selective-invalidation-per-pass.md) — blocked on this.
+- [111](111-FA-selective-invalidation-per-pass.md) — blocked on this.
   Its M1 measurement, `foreach_avar`, the predicate-threaded
   `clear_results` and `ifa/tests/selective_diff.sh` all survive and are
   reusable here.

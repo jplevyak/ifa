@@ -110,7 +110,7 @@ itself be the whole story for container literals.
 The identity rule is a **joiner** and a **separator**, and they exist for
 different reasons. The joiner is one CreationSet per sym (128) — deliberate,
 per CLAUDE.md's premise of starting from minimum contours. The separator is
-**arity** ([132](../132-arity-is-representation-not-provenance.md)) — carved
+**arity** ([132](132-arity-is-representation-not-provenance.md)) — carved
 back out because merging different arities is UNREPRESENTABLE, which is
 CLAUDE.md's legitimate third category (*what the target language can
 represent*), not provenance.
@@ -207,7 +207,7 @@ pass — every `append` contour ends with a single-type value formal and the
 pins it and is load-bearing: 0 warnings with the flag, 1 without.
 
 Corpus, one binary with the env toggled (a real A/B, not the cross-binary
-comparison [147](../147-analysis-result-depends-on-the-binary-not-the-inputs.md)
+comparison [147](147-analysis-result-depends-on-the-binary-not-the-inputs.md)
 invalidates):
 
 | arm | cfail | warns | container CS |

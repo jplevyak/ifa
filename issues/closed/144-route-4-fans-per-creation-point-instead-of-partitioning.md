@@ -1,6 +1,6 @@
 # 144 — route 4 fans one contour per creation point, and nothing re-joins the duplicates
 
-> **CLOSED 2026-09-28 (fixed; residuals moved).** Fix 1 (partition by assign-set signature, not one contour per creation point) landed, and 146 C removed the fan fallback. The two residuals: re-joining contours that converge equal is [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md), and the use-sensitive "may this value be widened?" question for `{int64, float64}` is [156](../156-FA-split-int-from-float-coerce-last.md).
+> **CLOSED 2026-09-28 (fixed; residuals moved).** Fix 1 (partition by assign-set signature, not one contour per creation point) landed, and 146 C removed the fan fallback. The two residuals: re-joining contours that converge equal is [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md), and the use-sensitive "may this value be widened?" question for `{int64, float64}` is [156](156-FA-split-int-from-float-coerce-last.md).
 >
 > *Archived during the 2026-09-28 issue consolidation. The text below is the historical record and is not maintained.*
 

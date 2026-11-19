@@ -116,7 +116,7 @@ LIB_SRCS = ifa.cc main.cc \
 	if1/ast.cc if1/builtin.cc if1/fun.cc if1/if1.cc if1/num.cc if1/pattern.cc \
 	if1/pnode.cc if1/prim.cc if1/prim_data.cc if1/sym.cc if1/var.cc \
 	analysis/fa.cc analysis/pdb.cc analysis/graph.cc analysis/clone.cc analysis/ifalog.cc \
-	analysis/escape.cc analysis/fa_census.cc analysis/fa_debug.cc analysis/fa_flags.cc analysis/fa_lattice.cc analysis/fa_prims.cc \
+	analysis/escape.cc analysis/fa_census.cc analysis/fa_debug.cc analysis/fa_flags.cc analysis/fa_lattice.cc analysis/fa_prims.cc analysis/overwrite.cc \
 	codegen/codegen_common.cc codegen/cg.cc codegen/llvm.cc \
 	codegen/cg_emit_llvm.cc codegen/jit.cc \
 	optimize/cfg.cc optimize/dead.cc optimize/dom.cc optimize/inline.cc optimize/loop.cc optimize/ssu.cc \
@@ -252,11 +252,22 @@ realclean: clean
 # -lm -lgc -lgccpp link flags needed for GC_malloc references in
 # the emitted IR. No separate clang invocation needed here. See
 # issue 012 for the history.
+#
+# Both backends run it, and each must print test_llvm.v.expected exactly:
+# the exit status alone let LLVM print every string as "(null)" unnoticed.
 test_llvm: ifa
 	@echo "Testing LLVM backend..."
+	rm -f test_llvm
 	IFA_LLVM=1 ./ifa test_llvm.v
 	@echo "Running test_llvm..."
-	./test_llvm
+	./test_llvm > test_llvm.out
+	diff -u test_llvm.v.expected test_llvm.out
+	@echo "Testing C backend..."
+	rm -f test_llvm
+	./ifa test_llvm.v
+	./test_llvm > test_llvm.out
+	diff -u test_llvm.v.expected test_llvm.out
+	rm -f test_llvm.out
 	@echo "Test passed!"
 
 # ifa-test runs one --phase at a time. The driver loop here iterates

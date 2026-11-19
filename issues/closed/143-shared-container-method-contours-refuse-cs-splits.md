@@ -730,7 +730,7 @@ and no rung looks at it.
 **Why this is the right key, not provenance.** A member is part of a
 class's declared structure (`Sym::has`) -- "which field holds this
 container" is a structural fact about the program's TYPES, in the same
-family as arity ([132](../132-arity-is-representation-not-provenance.md)). It
+family as arity ([132](132-arity-is-representation-not-provenance.md)). It
 is not "where did this value come from". And unlike a violation or a stuck
 dispatch it is observable BEFORE the union forms, so it does not have the
 circularity that defeated the violation-gated experiments in
@@ -793,7 +793,7 @@ Default arm measured contour-identical on `chess`, `richards`, `sudoku1`,
 **Why this is a type-side key and not provenance.** A member is part of a
 class's declared structure (`Sym::has`); "which field holds this container"
 is a fact about the program's types, the same family as arity
-([132](../132-arity-is-representation-not-provenance.md)). It is keyed on
+([132](132-arity-is-representation-not-provenance.md)). It is keyed on
 `Sym::id`. And it is observable BEFORE the element union forms, which is
 what every violation-gated experiment in
 [133](133-split-a-container-on-its-element-type.md) could not manage. The

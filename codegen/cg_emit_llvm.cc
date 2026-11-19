@@ -123,11 +123,11 @@ static inline int llvm_fld(Sym *s, int i) { return cg_has_classtag(s) ? i + 1 : 
 
 // ifa/issues/030: the per-class tag object. Only its ADDRESS
 // matters (identity comparison at dispatch sites), so an internal
-// i64 global per class name suffices; named to match the C
-// backend's `_CG_type_<name>` for debuggability.
-static llvm::GlobalVariable *get_classtag_global(cchar *name) {
-  char buf[160];
-  snprintf(buf, sizeof(buf), "_CG_type_%s", name);
+// i64 global per class FAMILY suffices (ifa/130 A3: cg_tag_name, one per
+// class and its clones, not one per name); named as the C backend names it.
+static llvm::GlobalVariable *get_classtag_global(Sym *cls) {
+  char buf[300];
+  snprintf(buf, sizeof(buf), "%s", cg_tag_name(cls));
   if (llvm::GlobalVariable *gv = TheModule->getNamedGlobal(buf)) return gv;
   llvm::Type *i64 = llvm::Type::getInt64Ty(*TheContext);
   return new llvm::GlobalVariable(*TheModule, i64, /*isConstant=*/false, llvm::GlobalValue::InternalLinkage,
@@ -460,7 +460,8 @@ void declare_globals(FA *fa) {
     } else if (t->isFloatingPointTy()) {
       init = llvm::ConstantFP::get(t, 0.0);
     } else {
-      init = llvm::UndefValue::get(t);
+      // Zero, as a C global is (and so nothing reads undef from it).
+      init = llvm::Constant::getNullValue(t);
     }
     llvm::GlobalVariable *gv = new llvm::GlobalVariable(
         *TheModule, t, /*isConstant=*/false,
@@ -505,10 +506,9 @@ llvm::Value *materialize_pyc_string(cchar *raw, int len = -1) {
           llvm::ConstantInt::get(i32_ty, 1),
           llvm::ConstantInt::get(i32_ty, 0) });
   }
+  // The constant is the string's value: a frontend strips its quotes. This
+  // used to strip a surrounding pair itself, which printed pyc's '"hi"' as hi.
   std::string text = (len >= 0) ? std::string(raw, (size_t)len) : std::string(raw);
-  if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
-    text = text.substr(1, text.size() - 2);
-  }
   llvm::Type *i64_ty = llvm::Type::getInt64Ty(*TheContext);
   llvm::Constant *cdata =
       llvm::ConstantDataArray::getString(*TheContext, text);
@@ -1055,6 +1055,18 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
 // emit_send_unaryop — P_prim_lnot and P_prim_minus.
 // -------------------------------------------------------------
 
+// `nsw` exactly where the C backend's arithmetic is signed-overflow UB:
+// the result's pyc type is a signed integer and the operation is at least
+// 32 bits wide (C promotes int8/int16 operands to int, so they cannot
+// overflow at their own width). Unsigned types and bool wrap by definition
+// and get no flag. pyc's own code that relies on wrapping goes through
+// _CG_hash_mix, which wraps in unsigned arithmetic.
+static bool int_op_is_nsw(Var *dst_v, llvm::Value *operand) {
+  if (!dst_v || !dst_v->type || !operand || !operand->getType()->isIntegerTy()) return false;
+  if (dst_v->type->num_kind != IF1_NUM_KIND_INT) return false;
+  return operand->getType()->getIntegerBitWidth() >= 32;
+}
+
 bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim) return false;
   int op = pn->prim->index;
@@ -1096,7 +1108,7 @@ bool emit_send_unaryop(EmitCtx &ctx, PNode *pn) {
     if (val->getType()->isFloatTy() || val->getType()->isDoubleTy()) {
       res = Builder->CreateFNeg(val);
     } else if (val->getType()->isIntegerTy()) {
-      res = Builder->CreateNeg(val);
+      res = Builder->CreateNeg(val, "", int_op_is_nsw(dst, val));
     }
   }
 
@@ -1265,15 +1277,15 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
   switch (idx) {
     case P_prim_add:
       res = is_float ? Builder->CreateFAdd(lhs, rhs)
-                     : Builder->CreateAdd(lhs, rhs);
+                     : Builder->CreateAdd(lhs, rhs, "", false, int_op_is_nsw(dst_v, lhs));
       break;
     case P_prim_subtract:
       res = is_float ? Builder->CreateFSub(lhs, rhs)
-                     : Builder->CreateSub(lhs, rhs);
+                     : Builder->CreateSub(lhs, rhs, "", false, int_op_is_nsw(dst_v, lhs));
       break;
     case P_prim_mult:
       res = is_float ? Builder->CreateFMul(lhs, rhs)
-                     : Builder->CreateMul(lhs, rhs);
+                     : Builder->CreateMul(lhs, rhs, "", false, int_op_is_nsw(dst_v, lhs));
       break;
     case P_prim_div:
       res = is_float ? Builder->CreateFDiv(lhs, rhs)
@@ -1828,17 +1840,18 @@ static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
     Sym *cls = rhs_var->sym;
     Sym *cls_type = (cls->type_kind == Type_RECORD && cls->has.n) ? cls : (cls->meta_type ? cls->meta_type : cls);
     Vec<Sym *> concrete;
-    for (Sym *impl : cls_type->implementors)
-      if (impl && cg_has_classtag(impl)) concrete.add(impl);
+    int decided = cg_isinstance_tag_targets(pn, cls_type, concrete);
     llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
     llvm::Value *res;
-    if (!concrete.n) {
+    if (decided >= 0) {
+      res = decided ? llvm::ConstantInt::getTrue(*TheContext) : llvm::ConstantInt::getFalse(*TheContext);
+    } else if (!concrete.n) {
       res = llvm::ConstantInt::getFalse(*TheContext);
     } else {
       llvm::Value *tag = Builder->CreateLoad(ptr_ty, lhs, "classtag");
       res = llvm::ConstantInt::getFalse(*TheContext);
       for (Sym *impl : concrete) {
-        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(impl->name), "isocmp");
+        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(impl), "isocmp");
         res = Builder->CreateOr(res, cmp);
       }
     }
@@ -2162,7 +2175,7 @@ static bool emit_send_new(EmitCtx &ctx, PNode *pn) {
   // instance inherits it via emit_send_clone's memcpy.
   if (cg_has_classtag(t_sym)) {
     llvm::Value *tag_gep = Builder->CreateStructGEP(struct_ty, result, 0);
-    Builder->CreateStore(get_classtag_global(t_sym->name), tag_gep);
+    Builder->CreateStore(get_classtag_global(t_sym), tag_gep);
   }
   put_result(ctx, dst_var, result);
   return true;
@@ -2226,6 +2239,15 @@ static bool emit_send_make_seq(EmitCtx &ctx, PNode *pn) {
                                               llvm::ConstantInt::get(i64, INT32_MIN),
                                               llvm::ConstantInt::get(i64, INT32_MAX),
                                               llvm::ConstantInt::get(i64, 1)});
+  // ifa/102: a make_seq tuple has no static arity, and says so in its
+  // header (pyc_c_runtime.h _CG_TUPLE_DYNAMIC).
+  if (pn->rvals.v[2] && sym_tuple->specializers.set_in(pn->rvals.v[2]->sym)) {
+    llvm::Type *i8 = llvm::Type::getInt8Ty(*TheContext);
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+    llvm::Value *addr = Builder->CreateGEP(i8, res, llvm::ConstantInt::get(i64, -16), "total_addr");
+    llvm::Value *tot = Builder->CreateLoad(i32, addr, "total");
+    Builder->CreateStore(Builder->CreateOr(tot, llvm::ConstantInt::get(i32, 0x40000000u)), addr);
+  }
   put_result(ctx, dst_var, res);
   return true;
 }
@@ -2248,6 +2270,15 @@ static llvm::Value *emit_tuple_is_fixed(llvm::Value *obj) {
   llvm::Value *tot = Builder->CreateLoad(i32, tuple_total_len_addr(obj), "total");
   return Builder->CreateICmpNE(Builder->CreateAnd(tot, llvm::ConstantInt::get(i32, 0x80000000u)),
                                llvm::ConstantInt::get(i32, 0), "fixed");
+}
+// ifa/102: the layout dispatch's header tests. `mask` is the bits read,
+// `want` what they must equal: fixed 0x80000000, dynamic 0x40000000, or a
+// plain list, neither.
+static llvm::Value *emit_tuple_bits_are(llvm::Value *obj, uint32_t mask, uint32_t want) {
+  llvm::Type *i32 = llvm::Type::getInt32Ty(*TheContext);
+  llvm::Value *tot = Builder->CreateLoad(i32, tuple_total_len_addr(obj), "total");
+  return Builder->CreateICmpEQ(Builder->CreateAnd(tot, llvm::ConstantInt::get(i32, mask)),
+                               llvm::ConstantInt::get(i32, want), "layout");
 }
 
 bool emit_send_make(EmitCtx &ctx, PNode *pn) {
@@ -2751,6 +2782,17 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
     args.push_back(fmt);
     bool is_tuple = arg_var->type && arg_var->type->type_kind == Type_RECORD &&
                     !cg_has_classtag(arg_var->type) && arg_var->type->has.n > 0;
+    // issues/168: a format constant only HERE (propagated into str.__mod__)
+    // was never read by the frontend, so a number meeting its `%s` is
+    // unconverted, and _CG_format_string would read it as a pointer. Take
+    // the tagged path, which renders it, as for a format not known at all
+    // -- deciding BEFORE `coerce`, since a tagged argument keeps its own
+    // type. Mirrors format_string_codegen.
+    for (int i = 0; cfmt && i < convs.n; i++) {
+      if (!strchr("sra", convs[i])) continue;
+      Sym *at = is_tuple ? (i < arg_var->type->has.n ? arg_var->type->has[i]->type : nullptr) : arg_var->type;
+      if (is_num(at)) { cfmt = nullptr; convs.clear(); }
+    }
     if (is_tuple) {
       llvm::StructType *rec_ty = sym_to_llvm_struct(arg_var->type);
       llvm::Value *rec = value_for_var(ctx, arg_var);
@@ -2823,6 +2865,18 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
       }
       return true;
     }
+  }
+
+  // issues/172: the value a next() resume delivers to a recorded scalar
+  // send cell -- a zero of the result's type (python_ifa_main.cc's
+  // resume_none_codegen; None is a null pointer, which is also zero).
+  if (strcmp(name, "__pyc_resume_none__") == 0) {
+    if (pn->lvals.n > 0 && pn->lvals.v[0]) {
+      llvm::Type *t = sym_to_llvm_type(pn->lvals.v[0]->type);
+      if (!t || t->isVoidTy()) t = llvm::PointerType::getUnqual(*TheContext);
+      put_result(ctx, pn->lvals.v[0], llvm::Constant::getNullValue(t));
+    }
+    return true;
   }
 
   // print / println: emit type-specific printf calls, mirroring
@@ -2908,12 +2962,18 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
                       : Builder->CreateZExt(val, i32_ty, "zext");
         Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, ext});
       } else if (vty->isFloatingPointTy()) {
-        cchar *fmt = last_nl ? "%g\n" : "%g";
+        // The shortest decimal that round-trips, as the C backend's
+        // _CG_float_printf writes it; `%g` kept six digits, so the two
+        // backends printed 3.14 + 2.0 differently.
+        cchar *fmt = last_nl ? "%s\n" : "%s";
         llvm::Value *fmt_v = Builder->CreateGlobalString(fmt, ".fmt");
         llvm::Value *dv =
             vty->isDoubleTy() ? val
                               : Builder->CreateFPExt(val, dbl_ty, "fpext");
-        Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, dv});
+        llvm::FunctionCallee repr_fn = TheModule->getOrInsertFunction(
+            "_CG_str_from_float", llvm::FunctionType::get(ptr_ty, {dbl_ty}, false));
+        llvm::Value *s = Builder->CreateCall(repr_fn, {dv}, "frepr");
+        Builder->CreateCall(printf_ty, printf_fn.getCallee(), {fmt_v, s});
       } else {
         // Pointer or other opaque type: skip (unsupported).
         cchar *ph = last_nl ? "<unsupported>\n" : "<unsupported>";
@@ -3043,7 +3103,7 @@ class LLVMEmitter : public VirtualCGEmitter {
     // time from cg_new_to_val_map instead, which is what dispatch reads.
     if (idx == P_prim_setter && pn->rvals.n >= 5 && fun_sym_for_var(pn->rvals.v[4])) return true;
     // A store of a FAKE value -- a frontend marker that only declares the
-    // field (pyc's `value = __pyc_declare__` class attribute). The C
+    // field (a frontend placeholder whose Sym is `is_fake`). The C
     // backend gives fake Vars no C name and emits no store; same here.
     if (idx == P_prim_setter && pn->rvals.n >= 5 && pn->rvals.v[4] && pn->rvals.v[4]->sym &&
         pn->rvals.v[4]->sym->is_fake)
@@ -3284,8 +3344,10 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   bool produced = ctx.watch_result_put;
   ctx.watch_result = saved;
   ctx.watch_result_put = saved_put;
-  if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->hasTerminator())
+  if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->hasTerminator()) {
+    codegen_unresolved_send(pn, ctx.fn ? ctx.fn->calls.get(pn) : nullptr, "no dispatch plan produced its result");
     emit_salvage_trap(ctx, dst);
+  }
 }
 
 static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
@@ -3298,6 +3360,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     // it next declined too (ifa/issues/181: `print(x[0:2])` on a
     // {list, tuple} union). Trap at run time, and give the result a
     // defined value so the code after it still emits.
+    codegen_unresolved_send(pn, callees, "the analysis found no target");
     emit_salvage_trap(ctx, pn->lvals.n ? pn->lvals.v[0] : nullptr);
     return;
   }
@@ -3343,7 +3406,17 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
         }
         Builder->CreateCondBr(Builder->CreateIsNull(op), next_bb, nn_bb);
         Builder->SetInsertPoint(nn_bb);
-        if (t.arity != -1) {
+        if (int m = layout_mask(t.arity)) {
+          // ifa/102: the header names one of the kinds in the mask
+          llvm::BasicBlock *bit_bb = llvm::BasicBlock::Create(*TheContext, "layout.bit", cur_fn);
+          llvm::Value *ok = nullptr;
+          auto any = [&](llvm::Value *v) { ok = ok ? Builder->CreateOr(ok, v) : v; };
+          if (m & LAYOUT_FIXED_TUPLE) any(emit_tuple_bits_are(op, 0x80000000u, 0x80000000u));
+          if (m & LAYOUT_DYNAMIC_TUPLE) any(emit_tuple_bits_are(op, 0x40000000u, 0x40000000u));
+          if (m & LAYOUT_LIST) any(emit_tuple_bits_are(op, 0xC0000000u, 0));
+          Builder->CreateCondBr(ok, bit_bb, next_bb);
+          Builder->SetInsertPoint(bit_bb);
+        } else if (t.arity != -1) {
           // fixed-arity bit: set for arity >= 0, clear for "no fixed arity" (-2)
           llvm::BasicBlock *bit_bb = llvm::BasicBlock::Create(*TheContext, "arity.bit", cur_fn);
           llvm::Value *fixed = emit_tuple_is_fixed(op);
@@ -3494,7 +3567,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           added_any = true;
           bool found = false;
           for (int ci = 0; ci < classes.n; ci++)
-            if (!strcmp(classes[ci]->name, rt->name)) { found = true; break; }
+            if (cg_tag_family(classes[ci]) == cg_tag_family(rt)) { found = true; break; }
           if (!found) {
             classes.add(rt);
             slots.add(rt_slots[ri]);
@@ -3564,7 +3637,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
           bool same = false, collide = false;
           for (int ci = 0; ci < classes.n; ci++) {
             if (classes[ci] == carrier_recv) { same = true; break; }
-            if (!strcmp(classes[ci]->name, carrier_recv->name)) { collide = true; break; }
+            if (cg_tag_family(classes[ci]) == cg_tag_family(carrier_recv)) { collide = true; break; }
           }
           if (collide) { ok = false; break; }
           if (!same) {
@@ -3630,7 +3703,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
             default_fn = fun_val;
             continue;
           }
-        } else if (identical_c_signature(default_fn, fun_val)) {
+        } else if (identical_c_signature(default_fn, fun_val) && clones_interchangeable(default_fn, fun_val)) {
           continue;
         }
       }
@@ -3671,6 +3744,9 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     // where None and zero give the SAME answer (both falsy) so the
     // conflation is semantically invisible -- `if f():` on a function
     // whose fall-through implicitly returns None is genetic2's shape.
+    // ifa/121: an arm whose slot may hold a different clone than this site
+    // chose calls the site's clone directly (mirrors cg.cc).
+    if (ok) apply_dispatch_arm_plans(pn, callees, classes, slots, class_funs);
     if (ok && nil_fn && recv_var) {
       cchar *sel = nullptr;
       if (Sym *scalar_member = poly_dispatch_nil_scalar_receiver(pn, nullptr, recv_var, &sel))
@@ -3804,7 +3880,7 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       for (int ci = 0; ci < classes.n; ci++) {
         llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
         llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
-        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]->name), "tagcmp");
+        llvm::Value *cmp = Builder->CreateICmpEQ(tag, get_classtag_global(classes[ci]), "tagcmp");
         Builder->CreateCondBr(cmp, hit_bb, next_bb);
         Builder->SetInsertPoint(hit_bb);
         if (slots[ci] == -1) {
@@ -4599,6 +4675,11 @@ void discover_phi_targets(EmitCtx &ctx, Fun *f) {
       if (!t || t->isVoidTy()) t = llvm::PointerType::getUnqual(*TheContext);
       cchar *name = cg_get_string(v);
       slot = Builder->CreateAlloca(t, nullptr, name ? name : "");
+      // Zero-initialised, as the C backend's `T x = {};` locals are, so a
+      // slot read before any store yields zero, never undef. That is what
+      // makes the `noundef` on parameters and returns sound; mem2reg drops
+      // the store wherever a real one dominates the read.
+      Builder->CreateStore(llvm::Constant::getNullValue(t), slot);
       class_slot.put(root, slot);
     }
     ctx.alloca_map.put(v, slot);
@@ -4883,6 +4964,16 @@ llvm::Function *build_fun_signature(EmitCtx &ctx, Fun *f) {
 
   if (f->sym && (f->sym->is_async || f->sym->is_generator)) {
     llvm_fn->addFnAttr(llvm::Attribute::PresplitCoroutine);
+  } else {
+    // `noundef` on scalar and pointer parameters and returns, as clang puts on
+    // the C backend's C++ functions. Sound because no value pyc emits is undef:
+    // locals and globals are zero-initialised (above / emit globals). Not on an
+    // aggregate (it would also assert defined padding), and not on coroutines,
+    // whose ramp and resume functions are rewritten by CoroSplit.
+    auto scalar = [](llvm::Type *t) { return t->isIntegerTy() || t->isFloatingPointTy() || t->isPointerTy(); };
+    for (unsigned i = 0; i < llvm_fn->arg_size(); i++)
+      if (scalar(llvm_fn->getArg(i)->getType())) llvm_fn->addParamAttr(i, llvm::Attribute::NoUndef);
+    if (scalar(ret_ty)) llvm_fn->addRetAttr(llvm::Attribute::NoUndef);
   }
 
   // Bind each llvm::Argument back to its Var via the per-Fun
@@ -5107,6 +5198,7 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
   // consumed by emit_send_clone (slot stores) and emit_send_call
   // (classtag dispatch). Shared with the C backend.
   cg_build_new_to_val_map(fa);
+  cg_build_dispatch_arm_plans(fa);  // ifa/121
 
   // Pass 0: declare module-level globals so per-Fun emit can
   // resolve global Var operands.  Without this, loads/stores
