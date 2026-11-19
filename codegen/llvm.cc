@@ -471,7 +471,8 @@ std::unique_ptr<llvm::TargetMachine> llvm_optimize_module(bool link_runtime, boo
   }
   std::string cpu = llvm::Triple(triple_str).getArch() == llvm::Triple::x86_64 ? "x86-64" : "generic";
   std::string features, tune;
-  if (runtime)
+  if (runtime) {
+    for (llvm::Function &f : *runtime) f.removeFnAttr("probe-stack");
     for (llvm::Function &f : *runtime) {
       if (f.isDeclaration() || !f.hasFnAttribute("target-cpu")) continue;
       cpu = f.getFnAttribute("target-cpu").getValueAsString().str();
@@ -479,6 +480,7 @@ std::unique_ptr<llvm::TargetMachine> llvm_optimize_module(bool link_runtime, boo
       if (f.hasFnAttribute("tune-cpu")) tune = f.getFnAttribute("tune-cpu").getValueAsString().str();
       break;
     }
+  }
   for (llvm::Function &f : M) {
     if (f.isDeclaration()) continue;
     if (!f.hasFnAttribute("target-cpu")) f.addFnAttr("target-cpu", cpu);
