@@ -1,7 +1,7 @@
 # 210 — A list display of function constants loses its elements
 
-**Status: open.** Filed 2026-11-14, found while reproducing
-[200](200-llvm-backend-parity.md) A3's lambda divergence. Fixture:
+**Status: closed 2026-11-19.** See Resolution. Filed 2026-11-14, found while reproducing
+[200](../200-llvm-backend-parity.md) A3's lambda divergence. Fixture:
 `tests/lambda_list_literal.py` (`.known_issue`).
 
 ## Symptom
@@ -71,3 +71,40 @@ issue-036 exclusion, say what in that exclusion depends on it.
 ## Verification
 
 `make test` on both backends; the corpus `check` sweep unchanged.
+
+## Resolution (2026-11-19)
+
+One rule, on both backends, for a function used as a VALUE: its address
+(typed `_CG_function` / `ptr`), or its per-Sym token when it has no emitted
+body -- the rule `simple_move` (C) and `emit_move` (LLVM) already used, and
+what value-identity dispatch compares against.
+
+- **C** (`cg.cc`): `c_rhs`'s function branch, which emitted
+  `((_CG_function*)name)`, gives the rule; the tuple/record and list
+  element stores go through `c_rhs` instead of the bare `cg_get_string`.
+  `c_rhs` already served arguments, returns and field stores.
+- **LLVM** (`cg_emit_llvm.cc`): `value_for_var` gives the rule for a Var that
+  IS a function and for a Var TYPED by one function. A function is its own
+  singleton type, so the type names the value, and such a formal is left
+  out of every signature (the issue-036 exclusion stands: no signature
+  changed). Every reader goes through `value_for_var`, so the element store,
+  the dict store (`dict.__setitem__`'s `v`, which had no value: "no code
+  generated for prim_set_index_object") and the call argument (2026-11-18)
+  are one fix. The `emit_move` comment's warning, that materializing these
+  in `value_for_var` polluted vector prototypes, did not reproduce: `make
+  test` is green on both backends, and the method-slot store it described
+  is still skipped by `emit_send_unhandled`'s setter rule.
+- The mixed case found 2026-11-18 (a field holding a plain function or a
+  closure, called through one site) needed nothing more: it had read a
+  class tag from a null, and the stored value is now the address the
+  dispatch tests first.
+
+Tests: `tests/lambda_list_literal.py` (its `.known_issue` deleted) and
+`tests/function_values.py`, which reads a function as a value in a list
+and a tuple display, a field, a return, an argument, a dict value and an
+append, identical to CPython on both backends.
+
+Corpus: `check__default__b8f19ce6+49905899` matches the previous C sweep row
+for row (bar `chaos`, whose earlier timeout was contention), and
+`check__PYC_LLVM_1__b8f19ce6+64aba741` matches the previous LLVM sweep row
+for row. No corpus program changed verdict, contours or output.

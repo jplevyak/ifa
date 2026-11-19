@@ -133,7 +133,7 @@ is unchanged apart from line numbers.
 
 **Found on the way, filed:** a list display of function constants
 (`[lambda x: .., lambda x: ..]`) loses its elements on both backends:
-[210](210-a-list-display-of-function-constants-loses-its-elements.md).
+[210](closed/210-a-list-display-of-function-constants-loses-its-elements.md).
 
 **Still by name:** `poly_dispatch_closure_carrier` recognises a carrier by
 its class name `__closure__`, the only mark the frontend gives it. It is

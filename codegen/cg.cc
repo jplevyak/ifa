@@ -371,8 +371,19 @@ static cchar *c_rhs(Var *v) {
     } else
       return cg_get_string(v);
   } else {
-    char s[100];
-    snprintf(s, sizeof(s), "((_CG_function*)%s)", cg_get_string(v));
+    // ifa/210: a function used as a VALUE (the Var is the function's own
+    // Sym) is its address typed _CG_function, as simple_move stores it --
+    // or, with no emitted body, its per-Sym token. One rule for an element,
+    // a field, an argument and a return: a bare name stored into a `void *`
+    // element is a C++ error, which `[lambda x: .., lambda x: ..]` hit.
+    char s[128];
+    Sym *fs = v->sym;
+    if (fs->fun && !fs->fun->live)
+      snprintf(s, sizeof(s), "(_CG_function)&_CG_fnid<%d>::token", fs->id);
+    else if (cchar *name = cg_get_string(v) ? cg_get_string(v) : fs->fun ? cg_get_string(fs->fun) : nullptr)
+      snprintf(s, sizeof(s), "(_CG_function)&%s", name);
+    else
+      return "NULL";
     return dupstr(s);
   }
 }
@@ -652,10 +663,9 @@ static int c_prim_make(FILE *fp, FA *fa, Fun *f, PNode *n) {
           cg_note_slot_use(rec, i - 3, 0);
           cchar *mt = rec_fields ? cg_member_ctype(rec, i - 3) : nullptr;
           if (cg_needs_nil_union_cast(rec_fields ? rec->has[i - 3]->type : nullptr, mt, n->rvals.v[i]))
-            fprintf(fp, "  %s->e%d = (%s)%s;\n", cg_get_string(n->lvals[0]), i - 3, mt,
-                    cg_get_string(n->rvals.v[i]));
+            fprintf(fp, "  %s->e%d = (%s)%s;\n", cg_get_string(n->lvals[0]), i - 3, mt, c_rhs(n->rvals.v[i]));
           else
-            fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
+            fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, c_rhs(n->rvals.v[i]));
         }
         // ifa/185: a fixed-arity tuple says so in its header, for the arity
         // dispatch. Not a list that came out record-shaped (`goto Ltuple`).
@@ -679,7 +689,7 @@ static int c_prim_make(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = 3; i < n->rvals.n; i++) {
           fprintf(fp, "  ((%s*)(_CG_list_ptr(%s)))[%d] = ", ety, cg_get_string(n->lvals[0]), i - 3);
           if (cg_needs_elem_cast(le ? le->type : nullptr, ety, n->rvals.v[i])) fprintf(fp, "(%s)", ety);
-          fputs(cg_get_string(n->rvals[i]), fp);
+          fputs(c_rhs(n->rvals[i]), fp);
           fprintf(fp, ";\n");
         }
         // ifa/185: a list-layout tuple can still have a static arity.

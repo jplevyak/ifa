@@ -563,6 +563,9 @@ llvm::Value *materialize_pyc_string(cchar *raw, int len = -1) {
         llvm::ConstantInt::get(i32_ty, 0) });
 }
 
+static llvm::Value *fun_identity_token(Sym *f);
+static Sym *fun_sym_for_var(Var *v);
+
 llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
   if (!v) return nullptr;
   // Phi-target Var: load from its alloca slot every time
@@ -587,6 +590,15 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
     return loaded;
   }
   if (llvm::Value *cached = ctx.var_map.get(v)) return cached;
+  // ifa/210: a function used as a VALUE (the Var is the function's own Sym)
+  // is its address, or its per-Sym token with no emitted body -- the one
+  // rule emit_move and value-identity dispatch already use, here for every
+  // reader: an element, a field, a dict value, an argument, a return.
+  // A Var TYPED by one function holds that function (a function is its own
+  // singleton type), and such a formal is left out of every signature, so
+  // its value is the same address: dict.__setitem__'s `v` in `d[k] = f`.
+  if (Sym *fs = fun_sym_for_var(v))
+    if (fs->fun) return fun_identity_token(fs);
   if ((v->type && v->type == sym_nil_type) || (v->sym && (v->sym == sym_nil || v->sym == sym_nil_type))) {
     llvm::Type *t = sym_to_llvm_type(v->type);
     if (!t || !t->isPointerTy()) t = llvm::PointerType::getUnqual(*TheContext);
