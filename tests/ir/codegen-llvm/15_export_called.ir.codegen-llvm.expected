@@ -1,0 +1,50 @@
+;; phase: codegen-llvm
+
+(summary fa_rc=0 clone_rc=0 funs=2)
+
+;; llvm-output (module header, target, debug metadata stripped):
+@cbcont = internal global ptr null
+
+define noundef ptr @_CG_f_93_0() {
+main_prelude:
+  br label %entry
+
+entry:                                            ; preds = %main_prelude
+  %0 = call i64 @_CG_observe(double 2.500000e+00)
+  %1 = sitofp i64 %0 to double
+  %2 = fmul double %1, 2.500000e+00
+  %3 = fadd double %2, 1.500000e+00
+  %4 = call i64 @_CG_observe(double %3)
+  ret ptr null
+}
+
+define noundef i64 @_CG_f_81_1(i64 noundef %0, i64 noundef %1) {
+entry:
+  %2 = add nsw i64 %0, %1
+  ret i64 %2
+}
+
+declare i64 @_CG_observe(double)
+
+define i64 @cb_add(i64 %0, i64 %1) {
+entry:
+  %2 = call i64 @_CG_f_81_1(i64 %0, i64 %1)
+  ret i64 %2
+}
+
+define i32 @main(i32 %argc, ptr %argv) {
+entry:
+  call void @_CG_gc_init()
+  %0 = sext i32 %argc to i64
+  call void @_CG_set_argv(i64 %0, ptr %argv)
+  %1 = call ptr @_CG_f_93_0()
+  call void @_CG_event_loop_run(ptr null)
+  ret i32 0
+}
+
+declare void @_CG_gc_init()
+
+declare void @_CG_set_argv(i64, ptr)
+
+declare void @_CG_event_loop_run(ptr)
+

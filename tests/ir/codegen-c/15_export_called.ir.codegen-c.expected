@@ -1,0 +1,81 @@
+;; phase: codegen-c
+
+(summary fa_rc=0 clone_rc=0 funs=2 bytes=1174)
+
+;; c-output (#include line stripped):
+
+/*
+ Type Declarations
+*/
+
+
+/*
+ Function Prototypes
+*/
+
+typedef _CG_function _CG_pf0, _CG_pf1;
+_CG_nil_type _CG_f_93_0/*__main__*/();
+_CG_int64 _CG_f_81_1/*cb*/(_CG_int64 a1, _CG_int64 a2);
+
+/*
+ Type Definitions
+*/
+
+
+/*
+ Type Objects
+*/
+
+
+/*
+ Builtin Functions
+*/
+
+
+/*
+ Global Variables
+*/
+
+_CG_continuation /* cbcont 80 */ g0;
+
+/*
+ Functions
+*/
+
+_CG_int64 _CG_f_81_1/*cb*/(_CG_int64 a1, _CG_int64 a2) {
+  _CG_int64 t0 = {};
+  _CG_int64 t1 = {};
+  _CG_int64 t2 = {};
+  _CG_int64 t3 = {};
+
+  t1 = a1;
+  t2 = a2;
+  t0 = _CG_prim_add(t1, _CG_Symbol(82, "+"), t2);
+  return t0;
+}
+
+_CG_nil_type _CG_f_93_0/*__main__*/() {
+  _CG_int64 t2 = {};
+  _CG_float64 t0 = {};
+  _CG_float64 t1 = {};
+
+  t2 = _CG_prim_primitive_observe(2.5);
+  t1 = _CG_prim_mult(t2, _CG_Symbol(92, "*"), 2.5);
+  t0 = _CG_prim_add(t1, _CG_Symbol(82, "+"), 1.5);
+  _CG_prim_primitive_observe(t0);
+  return 0;
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+_CG_int64 cb_add(_CG_int64 e0, _CG_int64 e1) {
+  return (_CG_int64)_CG_f_81_1/*cb*/((_CG_int64)e0, (_CG_int64)e1);
+}
+
+int main(int argc, char *argv[]) {
+  MEM_INIT();
+  _CG_set_argv(argc, argv);
+  _CG_f_93_0/*__main__*/();
+  return 0;
+}

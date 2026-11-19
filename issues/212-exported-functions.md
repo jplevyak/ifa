@@ -57,10 +57,18 @@ IF1 text format spells it
   That marking runs after every function's reset: a later function's reset
   clears the instance variables of the types it holds, which undid a field
   marked live (14_export_object's `bv`, found while writing it).
-- **One clone.** C calls one entry point. `cg_exported_funs`
-  (`codegen/codegen_common.cc`) returns the one live clone of each exported
-  function, and fails naming the function if there are two: FA split it on a
-  demand nobody can satisfy, and codegen does not pick one.
+- **The root edge is a caller like any other.** The program may call an
+  exported function itself, with other types. Its root edge then shares an
+  EntrySet with those calls, and the split stage separates them on their
+  argument types as it would two call sites (`is_split_caller`; the stage
+  skipped every edge with no `from`, which is right only for the top edge).
+  An object formal follows the root edge to whichever EntrySet it enters.
+- **The entry point's clone is the root edge's.** After cloning, an
+  EntrySet's `fun` is its clone, so `cg_exported_funs`
+  (`codegen/codegen_common.cc`) takes `e->to->fun` for each root edge. The
+  other clones serve the program's own calls and stay internal. DCE marks
+  only that clone live as a root, and only its contour's result. One edge
+  enters one EntrySet, so there is no choice to make.
 - **Exceptions are the frontend's.** An exception cannot cross into C, so
   the frontend that exports a function catches everything in it (pyc's
   callback trampoline does). ifa does not check it: `Fun::can_raise` means
@@ -105,6 +113,17 @@ IF1 fixtures, `ifa/tests/ir/`:
   The instance `%top` makes reaches it, so the field read is typed `int64`,
   and `get_bv` takes a `void *`.
 - `clone/13_export.ir`, `clone/14_export_object.ir`: one EntrySet each.
+- `clone/15_export_called.ir` (and `codegen-c/`, `codegen-llvm/`): `%top`
+  calls the exported `%cb` with `float64`. Two `cb` contours; `cb_add`
+  forwards to the int64 clone, and the float64 one is inlined into
+  `__main__`. Before 2026-11-19 FA left one contour holding
+  `int64|float64` and failed.
+  The corpus exports nothing, and `check__default__d7cffe7d+786ca7ab` has
+  the same compile verdicts, warnings and EntrySet and CreationSet counts as
+  `check__default__b8f19ce6+49905899` on all 77 programs. Its three run
+  timeouts (chaos, rubik2, tonyjpegdecoder) were taken on a machine at load
+  average 90-137 from other jobs; rubik2 and tonyjpegdecoder finish alone
+  (71 s, 91 s) with the same output as before.
 - `testing/roundtrip_test.cc`: the text format writes and re-reads `:export`.
 
 A program that exports nothing takes none of these paths. `make test`
@@ -117,10 +136,6 @@ both.)
 
 ## Not done
 
-- **No fixture for the two-clone error.** It needs an exported function that
-  the program also calls with other types, which demands a split. Whether
-  that should be an error or a reason to emit a second, internal clone is
-  open until a frontend wants it.
 - **The C side of the ABI is the C compiler's.** A declared `int64` is
   `_CG_int64`; the frontend's shim narrows to the real C types (pyc's ctypes
   shim does that already for foreign calls).

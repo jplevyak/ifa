@@ -3438,14 +3438,15 @@ void cg_elide_unread_slots(FA *fa) {
 
 
 void cg_exported_funs(FA *fa, Vec<Fun *> &out) {
-  Map<Sym *, Fun *> seen;
-  for (Fun *f : fa->funs) {
-    if (!f || !f->live || !f->sym->export_name) continue;
-    if (Fun *g = seen.get(f->sym))
-      fail("exported function %s (%s) has two clones, %d and %d: flow analysis split it, and C can call only one "
-           "entry point (ifa/issues/212)",
-           f->sym->name ? f->sym->name : "?", f->sym->export_name, g->id, f->id);
-    seen.put(f->sym, f);
+  // The entry point forwards to the clone the export's root edge enters
+  // (after cloning, an EntrySet's `fun` is its clone). FA may have split the
+  // function for the program's own calls: those clones stay internal. One
+  // root edge enters one EntrySet, so there is exactly one.
+  for (AEdge *e : fa->export_edges) {
+    Fun *f = e->to->fun;
+    if (!f->live)
+      fail("exported function %s (%s): the clone its root edge enters is not live (ifa/issues/212)",
+           f->sym->name ? f->sym->name : "?", f->sym->export_name);
     // No exception check: Fun::can_raise means "reaches a raise", handled or
     // not, so it cannot say whether one ESCAPES. The frontend that exports a
     // function catches everything in it (ifa/issues/212).

@@ -3568,7 +3568,7 @@ static void make_export_edge(Fun *f) {
     vars->add(v);
     if (k && export_is_object(t)) {
       fa->export_object_classes.add(t);
-      fa->export_object_formals.add(make_AVar(vars->last(), e->to));
+      fa->export_object_formals.add(vars->last());
       fa->export_object_edges.add(e);
     }
   }
@@ -3584,10 +3584,11 @@ static void feed_export_formals(CreationSet *cs) {
   for (int i = 0; i < fa->export_object_classes.n; i++) {
     Sym *t = fa->export_object_classes[i];
     if (cs->sym != t && !t->specializers.set_in(cs->sym)) continue;
-    AVar *av = fa->export_object_formals[i];
+    AEdge *e = fa->export_object_edges[i];
+    // On the EntrySet the root edge enters now: the split stage may move it.
+    AVar *av = make_AVar(fa->export_object_formals[i], e->to);
     AType *before = av->out;
     update_gen(av, make_AType(cs));
-    AEdge *e = fa->export_object_edges[i];
     if (av->out != before && !e->in_edge_worklist) {
       e->in_edge_worklist = 1;
       fa->edge_worklist.enqueue(e);
@@ -4739,7 +4740,18 @@ int is_es_recursive(EntrySet *es) {
   return es->backedges.n;
 }
 
+// ifa/issues/212: an edge the split stage groups. Every call edge, and an
+// exported function's root edge, which shares its EntrySet with the
+// program's own calls and never recurses. Not the top edge, the one caller
+// of its contour.
+static bool is_split_caller(AEdge *e) {
+  if (e->from) return true;
+  for (AEdge *x : fa->export_edges) if (x == e) return true;
+  return false;
+}
+
 static int is_es_recursive(AEdge *e) {
+  if (!e->from) return 0;  // a root edge
   EntrySet *es = e->from->split ? e->from->split : e->from;
   for (AEdge *ee : es->backedges) if (ee->pnode == e->pnode && ee->fun == e->fun) return 1;
   return 0;
@@ -4751,6 +4763,7 @@ int is_es_cs_recursive(EntrySet *es) {
 }
 
 static int is_es_cs_recursive(AEdge *e) {
+  if (!e->from) return 0;  // a root edge
   EntrySet *es = e->from->split ? e->from->split : e->from;
   for (AEdge *ee : es->es_cs_backedges) if (ee->pnode == e->pnode && ee->fun == e->fun) return 1;
   return 0;
@@ -5755,7 +5768,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   }
   bool have_nonrec = false;
   if (!fsetters)
-    for (AEdge *ee : all_edges) if (ee && ee->from && !is_es_recursive(ee)) { have_nonrec = true; break; }
+    for (AEdge *ee : all_edges) if (ee && is_split_caller(ee) && !is_es_recursive(ee)) { have_nonrec = true; break; }
   // ifa/168: a partial overlap is a consequence of not splitting, not
   // evidence against it, when this contour owns the single creation point of
   // a CreationSet whose element is irrepresentable (list.__deepcopy__'s
@@ -5771,7 +5784,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       }
   int nedges = 0, non_rec_edges = 0;
   for (AEdge *ee : all_edges) if (ee) {
-    if (!ee->from) continue;
+    if (!is_split_caller(ee)) continue;
     nedges++;
     bool rec = !fsetters ? is_es_recursive(ee) : is_es_cs_recursive(ee);
     if (rec) {
@@ -5782,7 +5795,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       AType *ety = ety_at(ee);
       // No live non-recursive caller: a dead cycle; leave it fused.
       bool separable = have_nonrec && ety->n;
-      if (separable) for (AEdge *oe : all_edges) if (oe && oe != ee && oe->from) {
+      if (separable) for (AEdge *oe : all_edges) if (oe && oe != ee && is_split_caller(oe)) {
         AType *oty = ety_at(oe);
         if (!oty->n || oty == ety) continue;
         if (type_intersection(ety, oty) != fa->type_world.bottom_type && !owns_demanded_cs) {
