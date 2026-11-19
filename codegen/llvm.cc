@@ -248,7 +248,7 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   DEBUG_LOG("Pre-verification check for unterminated blocks:\n");
   for (llvm::Function &F : *TheModule) {
     for (llvm::BasicBlock &BB : F) {
-      if (!BB.getTerminator()) {
+      if (!BB.hasTerminator()) {
         DEBUG_LOG("WARNING: Function %s has unterminated block %s (size=%zu)\n", F.getName().str().c_str(),
                 BB.getName().str().c_str(), BB.size());
         DEBUG_LOG("Block instructions:\n");

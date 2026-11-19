@@ -14,6 +14,7 @@
 #include "fail.h"
 #include "fun.h"
 #include "graph.h"
+#include "html.h"
 #include "if1.h"
 #include "inline.h"
 #include "log.h"
@@ -43,6 +44,10 @@ const char *kStageName[FA::kNumFAPassStages] = {
 // ifa/issues/074: which splitter stage is running, for the per-stage
 // churn probes (IFA_DBG_STAGE). -1 outside extend_analysis.
 static int cur_split_stage = -1;
+static cchar *cur_split_subkind = nullptr;
+static CreationSet *cur_split_demand_cs = nullptr;
+static ATypeViolation *cur_split_viol = nullptr;
+static cchar *cur_split_note = nullptr;
 bool fgraph_pass_contours = false;
 int write_code_exit = 0;
 int analysis_pass = 0;
@@ -5391,10 +5396,16 @@ static int cs_slots_homogeneous(CreationSet *cs) {
 
 [[nodiscard]] static int split_edges(AVar *av, int fsetters, int fmark) {
   int again = 0;
+  const int aes_before = fa->all_entry_sets.n;
   EntrySet *es = (EntrySet *)av->contour;
   Vec<AEdge *> all_edges;
   for (AEdge *ee : es->edges) if (ee) all_edges.add(ee);
   qsort_by_id(all_edges);
+  Vec<AEdge *> snap_e;
+  Vec<EntrySet *> snap_to;
+  if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+    for (AEdge *ee : all_edges) if (ee) { snap_e.add(ee); snap_to.add(ee->to); }
+  }
   MPosition *p = nullptr;
   form_MPositionAVar(x, es->args) {
     if (x->value == av) {
@@ -5708,6 +5719,15 @@ static int cs_slots_homogeneous(CreationSet *cs) {
       log(LOG_SPLITTING, "DISPATCH ES %d:%d, %s %d, %d -> %d\n", ee->from->id, ee->pnode->lvals[0]->sym->id,
           es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, old ? old->id : -1, ee->to->id);
     }
+  }
+  if (again && (ifa_dump_html || ifa_dump_json || ifa_open_html)) {
+    cchar *sk = cur_split_subkind
+                    ? cur_split_subkind
+                    : (cur_split_stage == (int)FAPassStage::PER_CS_RECEIVER
+                           ? "PER_CS_RECEIVER"
+                           : (cur_split_stage == (int)FAPassStage::CSM_ELEMENT_CS ? "CSM_ELEMENT_CS" : "SPLIT_EDGES_DYNAMIC"));
+    html_record_es_split(fa, cur_split_stage, sk, es, av, p, fsetters, fmark, snap_e, snap_to, aes_before,
+                         cur_split_demand_cs, cur_split_viol, cur_split_note);
   }
   return again;
 }
@@ -6186,7 +6206,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   // whether a re-derived split is a state change or genuinely nothing.
   Vec<AEdge *> snap_e;
   Vec<EntrySet *> snap_to;
-  if (getenv("IFA_DBG_REPARK"))
+  if (getenv("IFA_DBG_REPARK") || ifa_dump_html || ifa_dump_json || ifa_open_html)
     for (AEdge *ee : es->edges) if (ee) { snap_e.add(ee); snap_to.add(ee->to); }
   AVar *av = dec->av;
   MPosition *avpos = dec->avpos;
@@ -6736,6 +6756,14 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
             fa->all_entry_sets.n - aes_before, snap_e.n, moved);
   }
   if (split) {
+    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+      cchar *sk = cur_split_subkind
+                      ? cur_split_subkind
+                      : (fsetters ? (fmark ? "MARK_SETTER_COMPAT" : "SETTER_COMPAT")
+                                  : (fmark ? "MARK_TYPE_COMPAT" : "TYPE_COMPAT"));
+      html_record_es_split(fa, cur_split_stage, sk, es, av, avpos, fsetters, fmark, snap_e, snap_to, aes_before,
+                           cur_split_demand_cs, cur_split_viol, cur_split_note);
+    }
     ++census.aes_apply_split;
     if (fa->all_entry_sets.n == aes_before) {
       ++census.aes_apply_split_nogrowth;
@@ -7366,6 +7394,12 @@ int fa_split_numeric_confluences() {
     if (keys.n < 2 || !any_pure) continue;
     // the first group keeps `es`; every other group moves to a fresh contour
     sort_cstrings(keys);
+    const int aes_before = fa->all_entry_sets.n;
+    Vec<AEdge *> snap_e;
+    Vec<EntrySet *> snap_to;
+    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+      for (AEdge *e : in) if (e) { snap_e.add(e); snap_to.add(e->to); }
+    }
     for (int i = 1; i < keys.n; i++) {
       Vec<AEdge *> *g = groups.get(keys[i]);
       EntrySet *tes = nullptr;
@@ -7382,6 +7416,10 @@ int fa_split_numeric_confluences() {
         fprintf(stderr, "[numsplit] p=%d fun=%s es=%d keeps {%s} x%d; es=%d takes {%s} x%d\n", analysis_pass,
                 es->fun->sym->name ? es->fun->sym->name : "?", es->id, keys[0], groups.get(keys[0])->n,
                 tes ? tes->id : -1, keys[i], g->n);
+    }
+    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+      html_record_es_split(fa, cur_split_stage, "NUMERIC_SEED_SPLIT", es, es->args.get(demand_pos), demand_pos, 0, 0,
+                           snap_e, snap_to, aes_before, nullptr, nullptr, keys[0]);
     }
   }
   return nsplit;
@@ -7979,6 +8017,11 @@ static uintptr_t setter_repr_key_raw(AVar *starter) {
           v->cs_map->put(cs->sym, new_cs);
         }
         analyze_again = 1;
+        if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+          cchar *sk = minmode ? "SETTER_REPR_KEY"
+                              : (elemsetter_enabled() && !starters.in(av) ? "ELEM_SETTER_CLASS" : "SETTER_EQ_CLASS");
+          html_record_cs_split(fa, cur_split_stage, sk, cs, new_cs, !route, compatible_set, nullptr, nullptr, av);
+        }
         if (!route) {
           log(LOG_SPLITTING, "SPLIT CS %d %s %d -> %d\n", cs->id, cs->sym->name ? cs->sym->name : "", cs->sym->id,
               new_cs->id);
@@ -8371,7 +8414,12 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
             analysis_pass, cs->id, bes->id,
             (bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "?", all_edges.n);
   log(LOG_SPLITTING, "SPLIT ES BY ARG TYPES es %d edges %d\n", bes->id, all_edges.n);
-  return apply_entry_set_split(dec);
+  cur_split_subkind = "ES_BY_ARG_TYPES";
+  cur_split_demand_cs = cs;
+  int r = apply_entry_set_split(dec);
+  cur_split_subkind = nullptr;
+  cur_split_demand_cs = nullptr;
+  return r;
 }
 
 // ifa/133: split the blocking contour, grouping its in-edges by WHICH
@@ -8460,7 +8508,12 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
             analysis_pass, cs->id, bes->id, (bes->fun && bes->fun->sym && bes->fun->sym->name) ? bes->fun->sym->name : "?",
             all_edges.n, groups.n);
   log(LOG_SPLITTING, "SPLIT BLOCKING ES es %d edges %d groups %d\n", bes->id, all_edges.n, groups.n);
-  return apply_entry_set_split(dec);
+  cur_split_subkind = "BLOCKING_ES";
+  cur_split_demand_cs = cs;
+  int r = apply_entry_set_split(dec);
+  cur_split_subkind = nullptr;
+  cur_split_demand_cs = nullptr;
+  return r;
 }
 
 // ifa/133 steps 3-4: peel one group of creation points off a CreationSet.
@@ -8553,6 +8606,10 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
   Vec<AVar *> new_defs;
   cs->defs.set_difference(moved, new_defs);
   cs->defs.move(new_defs);
+  if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+    cchar *sk = (route && !strcmp(route, "no_confusion")) ? "LADDER_NO_CONFUSION" : "LADDER_PATH_PARTITION";
+    html_record_cs_split(fa, cur_split_stage, sk, cs, new_cs, join_to == nullptr, moved, route, cs, nullptr);
+  }
   if (dbg)
     fprintf(stderr, "[csladder] p=%d cs=%d %s %s %d site(s) -> cs=%d\n", analysis_pass, cs->id, route,
             join_to ? "JOIN" : "SPLIT", n_move, new_cs->id);
@@ -8754,7 +8811,12 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
               dec->groups.n);
   }
   log(LOG_SPLITTING, "SPLIT ES BY CALL SITE es %d edges %d groups %d\n", es->id, all_edges.n, dec->groups.n);
-  return apply_entry_set_split(dec);
+  cur_split_subkind = "ES_BY_CALL_SITE";
+  cur_split_demand_cs = g ? g->cs : nullptr;
+  int r = apply_entry_set_split(dec);
+  cur_split_subkind = nullptr;
+  cur_split_demand_cs = nullptr;
+  return r;
 }
 
 bool classes_are_related(Vec<Sym *> &classes) {
@@ -9105,6 +9167,20 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
     Vec<AVar *> new_defs;
     O->defs.set_difference(moved, new_defs);
     O->defs.move(new_defs);
+    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+      for (int g = 0; g < ngroups; g++) {
+        if (!gcs[(size_t)g] || gcs[(size_t)g] == O) continue;
+        Vec<AVar *> g_defs;
+        cchar *g_sig = nullptr;
+        for (int i = 0; i < defs.n; i++) {
+          if (gid[(size_t)i] == g) {
+            g_defs.add(defs.v[i]);
+            if (!g_sig) g_sig = sig[(size_t)i].c_str();
+          }
+        }
+        html_record_cs_split(fa, cur_split_stage, "OWNER_OF_DEMANDED", O, gcs[(size_t)g], true, g_defs, g_sig, I, nullptr);
+      }
+    }
     return 1;
   }
   if (dbg && cands.empty())
@@ -9352,8 +9428,11 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       }
     }
   }
-  for (AVar *fv : per_cs_formals)
-    if (fv && split_edges(fv, 0, 0)) {
+  for (AVar *fv : per_cs_formals) {
+    cur_split_subkind = "UNTAGGED_DISPATCH";
+    int r = fv ? split_edges(fv, 0, 0) : 0;
+    cur_split_subkind = nullptr;
+    if (r) {
       if (dbg_ut)
         fprintf(stderr, "[untagged] split es=%d fun=%s per receiver CreationSet (%d)\n",
                 ((EntrySet *)fv->contour)->id,
@@ -9362,6 +9441,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
                 fv->out->type->sorted.n);
       analyze_again = 1;
     }
+  }
   Vec<CreationSet *> css;
   for (CreationSet *cs : tc_cs_dropped)
     if (cs && fa->css_set.set_in(cs)) css.set_add(cs);
@@ -9929,12 +10009,14 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
           }
           if (one_site && ctrs.set_count() == defs.n) {
             Vec<AVar *> moved;
+            Vec<CreationSet *> j_ncs;
             for (int i = 1; i < defs.n; i++) {
               CreationSet *ncs = new CreationSet(cs);
               ncs->split = cs;
               if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
               defs.v[i]->cs_map->put(cs->sym, ncs);
               moved.set_add(defs.v[i]);
+              j_ncs.add(ncs);
               if (dbg)
                 fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s JOINSPLIT def av=%d es=%d -> cs=%d\n", analysis_pass,
                         cs->id, cs->sym->name ? cs->sym->name : "?", defs.v[i]->id, ((EntrySet *)defs.v[i]->contour)->id,
@@ -9943,6 +10025,14 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
             Vec<AVar *> new_defs;
             cs->defs.set_difference(moved, new_defs);
             cs->defs.move(new_defs);
+            if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+              for (int i = 1; i < defs.n; i++) {
+                Vec<AVar *> single_def;
+                single_def.add(defs.v[i]);
+                html_record_cs_split(fa, cur_split_stage, "PARENT_FIRST_JOINSPLIT", cs, j_ncs.v[i - 1], true, single_def,
+                                     "parent-first join split", cs, defs.v[i]);
+              }
+            }
             analyze_again = 1;
             continue;
           }
@@ -9993,6 +10083,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       // The group holding the first def keeps the CreationSet; each other
       // group gets ONE new contour shared by all its creation points.
       std::vector<CreationSet *> gcs((size_t)ngroups, nullptr);
+      std::vector<bool> gcs_is_new((size_t)ngroups, false);
       gcs[(size_t)gid[0]] = cs;
       for (int i = 0; i < defs.n; i++) {
         if (gcs[(size_t)gid[(size_t)i]] == cs) continue;  // stays with the parent
@@ -10015,11 +10106,13 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
           }
           if (join) {
             gcs[(size_t)gid[(size_t)i]] = join;
+            gcs_is_new[(size_t)gid[(size_t)i]] = false;
           } else {
             CreationSet *ncs = new CreationSet(cs);
             ncs->split = cs;
             if (cur_split_stage >= 0 && cur_split_stage < FA::kNumFAPassStages) ++fa->dbg_stage_csmint[cur_split_stage];
             gcs[(size_t)gid[(size_t)i]] = ncs;
+            gcs_is_new[(size_t)gid[(size_t)i]] = true;
           }
         }
         CreationSet *ncs = gcs[(size_t)gid[(size_t)i]];
@@ -10032,12 +10125,27 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         log(LOG_SPLITTING, "SPLIT CS BY DEF %d %s -> %d (av %d group %d)\n", cs->id,
             cs->sym->name ? cs->sym->name : "", ncs->id, defs.v[i]->id, gid[(size_t)i]);
       }
-    }
-    if (moved.n) {
-      Vec<AVar *> new_defs;
-      cs->defs.set_difference(moved, new_defs);
-      cs->defs.move(new_defs);
-      analyze_again = 1;
+      if (moved.n) {
+        Vec<AVar *> new_defs;
+        cs->defs.set_difference(moved, new_defs);
+        cs->defs.move(new_defs);
+        if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+          cchar *sk = by_member ? "CS_MEMBER_KEY" : "CS_ASSIGN_SET_KEY";
+          for (int grp = 0; grp < ngroups; grp++) {
+            if (!gcs[(size_t)grp] || gcs[(size_t)grp] == cs) continue;
+            Vec<AVar *> g_defs;
+            cchar *g_sig = nullptr;
+            for (int i = 0; i < defs.n; i++) {
+              if (gid[(size_t)i] == grp) {
+                g_defs.add(defs.v[i]);
+                if (!g_sig) g_sig = sig[(size_t)i].c_str();
+              }
+            }
+            html_record_cs_split(fa, cur_split_stage, sk, cs, gcs[(size_t)grp], gcs_is_new[(size_t)grp], g_defs, g_sig, cs, nullptr);
+          }
+        }
+        analyze_again = 1;
+      }
     }
   }
   return analyze_again;
@@ -11091,7 +11199,12 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
               es->id, (es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?",
               (rav->var && rav->var->sym && rav->var->sym->name) ? rav->var->sym->name : "(anon)",
               rav->out->type->sorted.n, bad.set_count(), all_edges.n);
-    if (apply_entry_set_split(dec)) analyze_again = 1;
+    cur_split_subkind = boxing ? "BOXING_RECEIVER" : "ARG_VIOL_RECEIVER";
+    cur_split_viol = v;
+    int r = apply_entry_set_split(dec);
+    cur_split_subkind = nullptr;
+    cur_split_viol = nullptr;
+    if (r) analyze_again = 1;
   }
   (void)recvs;
   return analyze_again;
@@ -11360,9 +11473,15 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
 // still all point at dec->es when this runs.
 [[nodiscard]] static int apply_csm_split(CSMSplitDecision *dec) {
   int again = 0;
+  const int aes_before = fa->all_entry_sets.n;
   EntrySet *es = dec->es;
   MPosition *p = dec->p;
   AType *ety = dec->ety;
+  Vec<AEdge *> snap_e;
+  Vec<EntrySet *> snap_to;
+  if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+    for (AEdge *ee : dec->all_edges) if (ee) { snap_e.add(ee); snap_to.add(ee->to); }
+  }
   Map<CreationSet *, EntrySet *> cs_es_map;
   for (CreationSet *cs : ety->sorted) {
     Map<MPosition *, AType *> filters;
@@ -11408,6 +11527,9 @@ static CSMSplitDecision *decide_csm_split(AVar *av) {
       }
     }
     if (ee->to != old) again = 1;
+  }
+  if (again && (ifa_dump_html || ifa_dump_json || ifa_open_html)) {
+    html_record_es_split(fa, cur_split_stage, "CSM_ELEMENT_CS", es, dec->av, p, 0, 0, snap_e, snap_to, aes_before);
   }
   return again;
 }
@@ -11662,6 +11784,11 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
     X->const_positions.add(p);
     ++const_demand_positions;
     ++added;
+    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+      Vec<CreationSet *> dense_keys;
+      for (CreationSet *ck : keys) if (ck) dense_keys.add(ck);
+      html_record_const_demand(fa, cur_split_stage, X, p, dense_keys, nonconst, why);
+    }
     if (dbg) {
       AVar *fav = X->args.get(p);
       fprintf(stderr, "[constdemand] p=%d es=%d fun=%s formal=%s constants=%d%s <- viol av=%d kind=%d\n", analysis_pass,
@@ -12537,16 +12664,21 @@ static int demote_mixed_arity_slots() {
       }
       continue;
     }
+    Vec<CreationSet *> demoted_group;
     for (CreationSet *g : group)
       if (!g->no_static_arity) {
         g->no_static_arity = 1;
         dispatch_arity_epoch++;
         ++n;
+        demoted_group.add(g);
         if (dbg)
           fprintf(stderr, "[slotarity] p=%d DEMOTE cs=%d sym=%s vars=%d arity=%d (group %d, basic=%s)\n",
                   analysis_pass, g->id, g->sym && g->sym->name ? g->sym->name : "?", g->vars.n, g->static_arity,
                   group.n, want && want->name ? want->name : "(non-basic)");
       }
+    if (demoted_group.n && (ifa_dump_html || ifa_dump_json || ifa_open_html)) {
+      html_record_arity_demote(fa, demoted_group, want);
+    }
   }
   if (n && dbg) fprintf(stderr, "[slotarity] p=%d demoted=%d\n", analysis_pass, n);
   return n;
@@ -13613,6 +13745,11 @@ static int cselem_rejoin_unknown_mints() {
     if (u.s->abstract_type && other == u.s->abstract_type->v[0]) continue;
     u.v->cs_map->put(u.s, other);
     ++joined;
+    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+      Vec<AVar *> single_def;
+      single_def.add(u.v);
+      html_record_cs_split(fa, -1, "CSELEM_REJOIN", u.cs, other, false, single_def, cselem_key_shape_text(key), u.cs, u.v);
+    }
     if (dbg)
       fprintf(stderr, "[csrejoin] p=%d %s  cs=%d -> cs=%d  shape=%s var=%s\n", analysis_pass, key.c_str(), u.cs->id,
               other->id, cselem_key_shape_text(key),
@@ -13685,6 +13822,10 @@ static int cselem_resplit_diverged() {
       for (AVar *d : g.second)
         if (d && d->cs_map) d->cs_map->put(cs->sym, dest);
       moved += g.second.n;
+      if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+        html_record_cs_split(fa, -1, "CSELEM_RESPLIT", cs, dest, dest->split == cs, g.second,
+                             cselem_key_shape_text(g.first), cs, nullptr);
+      }
       if (dbg)
         fprintf(stderr, "[csresplit] p=%d cs=%d -> cs=%d  n=%d shape=%s%s\n", analysis_pass, cs->id, dest->id,
                 g.second.n, cselem_key_shape_text(g.first), dest->split == cs ? " (new)" : " (joined)");
@@ -14118,6 +14259,9 @@ static void complete_pass() {
   if (getenv("IFA_DBG_STAGE"))
     fprintf(stderr, "VIOL p=%d n=%d ess=%d css=%d\n", analysis_pass, fa->type_violations.set_count(), fa->ess.n,
             fa->css.n);
+  if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+    html_record_fa_pass(fa, analysis_pass);
+  }
   pass_timer.stop();
 }
 
@@ -14443,6 +14587,7 @@ static void analyze_to_convergence() {
       }
     }
     fa->defer_flow = false;
+    int pass_before_extend = analysis_pass;
     complete_pass();
     bool raise_grew = compute_es_can_raise();  // on the converged graph; see its comment
     dbg_dump_contours(analysis_pass);  // ifa/issues/055
@@ -14529,6 +14674,9 @@ static void analyze_to_convergence() {
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d resplit=%d rejoin=%d viol=%d\n",
                 analysis_pass, ext, rea, fil, ret, rsp, rej, fa->type_violations.set_count());
+      if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+        html_finalize_fa_pass(fa, pass_before_extend);
+      }
       loop_again = (ext || rea || fil || ret || rsp || rej || raise_grew);
     }
   } while (loop_again && analysis_pass <= fa->pass_limit);

@@ -2792,7 +2792,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         for (int i = 0; i < arg_var->type->has.n; i++) tags += tag_of(arg_var->type->has[i]->type);
       else
         tags += tag_of(arg_var->type);
-      llvm::Value *tagv = Builder->CreateGlobalStringPtr(tags);
+      llvm::Value *tagv = Builder->CreateGlobalString(tags, ".tags");
       args.insert(args.begin() + 1, tagv);
       ft = llvm::FunctionType::get(ptr_ty, {ptr_ty, ptr_ty}, /*isVarArg=*/true);
       fn = TheModule->getOrInsertFunction("_CG_format_string_tagged", ft);
@@ -3284,7 +3284,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   bool produced = ctx.watch_result_put;
   ctx.watch_result = saved;
   ctx.watch_result_put = saved_put;
-  if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->getTerminator())
+  if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->hasTerminator())
     emit_salvage_trap(ctx, dst);
 }
 
@@ -4732,7 +4732,7 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
         // sees the pending exception. What follows is unreachable.
         if (pn->fa_noreturn && pn->fa_noreturn_raises && !ctx.fn->sym->is_generator && !ctx.fn->sym->is_async &&
             Builder->GetInsertBlock() &&
-            !Builder->GetInsertBlock()->getTerminator()) {
+            !Builder->GetInsertBlock()->hasTerminator()) {
           llvm::Type *ret_ty = ctx.llvm_fn->getReturnType();
           if (ret_ty->isVoidTy())
             Builder->CreateRetVoid();
@@ -4777,7 +4777,7 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
 
 
   if (is_closer && Builder->GetInsertBlock() &&
-      !Builder->GetInsertBlock()->getTerminator()) {
+      !Builder->GetInsertBlock()->hasTerminator()) {
     emit_block_terminator(ctx, pn);
   }
   // Recurse to successors -- must agree with discover_blocks and
@@ -5086,7 +5086,7 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
   // when the closer-detection missed a case) gets an
   // unreachable so verifyModule doesn't reject the function.
   for (llvm::BasicBlock &bb : *ctx.llvm_fn) {
-    if (!bb.getTerminator()) {
+    if (!bb.hasTerminator()) {
       Builder->SetInsertPoint(&bb);
       Builder->CreateUnreachable();
     }

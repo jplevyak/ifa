@@ -302,7 +302,10 @@ void Fun::called_by_funs(Vec<Fun *> &called_by) {
   called_by.set_to_vec();
 }
 
-cchar *Fun::pathname() { return ast->pathname(); }
+cchar *Fun::pathname() {
+  if (ast) return ast->pathname();
+  return "<unknown>";
+}
 
 cchar *Fun::filename() {
   cchar *fn = pathname();
@@ -313,9 +316,9 @@ cchar *Fun::filename() {
     return fn;
 }
 
-int Fun::line() { return ast->line(); }
+int Fun::line() { return ast ? ast->line() : 0; }
 
-int Fun::source_line() { return ast->source_line(); }
+int Fun::source_line() { return ast ? ast->source_line() : 0; }
 
 void rebuild_cfg_pred_index(Fun *f) {
   for (PNode *n : f->fa_all_PNodes) {
