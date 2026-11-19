@@ -3436,3 +3436,20 @@ void cg_elide_unread_slots(FA *fa) {
 }
 
 
+
+void cg_exported_funs(FA *fa, Vec<Fun *> &out) {
+  Map<Sym *, Fun *> seen;
+  for (Fun *f : fa->funs) {
+    if (!f || !f->live || !f->sym->export_name) continue;
+    if (Fun *g = seen.get(f->sym))
+      fail("exported function %s (%s) has two clones, %d and %d: flow analysis split it, and C can call only one "
+           "entry point (ifa/issues/212)",
+           f->sym->name ? f->sym->name : "?", f->sym->export_name, g->id, f->id);
+    seen.put(f->sym, f);
+    if (f->can_raise)
+      fail("exported function %s (%s) can raise, and an exception cannot cross into its C caller; the frontend "
+           "that exports it must catch everything (ifa/issues/212)",
+           f->sym->name ? f->sym->name : "?", f->sym->export_name);
+    out.add(f);
+  }
+}

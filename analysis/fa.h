@@ -629,6 +629,16 @@ class FA : public gc {
   Patterns *patterns;
   Vec<Fun *> funs;
   AEdge *top_edge;
+  // ifa/issues/212: one more root per exported function (Sym::export_name),
+  // an outside caller passing its declared types. `export_vars` holds the
+  // actual-argument Vars of each root edge, in position order. An object
+  // formal (a class type) receives every CreationSet of that class, fed
+  // where each is made (creation_point): `export_object_classes` and
+  // `export_object_formals` are parallel.
+  Vec<AEdge *> export_edges;
+  Vec<Vec<Var *> *> export_vars;
+  Vec<Sym *> export_object_classes;
+  Vec<AVar *> export_object_formals;
   Vec<EntrySet *> ess;      // all used entry sets as array
   Vec<EntrySet *> ess_set;  // all used entry sets as set
   Vec<Sym *> basic_types;

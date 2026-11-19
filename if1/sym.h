@@ -194,6 +194,14 @@ class Sym : public BasicSym {
   Sym *self;   // self variable for the function *fun*
   Sym *ret;    // return value of functions    *fun*
   Sym *cont;   // continuation (function returning ret) *fun*
+  // An EXPORTED function: code outside the program calls it (a callback, a
+  // library entry point), under this C name, with these declared types for
+  // each formal after the closure and for the result (null: no result).
+  // FA roots it as an outside caller; codegen emits the entry point. See
+  // ifa/issues/212.                                        *fun*
+  cchar *export_name;
+  Vec<Sym *> export_args;
+  Sym *export_ret;
 
   Sym *instantiates;
   Map<Sym *, Sym *> substitutions;

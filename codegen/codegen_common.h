@@ -603,4 +603,10 @@ void cg_trap_census(cchar *backend, cchar *kind, Fun *f);
 cchar *cg_trap_c_at(cchar *s, int line);
 #define cg_trap_c(s) cg_trap_c_at(s, __LINE__)
 
+// ifa/issues/212: the one live clone of each exported function
+// (Sym::export_name), in fa->funs order. C calls one entry point, so an
+// exported function with two live clones is an error naming it: FA split
+// it on a demand nobody can satisfy, and codegen does not pick one.
+void cg_exported_funs(FA *fa, Vec<Fun *> &out);
+
 #endif  // _codegen_common_H_

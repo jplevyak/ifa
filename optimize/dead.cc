@@ -309,6 +309,18 @@ static void mark_initial_dead_and_alive(FA *fa, int init = 0) {
       }
     }
   }
+  // ifa/issues/212: the outside caller of an exported function reads its
+  // result, as a live call would. After every reset above: a later
+  // function's reset clears the instance variables of the types it holds,
+  // which would undo a field this marks live.
+  for (Fun *f : fa->funs) {
+    if (!f->sym->export_name) continue;
+    f->live = 1;
+    if (f->sym->export_ret)
+      for (Var *v : f->rets)
+        for (int i = 0; i < v->avars.n; i++)
+          if (v->avars[i].key && !v->avars[i].value->live) mark_live_avar(v->avars[i].value);
+  }
 }
 
 void mark_live_types(FA *fa) {
@@ -357,6 +369,8 @@ void mark_live_funs(FA *fa) {
   Vec<Fun *> seen;
   for (Fun *f : fa->funs) if (f) seen.set_add(f);
   seen.set_add(if1->top->fun);
+  // ifa/issues/212: an exported function is a root, as the top is.
+  for (Fun *f : fa->funs) if (f && f->sym->export_name) f->live = 1;
   int changed = 1;
   while (changed) {
     changed = 0;

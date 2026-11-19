@@ -820,6 +820,14 @@ static void parse_fun_decl(Lex &L) {
       parse_body_forms(L, &body);
     } else if (!strcmp(kw, "in")) {
       f->in = parse_ref(L);
+    } else if (!strcmp(kw, "export")) {  // ifa/issues/212: :export "c_name"
+      if (L.t.kind != TOK_STRING) parse_err(L, "expected the C name as a string after :export");
+      else { f->export_name = L.t.text; next_token(L); }
+    } else if (!strcmp(kw, "export-args")) {  // declared formal types, after the closure
+      if (!expect(L, TOK_LPAREN, "'(' to open :export-args")) continue;
+      parse_ref_list(L, f->export_args);
+    } else if (!strcmp(kw, "export-ret")) {
+      f->export_ret = parse_ref(L);
     } else if (!strcmp(kw, "nesting-depth")) {
       if (L.t.kind != TOK_INT) parse_err(L, "expected integer");
       else { f->nesting_depth = (int)L.t.ival; next_token(L); }

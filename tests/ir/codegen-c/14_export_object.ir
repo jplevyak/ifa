@@ -1,0 +1,41 @@
+;; 14_export_object.ir — ifa/issues/212: an exported function with an
+;; OBJECT formal. %get is called only from outside, as `get_bv(void *)`,
+;; with "some %Box" -- the instance %top made, which the program handed
+;; out. FA gives the formal every CreationSet of %Box (here the one
+;; %top creates), so the field read is typed int64, and the entry point
+;; takes an opaque pointer.
+
+(type %Box :kind RECORD :has (%bv))
+(sym %bv :in %Box)
+
+(sym %k :is-constant :immediate (int64 5))
+
+(sym %b :is-local)
+(sym %v :is-local)
+(sym %gcont)
+(fun %get
+  :args (%get %b)
+  :rets (%v)
+  :cont %gcont
+  :export "get_bv"
+  :export-args (%Box)
+  :export-ret @int64
+  :body
+    (send @operator %b @period #bv => %v)
+    (send @primitive @reply %gcont %v))
+
+(sym %p :is-local)
+(sym %s :is-local)
+(sym %r :is-local)
+(sym %o :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send @primitive @new %Box => %p)
+    (send @operator %p @setter #bv %k => %s)
+    (move %p %r)
+    (send @primitive #observe %r => %o))
+
+(entry %top)

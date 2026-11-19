@@ -467,6 +467,8 @@ static bool is_clone_methods_per_cs(Sym *s) {
   return cmc && cmc->clone_methods_per_cs;
 }
 
+static void feed_export_formals(CreationSet *cs);  // ifa/issues/212
+
 CreationSet *creation_point(AVar *v, Sym *s, int arity) {
   dbg_cs_route = nullptr;
   CreationSet *cs = v->cs_map ? v->cs_map->get(s) : 0;
@@ -923,6 +925,7 @@ Lfound:
   cs->defs.set_add(v);
   if (v->contour_is_entry_set) ((EntrySet *)v->contour)->creates.set_add(cs);
   update_gen(v, make_AType(cs));
+  if (fa->export_object_formals.n) feed_export_formals(cs);  // ifa/issues/212
   return cs;
 }
 
@@ -3501,6 +3504,77 @@ static AEdge *make_top_edge(Fun *top) {
   return e;
 }
 
+// ifa/issues/212: an exported function's root edge. The outside caller
+// passes the closure itself and one value of each declared type: a number
+// type is that type's abstract value ("some int64"), as a value C returns
+// is; any other type is an object, an instance of that class or a
+// subclass, and C hands back whichever one the program gave it, so the
+// formal receives EVERY such CreationSet (creation_point feeds it). That
+// keys on type, never on where an object came from.
+static bool export_is_object(Sym *t) { return !t->num_kind; }
+
+static void refresh_export_edge(int i) {
+  AEdge *e = fa->export_edges[i];
+  Vec<Var *> &vars = *fa->export_vars[i];
+  Fun *f = e->match->fun;
+  for (int k = 0; k < f->positional_arg_positions.n; k++) {
+    MPosition *cp = f->positional_arg_positions[k];
+    e->match->formal_filters.put(cp, fa->type_world.any_type);
+    AVar *av = make_AVar(vars[k], e->to);
+    e->args.put(cp, av);
+    e->filtered_args.put(cp, av);
+    if (!k)
+      update_gen(av, f->sym->abstract_type);
+    else {
+      Sym *t = f->sym->export_args[k - 1];
+      if (!export_is_object(t)) update_gen(av, make_abstract_type(t));
+    }
+  }
+}
+
+static void make_export_edge(Fun *f) {
+  Sym *s = f->sym;
+  if (f->positional_arg_positions.n != s->export_args.n + 1)
+    fail("exported function %s (%s) declares %d argument types for %d formals", s->name ? s->name : "?",
+         s->export_name, s->export_args.n, f->positional_arg_positions.n - 1);
+  if (f->is_varargs) fail("exported function %s (%s) cannot take varargs", s->name ? s->name : "?", s->export_name);
+  AEdge *e = new AEdge();
+  e->match = new Match(f);
+  e->pnode = new PNode();
+  Vec<AEdge *> edges;
+  make_entry_set(e, edges);
+  assert(edges.n == 1);
+  Vec<Var *> *vars = new Vec<Var *>;
+  for (int k = 0; k < f->positional_arg_positions.n; k++) {
+    Sym *t = k ? s->export_args[k - 1] : s;
+    // The outside caller's actual: a variable of its own, as the top edge's
+    // __main__ is, never the type Sym itself.
+    vars->add(new Var(new_Sym("__export_arg__")));
+    if (k && export_is_object(t)) {
+      fa->export_object_classes.add(t);
+      fa->export_object_formals.add(make_AVar(vars->last(), e->to));
+    }
+  }
+  fa->export_edges.add(e);
+  fa->export_vars.add(vars);
+  refresh_export_edge(fa->export_edges.n - 1);
+}
+
+// A new instance of an exported object formal's class reaches the formal.
+static void feed_export_formals(CreationSet *cs) {
+  for (int i = 0; i < fa->export_object_classes.n; i++) {
+    Sym *t = fa->export_object_classes[i];
+    if (cs->sym == t || t->specializers.set_in(cs->sym)) update_gen(fa->export_object_formals[i], make_AType(cs));
+  }
+}
+
+// Every root's entry contour: the top's, then each exported function's.
+static void root_entry_sets(Vec<EntrySet *> &out) {
+  if (fa->top_edge && fa->top_edge->to) out.add(fa->top_edge->to);
+  for (AEdge *e : fa->export_edges)
+    if (e->to) out.add(e->to);
+}
+
 static bool is_return_value(AVar *av) {
   EntrySet *es = (EntrySet *)av->contour;
   for (AVar *v : es->rets) if (v == av) return true;
@@ -4555,6 +4629,7 @@ static void initialize_pass() {
   fa->dirty_avar_count = 0;    // issue 033 M4 probe
   fa->examined_avar_count = 0;  // issue 033 M4 probe
   refresh_top_edge(fa->top_edge);
+  for (int i = 0; i < fa->export_edges.n; i++) refresh_export_edge(i);
 }
 
 static void mark_es_backedges(EntrySet *es, Accum<EntrySet *> &ess) {
@@ -4575,7 +4650,10 @@ static void mark_es_backedges(EntrySet *es, Accum<EntrySet *> &ess) {
 
 static void compute_recursive_entry_sets() {
   Accum<EntrySet *> ess;
-  mark_es_backedges(fa->top_edge->to, ess);
+  Vec<EntrySet *> roots;
+  root_entry_sets(roots);
+  for (EntrySet *r : roots)
+    if (r->dfs_color == DFS_white) mark_es_backedges(r, ess);
   for (EntrySet *es : ess.asvec) es->dfs_color = DFS_white;
 }
 
@@ -4621,7 +4699,10 @@ static void mark_es_cs_backedges(EntrySet *es, Accum<EntrySet *> &ess, Accum<Cre
 static void compute_recursive_entry_creation_sets() {
   Accum<EntrySet *> ess;
   Accum<CreationSet *> css;
-  mark_es_cs_backedges(fa->top_edge->to, ess, css);
+  Vec<EntrySet *> roots;
+  root_entry_sets(roots);
+  for (EntrySet *r : roots)
+    if (r->dfs_color == DFS_white) mark_es_cs_backedges(r, ess, css);
   for (EntrySet *es : ess.asvec) es->dfs_color = DFS_white;
   for (CreationSet *cs : css.asvec) cs->dfs_color = DFS_white;
 }
@@ -13499,9 +13580,10 @@ static void settle_gated_liveness() {
   // and its bottom-typed arguments are not violations. Keep the contours
   // reachable from the top through live sends.
   if (!fa->top_edge || !fa->top_edge->to) return;
-  Vec<EntrySet *> reached, stack;
-  reached.set_add(fa->top_edge->to);
-  stack.add(fa->top_edge->to);
+  Vec<EntrySet *> reached, stack, roots;
+  root_entry_sets(roots);
+  for (EntrySet *r : roots)
+    if (reached.set_add(r)) stack.add(r);
   // Through out_edge_map, keyed by the SENDING node, exactly as clone.cc
   // builds Fun::calls: an AEdge's own `pnode` is not always that node (a
   // method call through a bound closure, pygmy's `self.isoccluded(...)`),
@@ -13995,6 +14077,7 @@ static void analyze_to_convergence() {
     // the cheap part -- hq2x pass 15 walked ~30 000 AVars with 79 dirty
     // in 0.081s.
     fa->edge_worklist.enqueue(fa->top_edge);
+    for (AEdge *e : fa->export_edges) fa->edge_worklist.enqueue(e);  // ifa/issues/212
     // ifa/186: an AVar whose `out` changes is queued, and pushes whatever
     // `out` is by then to its `forward` set once the edges drain, ahead of
     // the sends. Pushing every change at once re-walked the whole
@@ -14143,6 +14226,8 @@ int FA::analyze(Fun *top) {
   }
   initialize();
   top_edge = make_top_edge(top);
+  for (Fun *f : pdb->funs)
+    if (f->sym->export_name) make_export_edge(f);
   analyze_to_convergence();
   // Experimental: mid-FA inlining (issue 026 followup).
   // After first convergence, run simple_inlining to fold

@@ -5426,3 +5426,6 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
   cg_check_layout_contract();
   return true;
 }
+
+// ifa/issues/212: the type mapper, for llvm.cc's exported entry points.
+llvm::Type *cg_llvm_type_of(Sym *s) { return sym_to_llvm_type(s); }

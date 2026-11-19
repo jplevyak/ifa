@@ -178,6 +178,15 @@ static void write_fun(FILE *fp, Sym *s, NameAssigner &na) {
   if (s->cont) { fputs("  :cont ", fp); na.print_ref(fp, s->cont); fputc('\n', fp); }
   if (s->in) { fputs("  :in ", fp); na.print_ref(fp, s->in); fputc('\n', fp); }
   if (s->nesting_depth) fprintf(fp, "  :nesting-depth %d\n", s->nesting_depth);
+  if (s->export_name) {  // ifa/issues/212
+    fprintf(fp, "  :export \"%s\"\n  :export-args (", s->export_name);
+    for (int i = 0; i < s->export_args.n; i++) {
+      if (i) fputc(' ', fp);
+      na.print_ref(fp, s->export_args[i]);
+    }
+    fputs(")\n", fp);
+    if (s->export_ret) { fputs("  :export-ret ", fp); na.print_ref(fp, s->export_ret); fputc('\n', fp); }
+  }
 
   fputs("  :body\n", fp);
   if (s->code) {
