@@ -4276,6 +4276,14 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     Var *actual = pn->rvals.v[i];
     if (!actual) continue;
     llvm::Value *val = value_for_var(ctx, actual);
+    // ifa/210: a function VALUE passed to a formal the callee keeps (one not
+    // typed by a single function, so it is in the signature): its address,
+    // as emit_move stores it and value-identity dispatch compares it. A
+    // formal typed by the function itself is left out of every signature,
+    // so this does not reach it. `CB(f)` stored `f` this way, and passed
+    // null (issues/188's callbacks; the same in plain Python).
+    if (!val)
+      if (Sym *fs = fun_sym_for_var(actual)) val = fun_identity_token(fs);
     if (!val) {
       // ifa/issues/051: an actual with no materialisable value is the
       // DEFAULTED argument of a call that omits it -- `cube_state(s)`

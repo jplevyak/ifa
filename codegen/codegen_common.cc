@@ -3446,10 +3446,9 @@ void cg_exported_funs(FA *fa, Vec<Fun *> &out) {
            "entry point (ifa/issues/212)",
            f->sym->name ? f->sym->name : "?", f->sym->export_name, g->id, f->id);
     seen.put(f->sym, f);
-    if (f->can_raise)
-      fail("exported function %s (%s) can raise, and an exception cannot cross into its C caller; the frontend "
-           "that exports it must catch everything (ifa/issues/212)",
-           f->sym->name ? f->sym->name : "?", f->sym->export_name);
+    // No exception check: Fun::can_raise means "reaches a raise", handled or
+    // not, so it cannot say whether one ESCAPES. The frontend that exports a
+    // function catches everything in it (ifa/issues/212).
     out.add(f);
   }
 }

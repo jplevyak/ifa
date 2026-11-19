@@ -639,6 +639,7 @@ class FA : public gc {
   Vec<Vec<Var *> *> export_vars;
   Vec<Sym *> export_object_classes;
   Vec<AVar *> export_object_formals;
+  Vec<AEdge *> export_object_edges;  // the root edge each formal is an actual of
   Vec<EntrySet *> ess;      // all used entry sets as array
   Vec<EntrySet *> ess_set;  // all used entry sets as set
   Vec<Sym *> basic_types;

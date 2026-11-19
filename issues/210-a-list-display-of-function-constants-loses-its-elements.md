@@ -40,6 +40,21 @@ and which has no backing variable.
   (`TheModule->getFunction(v0->sym->fun->cg_string)`). The element store
   has no such step.
 
+## Progress
+
+- **2026-11-18, call arguments (LLVM).** A function passed as a call
+  argument to a formal the callee keeps (one not typed by a single
+  function) had no value and was passed as `null`: `CB(f)` stored `f` that
+  way and the call through it trapped (issues/188's callbacks; plain Python
+  `CB(f1)` the same). `emit_send_call` now passes the function's address
+  (`fun_identity_token`, what `emit_move` stores). Formals typed by one
+  function stay out of signatures, so this does not reach them.
+- **Still open, found alongside:** on LLVM, a call through a value that is
+  either a plain function or a closure (`[CB(f1), CB(f2), CB(sc(-1))]`, then
+  `cb.fn(a, b)` on each) reads a class tag from the plain function's address
+  and segfaults; the C backend dispatches it. Same family as the list
+  display: one representation rule for a function used as a value.
+
 ## Plan
 
 One rule for a function constant used as a VALUE, on both backends: its

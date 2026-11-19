@@ -925,7 +925,10 @@ Lfound:
   cs->defs.set_add(v);
   if (v->contour_is_entry_set) ((EntrySet *)v->contour)->creates.set_add(cs);
   update_gen(v, make_AType(cs));
-  if (fa->export_object_formals.n) feed_export_formals(cs);  // ifa/issues/212
+  // ifa/issues/212. Not the class's prototype (`Sym::self`, which holds its
+  // class attributes): it is a CreationSet of the class but no instance of
+  // it, and nothing hands it to C.
+  if (fa->export_object_formals.n && !(s->self && v->var && v->var->sym == s->self)) feed_export_formals(cs);
   return cs;
 }
 
@@ -1306,11 +1309,15 @@ static int edge_constant_incompatibility(AEdge *e, EntrySet *es) {
 // enclosing-scope Var resolves through the first stamp, so two callers'
 // captured variables union rather than staying separate.
 static void update_display(AEdge *e, EntrySet *es) {
+  // ifa/issues/212: a root edge (an exported function's outside caller) has
+  // no sending contour. An exported function is at top level, so its one
+  // enclosing scope is the top's contour (make_export_edge checks the depth).
+  EntrySet *from = e->from ? e->from : fa->top_edge->to;
   for (int i = es->display.n; i < es->fun->sym->nesting_depth; i++)
-    if (i < e->from->display.n)
-      es->display.add(e->from->display[i]);
+    if (i < from->display.n)
+      es->display.add(from->display[i]);
     else
-      es->display.add(e->from);
+      es->display.add(from);
 }
 
 
@@ -3538,6 +3545,10 @@ static void make_export_edge(Fun *f) {
     fail("exported function %s (%s) declares %d argument types for %d formals", s->name ? s->name : "?",
          s->export_name, s->export_args.n, f->positional_arg_positions.n - 1);
   if (f->is_varargs) fail("exported function %s (%s) cannot take varargs", s->name ? s->name : "?", s->export_name);
+  // Its C caller cannot supply a closure: only the top level may enclose it.
+  if (s->nesting_depth > fa->top_edge->to->fun->sym->nesting_depth + 1)
+    fail("exported function %s (%s) is nested in another function, whose variables its C caller cannot supply",
+         s->name ? s->name : "?", s->export_name);
   AEdge *e = new AEdge();
   e->match = new Match(f);
   e->pnode = new PNode();
@@ -3549,10 +3560,16 @@ static void make_export_edge(Fun *f) {
     Sym *t = k ? s->export_args[k - 1] : s;
     // The outside caller's actual: a variable of its own, as the top edge's
     // __main__ is, never the type Sym itself.
-    vars->add(new Var(new_Sym("__export_arg__")));
+    Var *v = new Var(new_Sym("__export_arg__"));
+    // Contoured on the root's own EntrySet, which every pass resets, so an
+    // object formal holds exactly this pass's CreationSets: a global AVar
+    // kept a CreationSet a later split had emptied.
+    v->is_internal = 1;
+    vars->add(v);
     if (k && export_is_object(t)) {
       fa->export_object_classes.add(t);
       fa->export_object_formals.add(make_AVar(vars->last(), e->to));
+      fa->export_object_edges.add(e);
     }
   }
   fa->export_edges.add(e);
@@ -3560,11 +3577,21 @@ static void make_export_edge(Fun *f) {
   refresh_export_edge(fa->export_edges.n - 1);
 }
 
-// A new instance of an exported object formal's class reaches the formal.
+// A new instance of an exported object formal's class reaches the formal,
+// and its root edge is analyzed again: analyze_edge skips an edge with an
+// empty argument, as the root's is until the first instance is made.
 static void feed_export_formals(CreationSet *cs) {
   for (int i = 0; i < fa->export_object_classes.n; i++) {
     Sym *t = fa->export_object_classes[i];
-    if (cs->sym == t || t->specializers.set_in(cs->sym)) update_gen(fa->export_object_formals[i], make_AType(cs));
+    if (cs->sym != t && !t->specializers.set_in(cs->sym)) continue;
+    AVar *av = fa->export_object_formals[i];
+    AType *before = av->out;
+    update_gen(av, make_AType(cs));
+    AEdge *e = fa->export_object_edges[i];
+    if (av->out != before && !e->in_edge_worklist) {
+      e->in_edge_worklist = 1;
+      fa->edge_worklist.enqueue(e);
+    }
   }
 }
 
@@ -14077,7 +14104,8 @@ static void analyze_to_convergence() {
     // the cheap part -- hq2x pass 15 walked ~30 000 AVars with 79 dirty
     // in 0.081s.
     fa->edge_worklist.enqueue(fa->top_edge);
-    for (AEdge *e : fa->export_edges) fa->edge_worklist.enqueue(e);  // ifa/issues/212
+    for (AEdge *e : fa->export_edges)  // ifa/issues/212
+      if (!e->in_edge_worklist) e->in_edge_worklist = 1, fa->edge_worklist.enqueue(e);
     // ifa/186: an AVar whose `out` changes is queued, and pushes whatever
     // `out` is by then to its `forward` set once the edges drain, ahead of
     // the sends. Pushing every change at once re-walked the whole

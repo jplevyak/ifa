@@ -1,9 +1,10 @@
 # 212 — exported functions: code outside the program calling in
 
 **Status:** open. The IR, FA, DCE and both backends landed 2026-11-18, with
-IF1 fixtures; the first user is pyc's `CFUNCTYPE` callbacks
-([issues/188](../../issues/188-static-ctypes-subset.md) item 1, Part B), not
-yet written.
+IF1 fixtures. The first user, pyc's `CFUNCTYPE` callbacks
+([issues/188](../../issues/188-static-ctypes-subset.md) item 1, Part B),
+landed the same day and found the four defects listed under "Fixed by the
+first user".
 
 ## What it is
 
@@ -41,7 +42,10 @@ IF1 text format spells it
   - an object: every CreationSet of the class or a subclass. `Sym::creators`
     grows during a pass, so the formal is fed where each one is made
     (`feed_export_formals`, called at the end of `creation_point`), on every
-    pass. C hands back whichever instance the program gave it, and the
+    pass. Not the class's prototype (`Sym::self`, its class-attribute
+    holder), which is a CreationSet of the class but not an instance: fed
+    to pyc's first callback trampoline, it made `cb.fn` a read of a field the
+    prototype does not have. C hands back whichever instance the program gave it, and the
     analysis does not claim to know which: this keys on TYPE, so it is not
     provenance.
   - Re-seeded every pass with the top edge, since every pass re-derives from
@@ -56,9 +60,13 @@ IF1 text format spells it
 - **One clone.** C calls one entry point. `cg_exported_funs`
   (`codegen/codegen_common.cc`) returns the one live clone of each exported
   function, and fails naming the function if there are two: FA split it on a
-  demand nobody can satisfy, and codegen does not pick one. Also fails if
-  the clone can raise (`Fun::can_raise`): an exception cannot cross into C,
-  so the frontend that exports a function must catch everything in it.
+  demand nobody can satisfy, and codegen does not pick one.
+- **Exceptions are the frontend's.** An exception cannot cross into C, so
+  the frontend that exports a function catches everything in it (pyc's
+  callback trampoline does). ifa does not check it: `Fun::can_raise` means
+  "reaches a raise", handled or not, so it cannot say whether one escapes.
+  A check on it refused pyc's first trampoline, whose `try` catches
+  everything; it was removed.
 - **The entry point, both backends.** The clone keeps its own name and its
   live-argument signature. Beside it, `<name>(<every declared argument>)`
   forwards to the clone's live formals, each converted to the clone's type:
@@ -67,6 +75,25 @@ IF1 text format spells it
     root, so the clone's body is kept.
   - LLVM: `emit_llvm_exports` (`codegen/llvm.cc`). The names stay external
     when the module is internalized for LTO, as `main` does.
+
+## Fixed by the first user (pyc callbacks, 2026-11-18)
+
+- **The display.** pyc gives a module-level function nesting depth 1, so its
+  contour needs a display, which `update_display` built from the edge's
+  sending contour. A root edge has none: it crashed. A root edge now takes
+  the top's contour, and an exported function nested deeper is an error
+  (its C caller cannot supply the enclosing variables).
+- **The prototype.** A class's prototype (`Sym::self`) is a CreationSet of
+  the class: it reached the object formal and made `cb.fn` a read of a
+  field the prototype does not have. Excluded at the feed.
+- **The empty first argument.** `analyze_edge` skips an edge whose argument
+  is empty, as the object formal is until the first instance is made, and
+  nothing retried it: the exported function was never analyzed. It worked
+  in the fixtures only because the actuals were GLOBAL AVars, which keep
+  the previous pass's types (and so kept a CreationSet a split had emptied).
+  The actuals are now contoured on the root's EntrySet (reset every pass),
+  and feeding an object formal re-queues its root edge.
+- **The exception check**, which refused every trampoline (below).
 
 ## Tests
 
