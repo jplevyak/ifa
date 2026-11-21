@@ -622,6 +622,10 @@ class TypeWorld : public gc {
   AType *function_type = nullptr;
 };
 
+// Set by fa_events_enable(), which drivers call while parsing options --
+// before any FA exists. An FA built afterwards starts with events on.
+extern bool fa_events_requested;
+
 class FA : public gc {
  public:
   PDB *pdb;
@@ -860,7 +864,7 @@ class FA : public gc {
         best_violations(INT_MAX),
         stall_passes(0),
         nonimprove_passes(0),
-        fa_events_enabled(false) {}
+        fa_events_enabled(fa_events_requested) {}
 
   int analyze(Fun *f);
   int concretize();

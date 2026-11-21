@@ -102,7 +102,7 @@ int main(int argc, char *argv[]) {
     // A failed compile must fail the process: `make test_llvm` used to go
     // on and run a stale ./test_llvm, which hid a type error for days.
     if (compile_one_file(arg_state.file_argument[i]) < 0) status = 1;
-    if (fhtml || ifa_dump_json) ifa_html(arg_state.file_argument[i], ".");
+    if (fhtml || ifa_dump_json) ifa_html(arg_state.file_argument[i], arg_state.file_argument[i]);
     if (fcode) ifa_code(arg_state.file_argument[i]);
   }
   return status;

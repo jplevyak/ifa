@@ -1632,8 +1632,9 @@ void dump_fun_list(FILE *fp, Vec<Fun *> &funs) {
   }
 }
 
-void dump_html(FA *fa, cchar *fn, cchar *mktree_dir) {
-  (void)mktree_dir;
+void dump_html(FA *fa, cchar *fn, cchar *out_base) {
+  // `fn` is the program as named on the command line; `out_base` is where
+  // codegen wrote its output, and where ours goes.
   check_env_config();
 
   // If no passes were recorded, record one now
@@ -1641,7 +1642,7 @@ void dump_html(FA *fa, cchar *fn, cchar *mktree_dir) {
     html_record_fa_pass(fa, 0);
   }
 
-  std::string base_fn(fn);
+  std::string base_fn(out_base ? out_base : fn);
   std::string html_fn = base_fn + ".html";
   std::string json_fn = base_fn + ".json";
 
@@ -2437,13 +2438,21 @@ void dump_html(FA *fa, cchar *fn, cchar *mktree_dir) {
     std::ofstream jf(json_fn);
     if (jf.is_open()) {
       jf << full_program_json;
+      fprintf(stderr, "wrote %s\n", json_fn.c_str());
+    } else {
+      fprintf(stderr, "cannot write %s\n", json_fn.c_str());
     }
   }
 
   // Write Main Standalone HTML5 Application
   if (ifa_dump_html) {
     FILE *fp = fopen(html_fn.c_str(), "w");
-    if (!fp) return;
+    if (!fp) {
+      fprintf(stderr, "cannot write %s\n", html_fn.c_str());
+      g_recorded_passes.clear();
+      inline_events_reset();
+      return;
+    }
 
   fprintf(fp, "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
   fprintf(fp, "<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
@@ -7134,9 +7143,13 @@ initMemoryLayouts();
   fprintf(fp, "</script>\n</body>\n</html>\n");
 
   fclose(fp);
+    fprintf(stderr, "wrote %s\n", html_fn.c_str());
     if (ifa_open_html) {
       open_html_in_browser(html_fn.c_str());
     }
   }
+  // Both sidecars are per compilation: `ifa a.v b.v` must not carry a's
+  // passes or inline events into b's explorer.
   g_recorded_passes.clear();
+  inline_events_reset();
 }

@@ -109,8 +109,12 @@ void fa_reset() {
 // The free functions below delegate via `pdb->fa` because they are
 // called *before* FA::analyze sets the global `fa` pointer.
 
-void fa_events_enable()  { if (pdb && pdb->fa) pdb->fa->fa_events_enabled = true; }
-void fa_events_disable() { if (pdb && pdb->fa) pdb->fa->fa_events_enabled = false; }
+// The request is sticky: drivers enable events while parsing options, when
+// pdb->fa does not exist yet (that call used to do nothing), so the FA
+// constructor reads fa_events_requested.
+bool fa_events_requested = false;
+void fa_events_enable()  { fa_events_requested = true;  if (pdb && pdb->fa) pdb->fa->fa_events_enabled = true; }
+void fa_events_disable() { fa_events_requested = false; if (pdb && pdb->fa) pdb->fa->fa_events_enabled = false; }
 void fa_events_reset()   { if (pdb && pdb->fa) pdb->fa->fa_events_storage.clear(); }
 const Vec<FAPassEvent *> &fa_events_get() {
   static const Vec<FAPassEvent *> empty;
@@ -5165,7 +5169,7 @@ static bool cs_slot_sig_equal(CreationSet *a, CreationSet *b) {
   qsort_by_id(all_edges);
   Vec<AEdge *> snap_e;
   Vec<EntrySet *> snap_to;
-  if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+  if (html_telemetry_on()) {
     for (AEdge *ee : all_edges) if (ee) { snap_e.add(ee); snap_to.add(ee->to); }
   }
   MPosition *p = nullptr;
@@ -5440,8 +5444,12 @@ static bool cs_slot_sig_equal(CreationSet *a, CreationSet *b) {
       for (int i = 0; i < targets.n; i++) {
         if (!i)
           redispatch(ee, targets[i]);
-        else
+        else {
           ee = copy_AEdge(ee, targets[i]);
+          // A copy is part of the partition too: record it as an edge that
+          // moved from the original's pre-split contour.
+          if (html_telemetry_on()) { snap_e.add(ee); snap_to.add(old); }
+        }
       }
     }
     if (ee->to != old) {
@@ -5456,7 +5464,7 @@ static bool cs_slot_sig_equal(CreationSet *a, CreationSet *b) {
           es->fun->sym->name ? es->fun->sym->name : "", es->fun->sym->id, old ? old->id : -1, ee->to->id);
     }
   }
-  if (again && (ifa_dump_html || ifa_dump_json || ifa_open_html)) {
+  if (again && html_telemetry_on()) {
     cchar *sk = cur_split_subkind
                     ? cur_split_subkind
                     : (cur_split_stage == (int)FAPassStage::PER_CS_RECEIVER
@@ -5930,7 +5938,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
   // whether a re-derived split is a state change or genuinely nothing.
   Vec<AEdge *> snap_e;
   Vec<EntrySet *> snap_to;
-  if (getenv("IFA_DBG_REPARK") || ifa_dump_html || ifa_dump_json || ifa_open_html)
+  if (getenv("IFA_DBG_REPARK") || html_telemetry_on())
     for (AEdge *ee : es->edges) if (ee) { snap_e.add(ee); snap_to.add(ee->to); }
   AVar *av = dec->av;
   MPosition *avpos = dec->avpos;
@@ -6441,7 +6449,7 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
             fa->all_entry_sets.n - aes_before, snap_e.n, moved);
   }
   if (split) {
-    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+    if (html_telemetry_on()) {
       cchar *sk = cur_split_subkind
                       ? cur_split_subkind
                       : (fsetters ? (fmark ? "MARK_SETTER_COMPAT" : "SETTER_COMPAT")
@@ -7016,7 +7024,7 @@ int fa_split_numeric_confluences() {
     const int aes_before = fa->all_entry_sets.n;
     Vec<AEdge *> snap_e;
     Vec<EntrySet *> snap_to;
-    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+    if (html_telemetry_on()) {
       for (AEdge *e : in) if (e) { snap_e.add(e); snap_to.add(e->to); }
     }
     for (int i = 1; i < keys.n; i++) {
@@ -7036,7 +7044,7 @@ int fa_split_numeric_confluences() {
                 es->fun->sym->name ? es->fun->sym->name : "?", es->id, keys[0], groups.get(keys[0])->n,
                 tes ? tes->id : -1, keys[i], g->n);
     }
-    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+    if (html_telemetry_on()) {
       html_record_es_split(fa, cur_split_stage, "NUMERIC_SEED_SPLIT", es, es->args.get(demand_pos), demand_pos, 0, 0,
                            snap_e, snap_to, aes_before, nullptr, nullptr, keys[0]);
     }
@@ -7747,7 +7755,7 @@ static uint cs_group_signature(CreationSet *cs, Vec<AVar *> &compatible_set) {
           v->cs_map->put(cs->sym, new_cs);
         }
         analyze_again = 1;
-        if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+        if (html_telemetry_on()) {
           html_record_cs_split(fa, cur_split_stage, "SETTER_EQ_CLASS", cs, new_cs, !route, compatible_set, nullptr, nullptr, av);
         }
         if (!route) {
@@ -8674,7 +8682,7 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
   Vec<AVar *> new_defs;
   cs->defs.set_difference(moved, new_defs);
   cs->defs.move(new_defs);
-  if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+  if (html_telemetry_on()) {
     cchar *sk = (route && !strcmp(route, "no_confusion")) ? "LADDER_NO_CONFUSION" : "LADDER_PATH_PARTITION";
     html_record_cs_split(fa, cur_split_stage, sk, cs, new_cs, join_to == nullptr, moved, route, cs, nullptr);
   }
@@ -9318,7 +9326,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
     Vec<AVar *> new_defs;
     O->defs.set_difference(moved, new_defs);
     O->defs.move(new_defs);
-    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+    if (html_telemetry_on()) {
       for (int g = 0; g < ngroups; g++) {
         if (!gcs[(size_t)g] || gcs[(size_t)g] == O) continue;
         Vec<AVar *> g_defs;
@@ -10156,7 +10164,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
             Vec<AVar *> new_defs;
             cs->defs.set_difference(moved, new_defs);
             cs->defs.move(new_defs);
-            if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+            if (html_telemetry_on()) {
               for (int i = 1; i < defs.n; i++) {
                 Vec<AVar *> single_def;
                 single_def.add(defs.v[i]);
@@ -10243,7 +10251,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         Vec<AVar *> new_defs;
         cs->defs.set_difference(moved, new_defs);
         cs->defs.move(new_defs);
-        if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+        if (html_telemetry_on()) {
           cchar *sk = by_numeric ? "CS_NUMERIC_KEY" : "CS_ASSIGN_SET_KEY";
           for (int grp = 0; grp < ngroups; grp++) {
             if (!gcs[(size_t)grp] || gcs[(size_t)grp] == cs) continue;
@@ -11407,7 +11415,7 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
     X->const_positions.add(p);
     ++const_demand_positions;
     ++added;
-    if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+    if (html_telemetry_on()) {
       Vec<CreationSet *> dense_keys;
       for (CreationSet *ck : keys) if (ck) dense_keys.add(ck);
       html_record_const_demand(fa, cur_split_stage, X, p, dense_keys, nonconst, why);
@@ -13934,7 +13942,7 @@ static void complete_pass() {
   if (getenv("IFA_DBG_STAGE"))
     fprintf(stderr, "VIOL p=%d n=%d ess=%d css=%d\n", analysis_pass, fa->type_violations.set_count(), fa->ess.n,
             fa->css.n);
-  if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+  if (html_telemetry_on()) {
     html_record_fa_pass(fa, analysis_pass);
   }
   pass_timer.stop();
@@ -14344,7 +14352,7 @@ static void analyze_to_convergence() {
       if (getenv("PYC_DBG_STAGEDELTA"))
         fprintf(stderr, "PASSEND p=%d extend=%d reanalyze=%d fills=%d retract=%d arity=%d viol=%d\n",
                 analysis_pass, ext, rea, fil, ret, arity_flipped ? 1 : 0, fa->type_violations.set_count());
-      if (ifa_dump_html || ifa_dump_json || ifa_open_html) {
+      if (html_telemetry_on()) {
         html_finalize_fa_pass(fa, pass_before_extend);
       }
       loop_again = (ext || rea || fil || ret || ow || raise_grew || arity_flipped);
