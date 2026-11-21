@@ -72,6 +72,8 @@ Sym::Sym()
       self(NULL),
       ret(NULL),
       cont(NULL),
+      export_name(NULL),
+      export_ret(NULL),
       instantiates(NULL),
       match_type(NULL),
       abstract_type(NULL),

@@ -1,0 +1,43 @@
+;; 15_export_called.ir — ifa/issues/212: an exported function the program
+;; also calls, with other types. Code outside calls `cb_add(int64, int64)`;
+;; %top calls %cb with float64 (from `observe`, so nothing folds it). FA splits %cb on the argument types into two
+;; contours, one per caller, and so two clones. The entry point forwards to
+;; the clone the export's root edge enters (the int64 one); the float64
+;; clone serves %top's call. The inliner inlines that clone into __main__
+;; (its float64 `+` is there), so only the entry point's clone is emitted. The clone
+;; phase's fixture of the same name shows both contours. Until 2026-11-19
+;; FA did not split %cb (the split stage skipped the root edge, whose
+;; `from` is null) and the union int64|float64 failed analysis.
+
+(sym %x :is-local)
+(sym %y :is-local)
+(sym %s :is-local)
+(sym %cbcont)
+(fun %cb
+  :args (%cb %x %y)
+  :rets (%s)
+  :cont %cbcont
+  :export "cb_add"
+  :export-args (@int64 @int64)
+  :export-ret @int64
+  :body
+    (send @operator %x #+ %y => %s)
+    (send @primitive @reply %cbcont %s))
+
+(sym %k1 :is-constant :immediate (float64 2.5))
+(sym %k2 :is-constant :immediate (float64 1.5))
+(sym %u :is-local)
+(sym %f :is-local)
+(sym %r :is-local)
+(sym %o :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send @primitive #observe %k1 => %u)
+    (send @operator %u #* %k1 => %f)
+    (send %cb %f %k2 => %r)
+    (send @primitive #observe %r => %o))
+
+(entry %top)

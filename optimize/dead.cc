@@ -309,6 +309,19 @@ static void mark_initial_dead_and_alive(FA *fa, int init = 0) {
       }
     }
   }
+  // ifa/issues/212: the outside caller of an exported function reads its
+  // result, as a live call would. After every reset above: a later
+  // function's reset clears the instance variables of the types it holds,
+  // which would undo a field this marks live.
+  // Only the contour the root edge enters: another clone serves the
+  // program's own calls, whose results are live only if read.
+  for (AEdge *e : fa->export_edges) {
+    Fun *f = e->to->fun;
+    f->live = 1;
+    if (f->sym->export_ret)
+      for (Var *v : f->rets)
+        if (AVar *av = make_AVar(v, e->to); !av->live) mark_live_avar(av);
+  }
 }
 
 void mark_live_types(FA *fa) {
@@ -357,6 +370,9 @@ void mark_live_funs(FA *fa) {
   Vec<Fun *> seen;
   for (Fun *f : fa->funs) if (f) seen.set_add(f);
   seen.set_add(if1->top->fun);
+  // ifa/issues/212: an exported function is a root, as the top is: the
+  // clone its root edge enters. Another clone is live only if called.
+  for (AEdge *e : fa->export_edges) e->to->fun->live = 1;
   int changed = 1;
   while (changed) {
     changed = 0;

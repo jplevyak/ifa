@@ -1,0 +1,38 @@
+;; 14_export_object.ir (clone phase) — ifa/issues/212: an exported function gets ONE
+;; EntrySet. Nothing but its root calls it, so nothing demands a split.
+;; The codegen-c fixture of the same name, without `observe` (only the
+;; codegen phases register it).
+
+(type %Box :kind RECORD :has (%bv))
+(sym %bv :in %Box)
+
+(sym %k :is-constant :immediate (int64 5))
+
+(sym %b :is-local)
+(sym %v :is-local)
+(sym %gcont)
+(fun %get
+  :args (%get %b)
+  :rets (%v)
+  :cont %gcont
+  :export "get_bv"
+  :export-args (%Box)
+  :export-ret @int64
+  :body
+    (send @operator %b @period #bv => %v)
+    (send @primitive @reply %gcont %v))
+
+(sym %p :is-local)
+(sym %s :is-local)
+(sym %r :is-local)
+(sym %tcont)
+(fun %top
+  :rets (%r)
+  :cont %tcont
+  :body
+    (send @primitive @new %Box => %p)
+    (send @operator %p @setter #bv %k => %s)
+    (move %p %r)
+  )
+
+(entry %top)

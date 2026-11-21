@@ -117,7 +117,8 @@ Frontend-side items from the same work are in the top-level `issues/`:
 | issue | what |
 | --- | --- |
 | [200](200-llvm-backend-parity.md) | A1 (layout contract), A5 (int bits in float slots), A6 (three index-path wrong answers) and A3 (six decisions shared; a lambda candidate no longer reads 0 under `-b`) done; no IR fixture or determinism check yet (D3), and the emitter seam (D2). |
-| [210](210-a-list-display-of-function-constants-loses-its-elements.md) | `[lambda x: .., lambda x: ..]`: C stores a function into a `void *` element without a cast (a compile error); LLVM stores no elements. One rule for a function constant used as a value, on both backends. Fixture `tests/lambda_list_literal.py` (`.known_issue`). |
+| [212](212-exported-functions.md) | exported functions (code outside the program calls in: callbacks, library entry points): a root in FA per export, an object formal fed every instance of its class, one clone, an entry point from both backends. Landed with IF1 fixtures; first user is pyc's `CFUNCTYPE` (issues/188). |
+| [213](213-slot-elision-truth-test-on-a-subclass-union.md) | slot elision keeps a subclass's inherited `__bool__` slot and drops its base's after a truth test on `{None, Base, Sub}`; the shared base `__init__` blind-casts between them and codegen refuses the program. `PYC_ELIDE_SLOTS=0` compiles it. |
 | [201](201-representation-oracle.md) | representation has three owners (clone, codegen, FA's four predicates) and is keyed on C type strings; one oracle, read by all; slot elision into liveness and clone. |
 | [199](199-emitted-code-performance.md) | no run-time baseline exists; a benchmark mode first, then dispatch tables (030), the tuple header (054), the builtin shapes (190). |
 

@@ -1,0 +1,110 @@
+# 210 — A list display of function constants loses its elements
+
+**Status: closed 2026-11-19.** See Resolution. Filed 2026-11-14, found while reproducing
+[200](../200-llvm-backend-parity.md) A3's lambda divergence. Fixture:
+`tests/lambda_list_literal.py` (`.known_issue`).
+
+## Symptom
+
+```python
+fs = [lambda x: x - 7, lambda x: x * x]
+for k in fs:
+    print(k(5))          # CPython: -2, 25
+```
+
+- **C backend:** a C++ compile error.
+  `t6->e0 = _CG_f_18149_8;` assigns a function to the element's
+  `_CG_pf8` (`void *`) member with no cast.
+- **LLVM backend:** `_CG_prim_tuple_list_internal` and `_CG_to_list_runtime`
+  are emitted, and no element is ever stored. The dispatch on `k` then
+  matches no candidate. Before 200 A3 its fallback fell through and
+  printed `0 0`; it now traps (`poly_no_branch_matched`).
+
+The same holds for `[inc, lambda x: x - 7]`. Two `def`s in a list work on
+both backends. A `def` reaches the display through its global slot
+(`g1 = (_CG_function)&_CG_f_…`), so the display stores a variable. A
+lambda reaches it as a function CONSTANT, a Var whose `sym->fun` is set
+and which has no backing variable.
+
+## Mechanism, as far as read
+
+- **C:** `cg.cc`'s tuple/list construction writes each element with
+  `cg_get_string(rval)` (or a nil-union cast). For a function constant,
+  that is the bare function name. `simple_move` and the global
+  initialisers write `(_CG_function)&name` instead.
+- **LLVM:** function-typed values are excluded from signatures and storage
+  (the issue 036 comment in `emit_send_call_impl`'s bare-callable pass),
+  so `value_for_var` on the constant returns nothing, and the element
+  store is skipped. The bare-callable pass already substitutes the
+  function's address for a constant callee
+  (`TheModule->getFunction(v0->sym->fun->cg_string)`). The element store
+  has no such step.
+
+## Progress
+
+- **2026-11-18, call arguments (LLVM).** A function passed as a call
+  argument to a formal the callee keeps (one not typed by a single
+  function) had no value and was passed as `null`: `CB(f)` stored `f` that
+  way and the call through it trapped (issues/188's callbacks; plain Python
+  `CB(f1)` the same). `emit_send_call` now passes the function's address
+  (`fun_identity_token`, what `emit_move` stores). Formals typed by one
+  function stay out of signatures, so this does not reach them.
+- **Still open, found alongside:** on LLVM, a call through a value that is
+  either a plain function or a closure (`[CB(f1), CB(f2), CB(sc(-1))]`, then
+  `cb.fn(a, b)` on each) reads a class tag from the plain function's address
+  and segfaults; the C backend dispatches it. Same family as the list
+  display: one representation rule for a function used as a value.
+
+## Plan
+
+One rule for a function constant used as a VALUE, on both backends: its
+address, typed `_CG_function` / `ptr`. Find every place a Var can be
+read as a value (element stores, field stores, call arguments, returns)
+and route it through that rule, rather than patching the display alone.
+The C side probably wants `c_rhs`; the LLVM side `value_for_var`.
+
+**Stop condition:** `tests/lambda_list_literal.py` prints CPython's output
+on both backends, and its `.known_issue` is deleted. If `value_for_var`
+cannot return an address for a function constant without breaking the
+issue-036 exclusion, say what in that exclusion depends on it.
+
+## Verification
+
+`make test` on both backends; the corpus `check` sweep unchanged.
+
+## Resolution (2026-11-19)
+
+One rule, on both backends, for a function used as a VALUE: its address
+(typed `_CG_function` / `ptr`), or its per-Sym token when it has no emitted
+body -- the rule `simple_move` (C) and `emit_move` (LLVM) already used, and
+what value-identity dispatch compares against.
+
+- **C** (`cg.cc`): `c_rhs`'s function branch, which emitted
+  `((_CG_function*)name)`, gives the rule; the tuple/record and list
+  element stores go through `c_rhs` instead of the bare `cg_get_string`.
+  `c_rhs` already served arguments, returns and field stores.
+- **LLVM** (`cg_emit_llvm.cc`): `value_for_var` gives the rule for a Var that
+  IS a function and for a Var TYPED by one function. A function is its own
+  singleton type, so the type names the value, and such a formal is left
+  out of every signature (the issue-036 exclusion stands: no signature
+  changed). Every reader goes through `value_for_var`, so the element store,
+  the dict store (`dict.__setitem__`'s `v`, which had no value: "no code
+  generated for prim_set_index_object") and the call argument (2026-11-18)
+  are one fix. The `emit_move` comment's warning, that materializing these
+  in `value_for_var` polluted vector prototypes, did not reproduce: `make
+  test` is green on both backends, and the method-slot store it described
+  is still skipped by `emit_send_unhandled`'s setter rule.
+- The mixed case found 2026-11-18 (a field holding a plain function or a
+  closure, called through one site) needed nothing more: it had read a
+  class tag from a null, and the stored value is now the address the
+  dispatch tests first.
+
+Tests: `tests/lambda_list_literal.py` (its `.known_issue` deleted) and
+`tests/function_values.py`, which reads a function as a value in a list
+and a tuple display, a field, a return, an argument, a dict value and an
+append, identical to CPython on both backends.
+
+Corpus: `check__default__b8f19ce6+49905899` matches the previous C sweep row
+for row (bar `chaos`, whose earlier timeout was contention), and
+`check__PYC_LLVM_1__b8f19ce6+64aba741` matches the previous LLVM sweep row
+for row. No corpus program changed verdict, contours or output.

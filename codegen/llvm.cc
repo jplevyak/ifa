@@ -1,4 +1,6 @@
 #include "llvm_internal.h"
+#include <set>
+#include <string>
 #include "builtin.h"
 #include "cg.h"
 #include "codegen_common.h"
@@ -150,6 +152,81 @@ void llvm_build_type_strings(FA *fa) {
   cg_check_imprecise();
 }
 
+extern llvm::Type *cg_llvm_type_of(Sym *s);
+
+// ifa/issues/212: the C names of the program's exported functions. They stay
+// external when the module is internalized for LTO, as `main` does.
+static std::set<std::string> exported_names;
+
+// The LLVM type an exported function declares for a formal or its result: a
+// number type is itself, an object an opaque pointer.
+static llvm::Type *export_llvm_type(Sym *t) {
+  llvm::Type *ty = t->num_kind ? cg_llvm_type_of(t) : nullptr;
+  return ty ? ty : llvm::PointerType::getUnqual(*TheContext);
+}
+
+// `v` (declared type) as type `to`: a number widens or narrows, an object
+// pointer is a pointer, and an integer may carry an address.
+static llvm::Value *export_convert(llvm::Value *v, llvm::Type *to, bool is_signed) {
+  llvm::Type *from = v->getType();
+  if (from == to) return v;
+  if (from->isIntegerTy() && to->isIntegerTy()) return Builder->CreateIntCast(v, to, is_signed);
+  if (from->isFloatingPointTy() && to->isFloatingPointTy()) return Builder->CreateFPCast(v, to);
+  if (from->isIntegerTy() && to->isFloatingPointTy())
+    return is_signed ? Builder->CreateSIToFP(v, to) : Builder->CreateUIToFP(v, to);
+  if (from->isFloatingPointTy() && to->isIntegerTy())
+    return is_signed ? Builder->CreateFPToSI(v, to) : Builder->CreateFPToUI(v, to);
+  if (from->isIntegerTy() && to->isPointerTy()) return Builder->CreateIntToPtr(v, to);
+  if (from->isPointerTy() && to->isIntegerTy()) return Builder->CreatePtrToInt(v, to);
+  fail("exported function: no conversion between its declared and inferred LLVM types (ifa/issues/212)");
+  return v;
+}
+
+// An exported function's entry point: the declared C name and every declared
+// argument, forwarding to the clone's live formals (emit's prototype drops
+// dead ones and the closure), mirroring cg.cc's write_c_export.
+static void emit_llvm_exports(FA *fa) {
+  Vec<Fun *> exported;
+  cg_exported_funs(fa, exported);
+  for (Fun *f : exported) {
+    Sym *s = f->sym;
+    llvm::Function *target = f->llvm;
+    if (!target) fail("exported function %s (%s) was not emitted (ifa/issues/212)", s->name, s->export_name);
+    std::vector<llvm::Type *> param_tys;
+    for (Sym *t : s->export_args) param_tys.push_back(export_llvm_type(t));
+    llvm::Type *ret_ty = s->export_ret ? export_llvm_type(s->export_ret) : llvm::Type::getVoidTy(*TheContext);
+    llvm::Function *fn = llvm::Function::Create(llvm::FunctionType::get(ret_ty, param_tys, false),
+                                                llvm::Function::ExternalLinkage, s->export_name, TheModule.get());
+    exported_names.insert(s->export_name);
+    Builder->SetInsertPoint(llvm::BasicBlock::Create(*TheContext, "entry", fn));
+    std::vector<llvm::Value *> args;
+    MPosition p;
+    p.push(1);
+    for (int i = 0; i < s->has.n; i++) {
+      MPosition *cp = cannonicalize_mposition(p);
+      p.inc();
+      Var *v = f->args.get(cp);
+      if (!v || !v->live) continue;
+      if ((v->sym && v->sym->is_fun) || (v->type && v->type->is_fun)) {
+        if (!i) continue;  // the closure: emit_fun's prototype leaves it out
+      }
+      if (!i) fail("exported function %s (%s) reads its own closure, which its C caller cannot pass", s->name, s->export_name);
+      if (args.size() >= target->arg_size()) fail("exported function %s: more live formals than parameters", s->name);
+      Sym *t = s->export_args[i - 1];
+      args.push_back(export_convert(fn->getArg(i - 1), target->getArg(args.size())->getType(),
+                                    t->num_kind != IF1_NUM_KIND_UINT));
+    }
+    if (args.size() != target->arg_size()) fail("exported function %s: its clone takes other parameters", s->name);
+    llvm::Value *r = Builder->CreateCall(target, args);
+    if (ret_ty->isVoidTy())
+      Builder->CreateRetVoid();
+    else if (r->getType()->isVoidTy())
+      Builder->CreateRet(llvm::Constant::getNullValue(ret_ty));
+    else
+      Builder->CreateRet(export_convert(r, ret_ty, s->export_ret->num_kind != IF1_NUM_KIND_UINT));
+  }
+}
+
 void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filename) {
   DEBUG_LOG("llvm_codegen_print_ir started\n");
   llvm_codegen_initialize(fa);
@@ -202,8 +279,7 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
     }
   }
 
-  // TODO: Implement PNode translation for each function's body
-  // For now, functions will be declared but not defined (if not external)
+  emit_llvm_exports(fa);  // ifa/issues/212
 
   // Create a simple main function that calls the IF1 main_fun.
   // Takes the real (argc, argv) and threads them into _CG_set_argv
@@ -536,7 +612,10 @@ std::unique_ptr<llvm::TargetMachine> llvm_optimize_module(bool link_runtime, boo
   // linkage blocked both). Only with the runtime linked in: otherwise the
   // program's object must still reach libpyc_runtime.a by name, and that
   // is declarations, which this leaves alone.
-  if (*linked_runtime) llvm::internalizeModule(M, [](const llvm::GlobalValue &gv) { return gv.getName() == "main"; });
+  if (*linked_runtime)
+    llvm::internalizeModule(M, [](const llvm::GlobalValue &gv) {
+      return gv.getName() == "main" || exported_names.count(gv.getName().str());  // ifa/issues/212
+    });
   run(true);
   // PYC_DUMP_OPT_LL=path: the module as optimized, before code generation.
   if (const char *dump = getenv("PYC_DUMP_OPT_LL")) {

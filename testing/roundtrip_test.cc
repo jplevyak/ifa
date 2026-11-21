@@ -164,6 +164,19 @@ static cchar *rich_ir() {
     "    (label %L2)\n"
     "    (move %pi %v3)\n"
     "    (label %L_done))\n"
+    // ifa/issues/212: an exported function's declaration.
+    "(sym %ga :is-local)\n"
+    "(sym %gr :is-local)\n"
+    "(sym %gcont)\n"
+    "(fun %g\n"
+    "  :args (%g %ga)\n"
+    "  :rets (%gr)\n"
+    "  :cont %gcont\n"
+    "  :export \"g_entry\"\n"
+    "  :export-args (%PointFull)\n"
+    "  :export-ret %PointFull\n"
+    "  :body\n"
+    "    (move %ga %gr))\n"
     "(entry %f)\n";
 }
 
@@ -182,6 +195,11 @@ static int run_rich_roundtrip() {
   write_ir(fp1, if1);
   int n1 = slurp_to_string(fp1, first_out, sizeof(first_out));
   fclose(fp1);
+  if (!strstr(first_out, ":export \"g_entry\"") || !strstr(first_out, ":export-args (%PointFull)") ||
+      !strstr(first_out, ":export-ret %PointFull")) {
+    printf("  rich output lost the export.\n%s\n", first_out);
+    return 1;
+  }
 
   ifa_reset();
   ifa_init(new IRCallbacks);

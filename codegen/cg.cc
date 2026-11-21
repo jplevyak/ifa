@@ -78,6 +78,37 @@ static void write_c_fun_proto(FILE *fp, Fun *f, int type = 0) {
 
 static void write_c_type(FILE *fp, Var *v) { fprintf(fp, "%s", c_type(v)); }
 
+// ifa/issues/212: the C type an exported function declares for a formal or
+// its result: a number type is itself, an object an opaque pointer.
+static cchar *c_export_type(Sym *t) { return t->num_kind ? c_type(t) : "void *"; }
+
+// An exported function's entry point: the declared C name and every
+// declared argument, forwarding to the clone's live formals (the clone
+// drops dead ones, write_c_fun_proto), each cast to the clone's C type.
+static void write_c_export(FILE *fp, Fun *f) {
+  Sym *s = f->sym;
+  fprintf(fp, "\n#ifdef __cplusplus\nextern \"C\"\n#endif\n%s %s(", s->export_ret ? c_export_type(s->export_ret) : "void",
+          s->export_name);
+  for (int k = 0; k < s->export_args.n; k++) fprintf(fp, "%s%s e%d", k ? ", " : "", c_export_type(s->export_args[k]), k);
+  if (!s->export_args.n) fputs("void", fp);
+  fputs(") {\n  ", fp);
+  if (s->export_ret) fprintf(fp, "return (%s)", c_export_type(s->export_ret));
+  fprintf(fp, "%s(", cg_get_string(f));
+  MPosition p;
+  p.push(1);
+  int wrote_one = 0;
+  for (int i = 0; i < s->has.n; i++) {
+    MPosition *cp = cannonicalize_mposition(p);
+    p.inc();
+    Var *v = f->args.get(cp);
+    if (!v->live) continue;
+    if (!i) fail("exported function %s (%s) reads its own closure, which its C caller cannot pass", s->name, s->export_name);
+    fprintf(fp, "%s(%s)e%d", wrote_one ? ", " : "", c_type(v), i - 1);
+    wrote_one = 1;
+  }
+  fputs(");\n}\n", fp);
+}
+
 
 // ifa/issues/182: do two TYPES have different C representations, scalar
 // against pointer? The element/field guards below asked this with
@@ -340,8 +371,19 @@ static cchar *c_rhs(Var *v) {
     } else
       return cg_get_string(v);
   } else {
-    char s[100];
-    snprintf(s, sizeof(s), "((_CG_function*)%s)", cg_get_string(v));
+    // ifa/210: a function used as a VALUE (the Var is the function's own
+    // Sym) is its address typed _CG_function, as simple_move stores it --
+    // or, with no emitted body, its per-Sym token. One rule for an element,
+    // a field, an argument and a return: a bare name stored into a `void *`
+    // element is a C++ error, which `[lambda x: .., lambda x: ..]` hit.
+    char s[128];
+    Sym *fs = v->sym;
+    if (fs->fun && !fs->fun->live)
+      snprintf(s, sizeof(s), "(_CG_function)&_CG_fnid<%d>::token", fs->id);
+    else if (cchar *name = cg_get_string(v) ? cg_get_string(v) : fs->fun ? cg_get_string(fs->fun) : nullptr)
+      snprintf(s, sizeof(s), "(_CG_function)&%s", name);
+    else
+      return "NULL";
     return dupstr(s);
   }
 }
@@ -621,10 +663,9 @@ static int c_prim_make(FILE *fp, FA *fa, Fun *f, PNode *n) {
           cg_note_slot_use(rec, i - 3, 0);
           cchar *mt = rec_fields ? cg_member_ctype(rec, i - 3) : nullptr;
           if (cg_needs_nil_union_cast(rec_fields ? rec->has[i - 3]->type : nullptr, mt, n->rvals.v[i]))
-            fprintf(fp, "  %s->e%d = (%s)%s;\n", cg_get_string(n->lvals[0]), i - 3, mt,
-                    cg_get_string(n->rvals.v[i]));
+            fprintf(fp, "  %s->e%d = (%s)%s;\n", cg_get_string(n->lvals[0]), i - 3, mt, c_rhs(n->rvals.v[i]));
           else
-            fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, cg_get_string(n->rvals.v[i]));
+            fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, c_rhs(n->rvals.v[i]));
         }
         // ifa/185: a fixed-arity tuple says so in its header, for the arity
         // dispatch. Not a list that came out record-shaped (`goto Ltuple`).
@@ -648,7 +689,7 @@ static int c_prim_make(FILE *fp, FA *fa, Fun *f, PNode *n) {
         for (int i = 3; i < n->rvals.n; i++) {
           fprintf(fp, "  ((%s*)(_CG_list_ptr(%s)))[%d] = ", ety, cg_get_string(n->lvals[0]), i - 3);
           if (cg_needs_elem_cast(le ? le->type : nullptr, ety, n->rvals.v[i])) fprintf(fp, "(%s)", ety);
-          fputs(cg_get_string(n->rvals[i]), fp);
+          fputs(c_rhs(n->rvals[i]), fp);
           fprintf(fp, ";\n");
         }
         // ifa/185: a list-layout tuple can still have a static arity.
@@ -3507,6 +3548,18 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
     fclose(initf);
   }
 
+  // ifa/issues/212: the entry points of exported functions are roots too.
+  char *exp_buf = nullptr;
+  size_t exp_len = 0;
+  {
+    FILE *ef = open_memstream(&exp_buf, &exp_len);
+    if (!ef) fail("c_codegen_print_c: open_memstream failed");
+    Vec<Fun *> exported;
+    cg_exported_funs(fa, exported);
+    for (Fun *f : exported) write_c_export(ef, f);
+    fclose(ef);
+  }
+
   // assign_fun_cg_strings names the i'th live Fun `_CG_f_<symid>_<i>`,
   // so the trailing index identifies the referent exactly -- including
   // WHICH CLONE, which is the whole point here. (`_CG_pf<i>` is a type
@@ -3534,6 +3587,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
     }
   };
   scan(init_buf, init_len, -1);
+  scan(exp_buf, exp_len, -1);
   for (int w = 0; w < work.n; w++) {
     int b = buf_of.v[work.v[w]];
     if (b >= 0) scan(body_text.v[b], body_size.v[b], work.v[w]);
@@ -3547,6 +3601,7 @@ void c_codegen_print_c(FILE *fp, FA *fa, Fun *init) {
   for (int i = 0; i < body_funs.n; i++)
     if (emit_it.v[i]) fwrite(body_text.v[i], 1, body_size.v[i], fp);
   fwrite(init_buf, 1, init_len, fp);
+  fwrite(exp_buf, 1, exp_len, fp);
   if (getenv("PYC_DBG_CGDCE"))
     fprintf(stderr, "CGDCE emitted=%d dropped=%d (named by no emitted body)\n", body_funs.n + 1 - dropped, dropped);
   // ifa/121: WHY is each dropped body unnamed? For every call site that

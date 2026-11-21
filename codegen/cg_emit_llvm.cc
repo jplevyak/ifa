@@ -563,6 +563,9 @@ llvm::Value *materialize_pyc_string(cchar *raw, int len = -1) {
         llvm::ConstantInt::get(i32_ty, 0) });
 }
 
+static llvm::Value *fun_identity_token(Sym *f);
+static Sym *fun_sym_for_var(Var *v);
+
 llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
   if (!v) return nullptr;
   // Phi-target Var: load from its alloca slot every time
@@ -587,6 +590,15 @@ llvm::Value *value_for_var(EmitCtx &ctx, Var *v) {
     return loaded;
   }
   if (llvm::Value *cached = ctx.var_map.get(v)) return cached;
+  // ifa/210: a function used as a VALUE (the Var is the function's own Sym)
+  // is its address, or its per-Sym token with no emitted body -- the one
+  // rule emit_move and value-identity dispatch already use, here for every
+  // reader: an element, a field, a dict value, an argument, a return.
+  // A Var TYPED by one function holds that function (a function is its own
+  // singleton type), and such a formal is left out of every signature, so
+  // its value is the same address: dict.__setitem__'s `v` in `d[k] = f`.
+  if (Sym *fs = fun_sym_for_var(v))
+    if (fs->fun) return fun_identity_token(fs);
   if ((v->type && v->type == sym_nil_type) || (v->sym && (v->sym == sym_nil || v->sym == sym_nil_type))) {
     llvm::Type *t = sym_to_llvm_type(v->type);
     if (!t || !t->isPointerTy()) t = llvm::PointerType::getUnqual(*TheContext);
@@ -1323,7 +1335,7 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
                                    : Builder->CreateSRem(lhs, rhs);
       llvm::Value *zero = is_float ? (llvm::Value *)llvm::ConstantFP::get(lhs->getType(), 0.0)
                                     : (llvm::Value *)llvm::ConstantInt::get(lhs->getType(), 0);
-      llvm::Value *rem_nonzero = is_float ? Builder->CreateFCmpONE(rem, zero)
+      llvm::Value *rem_nonzero = is_float ? Builder->CreateFCmpUNE(rem, zero)  // C's !=
                                            : Builder->CreateICmpNE(rem, zero);
       llvm::Value *rem_neg = is_float ? Builder->CreateFCmpOLT(rem, zero)
                                        : Builder->CreateICmpSLT(rem, zero);
@@ -1361,7 +1373,10 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
                      : Builder->CreateICmpEQ(lhs, rhs);
       break;
     case P_prim_notequal:
-      res = is_float ? Builder->CreateFCmpONE(lhs, rhs)
+      // UNORDERED not-equal, as C's != and Python's: true when either side
+      // is a NaN, so `x != x` is the NaN test (math.isnan, issues/207).
+      // ONE (ordered) made it false for a NaN, unlike the C backend.
+      res = is_float ? Builder->CreateFCmpUNE(lhs, rhs)
                      : Builder->CreateICmpNE(lhs, rhs);
       break;
     default:
@@ -4276,6 +4291,14 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     Var *actual = pn->rvals.v[i];
     if (!actual) continue;
     llvm::Value *val = value_for_var(ctx, actual);
+    // ifa/210: a function VALUE passed to a formal the callee keeps (one not
+    // typed by a single function, so it is in the signature): its address,
+    // as emit_move stores it and value-identity dispatch compares it. A
+    // formal typed by the function itself is left out of every signature,
+    // so this does not reach it. `CB(f)` stored `f` this way, and passed
+    // null (issues/188's callbacks; the same in plain Python).
+    if (!val)
+      if (Sym *fs = fun_sym_for_var(actual)) val = fun_identity_token(fs);
     if (!val) {
       // ifa/issues/051: an actual with no materialisable value is the
       // DEFAULTED argument of a call that omits it -- `cube_state(s)`
@@ -5426,3 +5449,6 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
   cg_check_layout_contract();
   return true;
 }
+
+// ifa/issues/212: the type mapper, for llvm.cc's exported entry points.
+llvm::Type *cg_llvm_type_of(Sym *s) { return sym_to_llvm_type(s); }
