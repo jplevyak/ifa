@@ -213,7 +213,7 @@ void ifa_compile(cchar *fn);
 enum GraphType { GraphViz, VCG };
 extern int graph_type;
 void ifa_graph(cchar *fn);
-void ifa_html(cchar *source_fn, cchar *out_base);
+void ifa_html(cchar *source_fn, cchar *cg_base);
 void ifa_code(cchar *fn);
 
 extern bool fgraph_pass_contours;

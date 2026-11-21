@@ -20,7 +20,6 @@ class AType;
 extern int ifa_dump_html;
 extern int ifa_open_html;
 extern int ifa_html_max_size_mb;
-extern int ifa_html_pass_limit_mb;
 extern int ifa_dump_json;
 
 // True when any explorer output was asked for. Every recording hook in
@@ -28,11 +27,11 @@ extern int ifa_dump_json;
 // the hooks cost one branch each.
 inline bool html_telemetry_on() { return ifa_dump_html || ifa_dump_json || ifa_open_html; }
 
-// Write <out_base>.html and/or <out_base>.json. `source_fn` is the program
-// as the user named it (read for the source view); `out_base` is where
-// codegen wrote <out_base>.c / .ll -- they differ under pyc -x, where the
-// outputs live in the cache entry.
-void dump_html(FA *fa, cchar *source_fn, cchar *out_base);
+// Write <source_fn>.html and/or <source_fn>.json. `source_fn` is the
+// program as the user named it (read for the source view, and the explorer
+// is written beside it); `cg_base` is where codegen wrote <cg_base>.c /
+// .ll -- they differ under pyc -x, whose codegen output lives in the cache.
+void dump_html(FA *fa, cchar *source_fn, cchar *cg_base);
 void html_record_fa_pass(FA *fa, int pass);
 void html_finalize_fa_pass(FA *fa, int pass);
 void html_record_es_split(FA *fa, int stage, cchar *sub_kind, EntrySet *es, AVar *trigger_av, MPosition *avpos,

@@ -239,11 +239,20 @@ COPYRIGHT.i: LICENSE
 
 main.o: LICENSE.i COPYRIGHT.i
 
+# The compilation explorer's page assets (common/explorer/), each wrapped in
+# a C++ raw string literal that common/html.cc #includes.
+EXPLORER_INC = common/explorer/explorer.css.inc common/explorer/explorer.html.inc common/explorer/explorer.js.inc
+
+common/explorer/%.inc: common/explorer/%
+	{ printf 'R"PYCEXPLORER('; cat $<; printf ')PYCEXPLORER"\n'; } > $@
+
+common/html.o: $(EXPLORER_INC)
+
 common/ifa_version.o: Makefile common/ifa_version.cc
 	$(CXX) $(CFLAGS) $(VERSIONCFLAGS) -c common/ifa_version.cc -o common/ifa_version.o
 
 clean:
-	\rm -f *.o common/*.o if1/*.o frontend/*.o optimize/*.o codegen/*.o analysis/*.o testing/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i
+	\rm -f *.o common/*.o if1/*.o frontend/*.o optimize/*.o codegen/*.o analysis/*.o testing/*.o core *.core *.gmon $(EXECUTABLES) $(CLEAN_FILES) LICENSE.i COPYRIGHT.i $(EXPLORER_INC)
 	\rm -f *.d common/*.d if1/*.d frontend/*.d optimize/*.d codegen/*.d analysis/*.d testing/*.d
 
 realclean: clean

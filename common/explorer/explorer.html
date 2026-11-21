@@ -1,0 +1,409 @@
+<header>
+  <div class="header-title">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m10 15 5-3-5-3v6z"/></svg>
+    <span>pyc Compiler Explorer</span>
+    <span class="header-badge" id="hdr-program"></span>
+  </div>
+  <div class="header-stats">
+    <div class="stat-pill" id="pill-backend"></div>
+    <div class="stat-pill" id="pill-passes"></div>
+    <div class="stat-pill" id="pill-contours"></div>
+    <div class="stat-pill" id="pill-viol"></div>
+  </div>
+</header>
+
+<nav class="tab-bar">
+  <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
+  <button class="tab-btn" data-tab="callgraph">🌐 Call Graph</button>
+  <button class="tab-btn" data-tab="cfg">🔀 CFG & SSU</button>
+  <button class="tab-btn" data-tab="passes">🔬 IFA Passes</button>
+  <button class="tab-btn" data-tab="dataflow">🔄 Dataflow Tracer</button>
+  <button class="tab-btn" data-tab="transfer">⚡ Transfer Functions</button>
+  <button class="tab-btn" data-tab="memory">🧬 Clones & Memory</button>
+  <button class="tab-btn" data-tab="source">📜 Source &amp; Codegen</button>
+</nav>
+
+<main class="content-area">
+  <!-- View: Dashboard -->
+  <div class="view-panel active" id="view-dashboard">
+    <div class="grid-cards">
+      <div class="card"><div class="card-label">Source Lines</div><div class="card-value" id="card-lines">0</div><div class="card-sub">Program Source</div></div>
+      <div class="card"><div class="card-label">Functions</div><div class="card-value" id="card-funs">0</div><div class="card-sub">Compiled Bodies</div></div>
+      <div class="card"><div class="card-label">IFA Passes</div><div class="card-value" id="card-passes">0</div><div class="card-sub">Flow Iterations</div></div>
+      <div class="card"><div class="card-label">EntrySets (Contours)</div><div class="card-value" id="card-ess">0</div><div class="card-sub">Demand Function Contours</div></div>
+      <div class="card"><div class="card-label">CreationSets (Data)</div><div class="card-value" id="card-css">0</div><div class="card-sub">Data Contours</div></div>
+      <div class="card"><div class="card-label">Inlined Calls</div><div class="card-value" id="card-inlines">0</div><div class="card-sub">Inline Optimizations</div></div>
+    </div>
+    <div class="card" style="margin-top: 1rem;">
+      <h3 style="margin-bottom: 0.75rem;">Analysis Convergence Trajectory <span style="font-size:0.75rem; font-weight:400; color:var(--text-muted);">(click a point to inspect pass)</span></h3>
+      <div id="chart-trajectory" style="height: 260px; width: 100%;"></div>
+    </div>
+    <div class="card" id="dashboard-inlining-card" style="margin-top: 1rem; display: none;">
+      <h3 style="margin-bottom: 0.75rem;">Phase 5 Inlining Optimizations</h3>
+      <div class="table-container" style="max-height: 260px;">
+        <table class="data-table" id="dashboard-inlines-table">
+          <thead><tr><th>Caller</th><th>Inlined Callee</th><th>Call Site PNode</th><th>Reason</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- View: Call Graph -->
+  <div class="view-panel" id="view-callgraph">
+    <div class="controls-bar">
+      <div style="display:flex; align-items:center; gap:0.75rem;">
+        <span style="font-weight: 600;">Call Graph</span>
+        <span class="header-badge" id="cg-node-count">0 functions</span>
+      </div>
+      <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+        <label style="font-size:0.8rem; color:var(--text-muted);">Scope:</label>
+        <select id="cg-scope-select" class="dropdown-control">
+          <option value="all" selected>All Executable Functions</option>
+          <option value="active">Connected Only</option>
+          <option value="user">User Code Only</option>
+        </select>
+
+        <label style="font-size:0.8rem; color:var(--text-muted); margin-left:0.25rem;">Depth:</label>
+        <select id="cg-depth-select" class="dropdown-control">
+          <option value="all" selected>All Levels</option>
+          <option value="1">Level 1 (Entry + Direct)</option>
+          <option value="2">Level 2</option>
+          <option value="3">Level 3</option>
+        </select>
+
+        <label style="font-size:0.8rem; color:var(--text-muted); margin-left:0.25rem;">Direction:</label>
+        <select id="cg-direction-select" class="dropdown-control">
+          <option value="DOWN" selected>Top-to-Bottom</option>
+          <option value="RIGHT">Left-to-Right</option>
+        </select>
+
+        <input type="text" class="search-input" id="cg-search" placeholder="Search functions..." style="width:150px;">
+
+        <div style="display:flex; gap:0.25rem;">
+          <button class="btn-sm" id="cg-btn-expand-all" title="Expand All Levels">⊞ Expand All</button>
+          <button class="btn-sm" id="cg-btn-collapse-root" title="Collapse to Entry Point">⊟ Collapse</button>
+          <button class="btn-sm" id="cg-btn-zoom-in" title="Zoom In">+</button>
+          <button class="btn-sm" id="cg-btn-zoom-out" title="Zoom Out">−</button>
+          <button class="btn-sm" id="cg-btn-fit" title="Fit to View">⛶ Fit</button>
+          <button class="btn-sm" id="cg-btn-reset" title="Reset Selection">↺ Reset</button>
+        </div>
+      </div>
+    </div>
+    <div class="canvas-container" style="position:relative; flex:1; min-height:500px;">
+      <div id="cy-callgraph" style="width:100%; height:100%;"></div>
+      <div id="cg-node-inspector" class="inspector-card" style="display:none;"></div>
+      <div id="cg-loading-overlay" style="display:flex; flex-direction:column; align-items:center; justify-content:center; position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.85); z-index:50;">
+        <div class="loading-spinner"></div>
+        <p id="cg-loading-status" style="margin-top:1rem; font-size:0.9rem; color:var(--primary); font-weight:600;">Loading graph engine...</p>
+      </div>
+      <div id="cg-offline-fallback" style="display:none; position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); text-align:center; color:var(--text-muted); padding:2rem; background:var(--bg-card); border:1px solid var(--border); border-radius:8px; z-index:60;">
+        <p style="font-weight:600; color:var(--accent-orange); margin-bottom:0.5rem;">Could not load graph engine</p>
+        <p style="font-size:0.85rem;">Cytoscape / ELK could not be reached via CDN. Please check your internet connection.</p>
+        <button class="btn-sm" style="margin-top:0.75rem;" onclick="loadCallGraphScripts(initCallGraph)">Retry</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- View: CFG & SSU -->
+  <div class="view-panel" id="view-cfg" style="position:relative;">
+    <div class="controls-bar" style="margin-bottom:0.75rem;">
+      <div style="display:flex; align-items:center; gap:0.55rem; flex-wrap:wrap;">
+        <label style="font-weight:600; font-size:0.85rem;">Function:</label>
+        <select id="cfg-fun-select" class="dropdown-control"></select>
+
+        <label style="font-weight:600; font-size:0.85rem; margin-left:0.2rem;">Pass:</label>
+        <select id="cfg-pass-select" class="dropdown-control"></select>
+
+        <label style="font-weight:600; font-size:0.85rem; margin-left:0.2rem;">Contour:</label>
+        <select id="cfg-contour-select" class="dropdown-control"></select>
+
+        <div class="btn-group" style="margin-left:0.35rem;">
+          <button id="btn-cfg-mode-graph" class="btn-sm active">📈 Visual Graph</button>
+          <button id="btn-cfg-mode-table" class="btn-sm">📋 Instruction Table</button>
+        </div>
+
+        <label style="font-weight:600; font-size:0.8rem; color:var(--text-muted); margin-left:0.35rem;">Split Dock:</label>
+        <div class="btn-group" title="Side-by-Side Source &amp; Generated C/LLVM Split View">
+          <button id="btn-cfg-split-off" class="btn-sm active" onclick="setCfgSplitMode('off')">Off</button>
+          <button id="btn-cfg-split-py" class="btn-sm" onclick="setCfgSplitMode('py')">📜 Python</button>
+          <button id="btn-cfg-split-cg" class="btn-sm" onclick="setCfgSplitMode('cg')">⚙️ C/LLVM</button>
+          <button id="btn-cfg-split-both" class="btn-sm" onclick="setCfgSplitMode('both')">⚡ Both</button>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:0.4rem;">
+        <div id="cfg-graph-controls" style="display:flex; gap:0.25rem;">
+          <button class="btn-sm" id="cfg-btn-zoom-in" title="Zoom In">+</button>
+          <button class="btn-sm" id="cfg-btn-zoom-out" title="Zoom Out">−</button>
+          <button class="btn-sm" id="cfg-btn-fit" title="Fit to View">⛶ Fit</button>
+          <button class="btn-sm" id="cfg-btn-reset" title="Reset View">↺ Reset</button>
+        </div>
+        <div id="cfg-fun-meta" style="font-size:0.8rem; color:var(--text-muted); margin-left:0.5rem;"></div>
+      </div>
+    </div>
+
+    <div class="cfg-workspace">
+      <div class="cfg-main-pane">
+        <!-- Container for Visual Graph -->
+        <div id="cfg-graph-view" class="canvas-container" style="position:relative; flex:1; min-height:480px;">
+          <div id="cy-cfg" style="width:100%; height:100%;"></div>
+          <div id="cfg-loading-overlay" style="display:none; flex-direction:column; align-items:center; justify-content:center; position:absolute; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.85); z-index:50;">
+            <div class="loading-spinner"></div>
+            <p style="margin-top:1rem; font-size:0.9rem; color:var(--primary); font-weight:600;">Rendering CFG layout...</p>
+          </div>
+        </div>
+
+        <!-- Container for Instruction Table -->
+        <div id="cfg-table-view" class="table-container" style="display:none; flex:1; max-height:100%;">
+          <table class="data-table" id="cfg-pnodes-table">
+            <thead><tr><th>ID</th><th>Kind</th><th>Op / Prim</th><th>Line</th><th>Lvals (Defs &amp; Types)</th><th>Rvals (Uses &amp; Types)</th><th>Contour Calls</th><th>Successors</th><th>Predecessors</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+
+        <!-- CFG Inspector Card / Slide-out Panel -->
+        <div id="cfg-inspector" class="inspector-card" style="display:none; width:360px; max-height:calc(100% - 2rem); overflow-y:auto; top:1rem; right:1rem; bottom:auto;">
+        </div>
+      </div>
+
+      <!-- Side-by-Side Source + Target Code Split Dock -->
+      <div id="cfg-split-dock" class="cfg-split-dock">
+        <div id="cfg-dock-py-pane" class="dock-pane">
+          <div class="dock-pane-header">
+            <span id="cfg-dock-py-title">📜 Python Source (click line to select PNode)</span>
+            <button class="btn-sm" style="padding:0.1rem 0.4rem; font-size:0.7rem;" onclick="openCurrentFunInSourceTab('py')">Open in Tab ↗</button>
+          </div>
+          <div id="cfg-dock-py-body" class="dock-pane-body"></div>
+        </div>
+        <div id="cfg-dock-cg-pane" class="dock-pane">
+          <div class="dock-pane-header">
+            <span id="cfg-dock-cg-title">⚙️ Generated Target Code</span>
+            <button class="btn-sm" style="padding:0.1rem 0.4rem; font-size:0.7rem;" onclick="openCurrentFunInSourceTab('cg')">Open in Tab ↗</button>
+          </div>
+          <div id="cfg-dock-cg-body" class="dock-pane-body"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- View: IFA Passes -->
+  <div class="view-panel" id="view-passes">
+    <div class="pass-stepper" style="flex-wrap:wrap;">
+      <button class="stepper-btn" id="btn-prev-pass">&lt; Prev Pass</button>
+      <input type="range" class="stepper-slider" id="pass-slider" min="1" max="1" value="1" style="min-width:140px;">
+      <button class="stepper-btn" id="btn-next-pass">Next Pass &gt;</button>
+      <span style="font-weight:700; min-width:95px; text-align:center;" id="pass-indicator">Pass 1 / 1</span>
+
+      <div style="display:flex; align-items:center; gap:0.4rem; border-left:1px solid var(--border); padding-left:0.75rem;">
+        <button class="btn-sm active" id="btn-pass-diff-toggle" title="Compare against another pass and highlight newly split contours, resolved violations, and widened AVars">🔀 Diff Mode: ON</button>
+        <span style="font-size:0.78rem; color:var(--text-muted);">vs</span>
+        <select id="pass-diff-base-select" class="dropdown-control" title="Base pass for comparison">
+          <option value="prev" selected>Prev Pass (N−1)</option>
+        </select>
+        <button class="btn-sm" id="btn-pass-changed-only" title="Filter tables to show only contours and AVars that changed in this pass">⚡ Changed Only</button>
+      </div>
+
+      <input type="text" class="search-input" id="pass-filter-input" placeholder="Filter contours or types..." style="width:190px;">
+    </div>
+    <div id="pass-detail-container">
+      <div class="grid-cards" style="margin-bottom:1rem;">
+        <div class="card"><div class="card-label">Pass EntrySets</div><div class="card-value" id="pass-card-ess">0</div></div>
+        <div class="card"><div class="card-label">Pass CreationSets</div><div class="card-value" id="pass-card-css">0</div></div>
+        <div class="card"><div class="card-label">Splits in Pass</div><div class="card-value" id="pass-card-splits">0</div></div>
+        <div class="card"><div class="card-label">Type Violations</div><div class="card-value" id="pass-card-viol">0</div></div>
+        <div class="card"><div class="card-label">Dup Split Redo</div><div class="card-value" id="pass-card-dup">0</div></div>
+      </div>
+      <div id="pass-summary-only-banner" style="display:none; margin-bottom:1rem; padding:0.75rem 1rem; border-radius:6px; background:rgba(249,115,22,0.15); border:1px solid rgba(249,115,22,0.4); color:var(--accent-orange); font-size:0.85rem;">
+        Detailed contour tables for this intermediate pass were omitted to respect <code>--html-max-size</code>. Summary metrics and split events are shown below.
+      </div>
+      <div id="pass-events-section" style="display:none; margin-bottom:1rem;">
+        <h4 style="margin: 0.5rem 0 0.4rem;">Splitter Stage Events in this Pass <span style="font-size:0.74rem; font-weight:400; color:var(--text-muted); margin-left:0.4rem;">(click a stage to filter splits below)</span></h4>
+        <div id="pass-events-badges" style="display:flex; gap:0.5rem; flex-wrap:wrap;"></div>
+      </div>
+      <div id="pass-splits-section" style="margin-bottom:1.25rem;">
+        <div class="splits-header-bar">
+          <div style="display:flex; align-items:center; gap:0.6rem; flex-wrap:wrap;">
+            <h4 style="margin:0; font-size:0.92rem; color:var(--text-main);">🔬 Splits Deep Dive (Why &amp; What Was Affected)</h4>
+            <span id="pass-splits-summary-label" style="font-size:0.78rem; color:var(--text-muted);"></span>
+            <span id="pass-splits-stage-chip" style="display:none;"></span>
+          </div>
+          <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+            <span style="font-size:0.75rem; color:var(--text-muted);">Scope:</span>
+            <div class="btn-group">
+              <button class="btn-sm active" id="btn-splits-scope-decided" onclick="setSplitsScope('decided')" title="Splits decided during extend_analysis() at the end of this pass">🔨 Decided in Pass</button>
+              <button class="btn-sm" id="btn-splits-scope-entering" onclick="setSplitsScope('entering')" title="Splits decided at the end of Pass N-1 that created the contours entering this pass">📥 Entering Pass</button>
+              <button class="btn-sm" id="btn-splits-scope-all" onclick="setSplitsScope('all')" title="Chronological view of every split across all IFA passes">📚 All Passes</button>
+            </div>
+            <span style="font-size:0.75rem; color:var(--text-muted); margin-left:0.2rem;">Kind:</span>
+            <div class="btn-group">
+              <button class="btn-sm active" id="btn-splits-kind-all" onclick="setSplitsKindFilter('all')">All</button>
+              <button class="btn-sm" id="btn-splits-kind-es" onclick="setSplitsKindFilter('EntrySet')">EntrySet</button>
+              <button class="btn-sm" id="btn-splits-kind-cs" onclick="setSplitsKindFilter('CreationSet')">CreationSet</button>
+              <button class="btn-sm" id="btn-splits-kind-other" onclick="setSplitsKindFilter('other')">Const / Arity</button>
+            </div>
+            <button class="btn-sm" id="btn-splits-expand-all" onclick="toggleSplitsExpandAll()" title="Expand or collapse all affected call edges and creation points">⊞ Expand All</button>
+          </div>
+        </div>
+        <div id="pass-splits-context-banner" style="display:none; margin-bottom:0.5rem; padding:0.45rem 0.75rem; border-radius:6px; background:rgba(56,189,248,0.1); border:1px solid rgba(56,189,248,0.3); color:#7dd3fc; font-size:0.78rem;"></div>
+        <div class="table-container" style="max-height: 440px;">
+          <table class="data-table" id="pass-splits-table">
+            <thead>
+              <tr>
+                <th style="width:76px;">Pass / #</th>
+                <th style="width:155px;">Stage &amp; Mechanism</th>
+                <th style="width:270px;">What Was Split (Parent &rarr; Products)</th>
+                <th>Why It Split (Trigger, Demand &amp; Converged Union)</th>
+                <th style="width:340px;">What Was Affected (Call Edges / Creation Points)</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="pass-violations-section" style="display:none; margin-bottom:1rem;">
+        <h4 style="margin: 0.5rem 0 0.4rem; color: var(--accent-orange);">Type Violations Evaluated at Quiescence</h4>
+        <div class="table-container" style="max-height: 200px;">
+          <table class="data-table" id="pass-viol-table">
+            <thead><tr><th>Status / Kind</th><th>AVar</th><th>Variable</th><th>Function</th><th>Contour</th><th>Conflicting Union Types</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="pass-resolved-viol-section" style="display:none; margin-bottom:1rem;">
+        <h4 style="margin: 0.5rem 0 0.4rem; color: var(--accent-green);">✓ Violations Resolved Since Comparison Pass</h4>
+        <div class="table-container" style="max-height: 170px;">
+          <table class="data-table" id="pass-resolved-viol-table">
+            <thead><tr><th>Status / Kind</th><th>AVar</th><th>Variable</th><th>Function</th><th>Contour</th><th>Previous Conflicting Types</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <h4 style="margin: 0.75rem 0 0.5rem;">Contours (EntrySets) in this Pass <span id="pass-ess-diff-summary" style="font-size:0.78rem; font-weight:400; color:var(--text-muted); margin-left:0.5rem;"></span></h4>
+      <div class="table-container" style="max-height: 280px; margin-bottom: 1rem;">
+        <table class="data-table" id="pass-ess-table">
+          <thead><tr><th>ID</th><th>Function</th><th>Formals &amp; Converged Types</th><th>Returns</th><th>Raises</th><th>Lineage / Diff</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h4 style="margin: 0.75rem 0 0.5rem;">Data Contours (CreationSets) in this Pass <span id="pass-css-diff-summary" style="font-size:0.78rem; font-weight:400; color:var(--text-muted); margin-left:0.5rem;"></span></h4>
+      <div class="table-container" style="max-height: 280px; margin-bottom: 1rem;">
+        <table class="data-table" id="pass-css-table">
+          <thead><tr><th>ID</th><th>Class / Sym</th><th>Static Arity</th><th>Fields &amp; Types</th><th>Split Origin / Diff</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="pass-avar-diff-section" style="display:none; margin-bottom: 1rem;">
+        <h4 style="margin: 0.75rem 0 0.5rem;">AVars with Converged Type Changes in this Pass <span id="pass-avar-diff-summary" style="font-size:0.78rem; font-weight:400; color:var(--text-muted); margin-left:0.5rem;"></span></h4>
+        <div class="table-container" style="max-height: 280px;">
+          <table class="data-table" id="pass-avar-diff-table">
+            <thead><tr><th>AVar ID</th><th>Variable</th><th>Function</th><th>Contour</th><th>Change</th><th>Type Transition (Base &rarr; Current)</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- View: Dataflow Tracer -->
+  <div class="view-panel" id="view-dataflow">
+    <div class="controls-bar">
+      <div style="display:flex; align-items:center; gap:0.75rem;">
+        <span style="font-weight:600;">Bidirectional Dataflow Tracer</span>
+        <select id="df-pass-select" class="dropdown-control"></select>
+        <span id="df-count" style="font-size:0.8rem; color:var(--text-muted);"></span>
+      </div>
+      <input type="text" class="search-input" id="df-search" placeholder="Search Variable, Function, or AVar ID...">
+    </div>
+    <div class="table-container">
+      <table class="data-table" id="df-table">
+        <thead><tr><th>AVar ID</th><th>Variable</th><th>Function</th><th>Contour</th><th>Converged Type</th><th>Upstream (Backward Defs)</th><th>Downstream (Forward Uses)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- View: Transfer Functions -->
+  <div class="view-panel" id="view-transfer">
+    <div class="controls-bar">
+      <div style="display:flex; align-items:center; gap:0.75rem;">
+        <span style="font-weight:600;">Primitive Operations &amp; Transfer Functions</span>
+        <span id="tf-count" style="font-size:0.8rem; color:var(--text-muted);"></span>
+      </div>
+      <input type="text" class="search-input" id="tf-search" placeholder="Filter primitives, functions, or types...">
+    </div>
+    <div class="table-container">
+      <table class="data-table" id="tf-table">
+        <thead><tr><th>PNode</th><th>Function</th><th>Primitive</th><th>Input Types (Rvals)</th><th>Output Types (Lvals)</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- View: Clones & Memory -->
+  <div class="view-panel" id="view-memory">
+    <div class="controls-bar">
+      <div><span style="font-weight:600;">Function Clones &amp; Concrete Struct Layouts</span></div>
+      <input type="text" class="search-input" id="memory-search" placeholder="Filter functions or types...">
+    </div>
+    <div style="margin-bottom:1.5rem;">
+      <h3 style="margin-bottom:0.75rem; color:var(--text-main);">Function Clones &amp; Specializations</h3>
+      <div class="table-container" style="max-height:360px;">
+        <table class="data-table" id="clones-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Function</th>
+              <th>Status</th>
+              <th>Location</th>
+              <th>EntrySet Contours</th>
+              <th>Specialized Formals</th>
+              <th>Return Type</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div>
+      <h3 style="margin-bottom:0.75rem; color:var(--text-main);">Concrete Struct Memory Layouts</h3>
+      <div id="memory-layouts-container"></div>
+    </div>
+  </div>
+
+  <!-- View: Source & Codegen -->
+  <div class="view-panel" id="view-source">
+    <div class="controls-bar">
+      <div style="display:flex; align-items:center; gap:0.65rem; flex-wrap:wrap;">
+        <span style="font-weight:600;">Source &amp; Target Code</span>
+        <div class="btn-group">
+          <button id="btn-src-mode-py" class="btn-sm" onclick="setSourceTabMode('py')">📜 Python Source</button>
+          <button id="btn-src-mode-cg" class="btn-sm" onclick="setSourceTabMode('cg')">⚙️ Generated C / LLVM</button>
+          <button id="btn-src-mode-both" class="btn-sm active" onclick="setSourceTabMode('both')">⚡ Side-by-Side Split</button>
+        </div>
+        <label style="font-size:0.8rem; color:var(--text-muted); margin-left:0.4rem;">Jump to Function:</label>
+        <select id="src-fun-jump-select" class="dropdown-control">
+          <option value="">-- Select Function --</option>
+        </select>
+      </div>
+      <div id="src-codegen-meta" style="font-size:0.8rem; color:var(--text-muted);"></div>
+    </div>
+    <div class="source-split-grid" id="source-split-grid">
+      <div class="source-split-col" id="source-py-col">
+        <div class="source-split-header">
+          <span id="source-py-header-title">📜 Python Source</span>
+          <span style="font-size:0.75rem; color:var(--text-muted);">Click a line to inspect its CFG PNode</span>
+        </div>
+        <div class="code-container" id="source-code-viewer" style="border:none; border-radius:0; flex:1;"></div>
+      </div>
+      <div class="source-split-col" id="source-cg-col">
+        <div class="source-split-header">
+          <span id="source-cg-header-title">⚙️ Generated Target Code</span>
+          <span id="source-cg-header-sub" style="font-size:0.75rem; color:var(--text-muted);"></span>
+        </div>
+        <div class="code-container" id="codegen-code-viewer" style="border:none; border-radius:0; flex:1;"></div>
+      </div>
+    </div>
+  </div>
+</main>
