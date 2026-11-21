@@ -38,7 +38,16 @@ static void dbg_note_inline(int k, Fun *caller, PNode *pnode, Fun *callee) {
 #undef M
 }
 
+// Inlines applied so far, counted whether or not the sidecar is on.
+// simple_inlining's fixed-point loop tests THIS: it used to test
+// inline_events_storage.n, which only grows with events enabled, so in
+// production the loop always stopped after one pass while every run with
+// the sidecar on (ifa-test's inline phase, pyc --html/--dump-json) ran up
+// to four -- telemetry changed the generated code.
+static int inline_n_applied = 0;
+
 static void record_inline_event(InlineEventKind k, Fun *caller, PNode *pnode, Fun *callee) {
+  ++inline_n_applied;
   if (!inline_events_enabled) return;
   InlineEvent *e = new InlineEvent;
   e->kind = k;
@@ -289,6 +298,20 @@ static void insert_move_before(Fun *f, PNode *p, Var *rhs, Var *lhs) {
   inline_check(f);
 }
 
+// The constant an rval stands for, if any. A literal keeps its Sym in
+// Var::constant, but sub_constants() replaces a provably-constant rval
+// with new_live_Var(c) -- a Var whose SYM is the constant (or symbol) and
+// whose `constant` is null. The single-send matcher already accepts both
+// forms (`v->sym->is_constant || v->sym->is_symbol`); the substitution
+// must too, or a body that has been through sub_constants (every body
+// after the first inlining pass) reaches the formal lookup with a symbol
+// such as `__operator` and asserts.
+static Sym *inline_rval_constant(Var *v) {
+  if (v->constant) return v->constant;
+  if (v->sym && (v->sym->is_constant || v->sym->is_symbol)) return v->sym;
+  return nullptr;
+}
+
 static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
   // Pre-check: bail if any (callsite arg, formal) pair both
   // have Type_SUM.  The substitution loop below needs ONE
@@ -301,10 +324,10 @@ static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
   // method.  Skipping the inline keeps the call as a real
   // dispatch — slightly slower but correct.
   for (Var *v : s->rvals) {
-    if (v->constant) continue;
+    if (inline_rval_constant(v)) continue;
     Sym *fs = first_var(v)->sym;
     int i = fn->sym->has.index(fs);
-    if (i < 0) continue;
+    if (i < 0) return;  // not a formal: nothing at the call site to substitute
     // issues/002: `i` is a formal-position index into fn's declared
     // has[] list, but the call site `p`'s own rvals aren't guaranteed
     // to align 1:1 with it -- an escaped-closure call site can have a
@@ -313,7 +336,7 @@ static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
     // doesn't hold for this call site; bail, mirroring the Type_SUM
     // bail-out below (leaves the call as a real, uninlined dispatch).
     if (i >= p->rvals.n) return;
-    if (p->rvals[i]->constant) continue;
+    if (inline_rval_constant(p->rvals[i])) continue;
     if (p->rvals[i]->type == v->type) continue;
     if (p->rvals[i]->type->type_kind == Type_SUM &&
         v->type->type_kind == Type_SUM) return;
@@ -323,15 +346,15 @@ static void inline_single_pnode(Fun *f, PNode *p, Fun *fn, PNode *s) {
   p->prim = s->prim;
   f->calls.put(p, fn->calls.get(s));
   for (Var *v : s->rvals) {
-    if (v->constant) {
-      p->rvals.add(new_live_Var(v->constant));
+    if (Sym *c = inline_rval_constant(v)) {
+      p->rvals.add(new_live_Var(c));
       continue;
     }
     Sym *fs = first_var(v)->sym;
     int i = fn->sym->has.index(fs);
-    assert(i >= 0);
-    if (rvals[i]->constant) {
-      p->rvals.add(new_live_Var(rvals[i]->constant));
+    assert(i >= 0);  // the pre-check returned on any non-formal
+    if (Sym *c = inline_rval_constant(rvals[i])) {
+      p->rvals.add(new_live_Var(c));
       continue;
     }
     if (rvals[i]->type == v->type) {
@@ -765,12 +788,12 @@ int simple_inlining(FA *fa) {
   // The cap is defensive: real codebases shouldn't produce
   // deep wrapper chains, and the chain matcher absorbs
   // straight-line chains in one pass anyway.  Iteration count
-  // is reported via inline_events_storage.n deltas.
+  // is counted by inline_n_applied, never by the event sidecar.
   const int max_passes = 4;
   for (int pass = 0; pass < max_passes; pass++) {
-    int before = inline_events_storage.n;
+    int before = inline_n_applied;
     inline_single_sends(fa);
-    if (inline_events_storage.n == before) break;
+    if (inline_n_applied == before) break;
   }
   // ifa/issues/112: the DECISIONS themselves, in the order taken.
   static int dbg_ev = -1;
