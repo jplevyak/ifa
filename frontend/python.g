@@ -21,8 +21,8 @@ extern D_Symbol d_symbols_python[];
 int python_user_size = sizeof(D_ParseNode_User);
 int python_globals_size = sizeof(D_ParseNode_Globals);
 
-int python_indent(PythonGlobals **p_globals);
-int python_dedent(PythonGlobals **p_globals);
+int python_indent(PythonGlobals *pg);
+int python_dedent(PythonGlobals *pg);
 void python_whitespace(struct D_Parser *p, d_loc_t *loc, void **p_globals);
 }
 
@@ -118,8 +118,8 @@ list_if: 'if' test list_iter?;
 /* additional material from http://www.python.org/doc/current/ref/grammar.txt */
 
 NEWLINE: '\n';
-INDENT: [ if (!python_indent(&$g)) return -1; ] ;
-DEDENT: [ if (!python_dedent(&$g)) return -1; ] ;
+INDENT: [ if (!python_indent((PythonGlobals *)$g)) return -1; ] ;
+DEDENT: [ if (!python_dedent((PythonGlobals *)$g)) return -1; ] ;
 NAME ::= (letter|'_') (letter | digit | '_')*;
 letter ::= "[a-zA-Z]";
 digit ::= "[0-9]";
@@ -154,12 +154,12 @@ digit ::= "[0-9]";
 octdigit ::= "[0-7]";
 hexdigit ::= digit | "[a-fA-F]";
 
-LP ::= '(' [ $g->implicit_line_joining++; ];
-RP ::= ')' [ $g->implicit_line_joining--; ];
-LB ::= '[' [ $g->implicit_line_joining++; ];
-RB ::= ']' [ $g->implicit_line_joining--; ];
-LC ::= '{' [ $g->implicit_line_joining++; ];
-RC ::= '}' [ $g->implicit_line_joining--; ];
+LP ::= '(' [ ((PythonGlobals *)$g)->implicit_line_joining++; ];
+RP ::= ')' [ ((PythonGlobals *)$g)->implicit_line_joining--; ];
+LB ::= '[' [ ((PythonGlobals *)$g)->implicit_line_joining++; ];
+RB ::= ']' [ ((PythonGlobals *)$g)->implicit_line_joining--; ];
+LC ::= '{' [ ((PythonGlobals *)$g)->implicit_line_joining++; ];
+RC ::= '}' [ ((PythonGlobals *)$g)->implicit_line_joining--; ];
 
 {
 
@@ -209,8 +209,7 @@ void python_whitespace(struct D_Parser *parser, d_loc_t *loc, void **p_globals) 
   loc->s = p;
 }
 
-int python_indent(PythonGlobals **p_globals) {
-  PythonGlobals *pg = *p_globals;
+int python_indent(PythonGlobals *pg) {
   if (pg) {
     if (pg->current_indent[-1] > pg->current_indent[-2])
       return 1;
@@ -224,9 +223,8 @@ int python_indent(PythonGlobals **p_globals) {
   return 0;
 }
 
-int python_dedent(PythonGlobals **p_globals) {
+int python_dedent(PythonGlobals *pg) {
   int x;
-  PythonGlobals *pg = *p_globals;
   if (pg && pg->current_indent[-1] < pg->current_indent[-2]) {
     pg->current_indent--;
     x = pg->current_indent[-1] = pg->current_indent[0];

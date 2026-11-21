@@ -27,6 +27,8 @@
 #include "llvm/Transforms/IPO/Internalize.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #if LLVM_VERSION_MAJOR >= 22
+#undef FREAD
+#undef FWRITE
 #include "llvm/Analysis/RuntimeLibcallInfo.h"
 #endif
 #include "llvm/Support/SourceMgr.h"
@@ -340,7 +342,7 @@ void llvm_codegen_print_ir(FILE *fp, FA *fa, Fun *main_fun, cchar *input_filenam
   DEBUG_LOG("Pre-verification check for unterminated blocks:\n");
   for (llvm::Function &F : *TheModule) {
     for (llvm::BasicBlock &BB : F) {
-      if (!BB.getTerminator()) {
+      if (!bb_has_terminator(BB)) {
         DEBUG_LOG("WARNING: Function %s has unterminated block %s (size=%zu)\n", F.getName().str().c_str(),
                 BB.getName().str().c_str(), BB.size());
         DEBUG_LOG("Block instructions:\n");
@@ -545,7 +547,8 @@ std::unique_ptr<llvm::TargetMachine> llvm_optimize_module(bool link_runtime, boo
   }
   std::string cpu = llvm::Triple(triple_str).getArch() == llvm::Triple::x86_64 ? "x86-64" : "generic";
   std::string features, tune;
-  if (runtime)
+  if (runtime) {
+    for (llvm::Function &f : *runtime) f.removeFnAttr("probe-stack");
     for (llvm::Function &f : *runtime) {
       if (f.isDeclaration() || !f.hasFnAttribute("target-cpu")) continue;
       cpu = f.getFnAttribute("target-cpu").getValueAsString().str();
@@ -553,6 +556,7 @@ std::unique_ptr<llvm::TargetMachine> llvm_optimize_module(bool link_runtime, boo
       if (f.hasFnAttribute("tune-cpu")) tune = f.getFnAttribute("tune-cpu").getValueAsString().str();
       break;
     }
+  }
   for (llvm::Function &f : M) {
     if (f.isDeclaration()) continue;
     if (!f.hasFnAttribute("target-cpu")) f.addFnAttr("target-cpu", cpu);
