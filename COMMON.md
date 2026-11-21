@@ -475,13 +475,35 @@ summary printed every iteration.
 
 ## 12. HTML output (`html.h` / `html.cc`)
 
-Pretty-printing for `ifa -t` / `pyc --html`. Walks the analysis
-state and emits a hyperlinked HTML view of every Fun, Var, Sym,
-AVar, AType. Uses `mktree.js` / `mktree.css` (in the install dir)
-for collapsible tree widgets.
+The compilation explorer behind `pyc --html` / `--dump-json` / `-B`
+(`ifa -t`, `--dump-json`, `-B` for the V driver). Two halves:
 
-Mostly opaque to deep-doc readers; treat it as "the
-visualisation backend, see `--html`" and move on.
+- **Recording, during FA.** `html_record_fa_pass` (from `complete_pass`)
+  and `html_finalize_fa_pass` (after the split stages) capture each
+  pass; `html_record_es_split` / `html_record_cs_split` /
+  `html_record_const_demand` are called by the splitters themselves
+  with the stage, sub-kind, demand CS / violation and the before/after
+  edge or def partition. Every hook is behind `html_telemetry_on()`, so
+  with no output requested it costs one branch. Recording is
+  OBSERVATIONAL: it must not change what the compiler does. (It once
+  did, indirectly: `simple_inlining` decided its fixed point from the
+  inline-event sidecar, so `--html` ran up to four inlining passes and a
+  plain compile one -- see `inline_n_applied` in `optimize/inline.cc`.)
+- **Delta encoding.** An AVar's identity (var, contour, fun) is stored
+  once; per pass only the AVars, EntrySets and CreationSets whose state
+  changed are kept, plus the ids that went away, and the current state
+  is held separately so the final pass can always be written whole.
+  `--html-max-size` is a budget spent while recording; past it a pass
+  keeps only its summary (counts, stage events, splits). The format is
+  documented at the phase-3 writer in `dump_html`, and
+  `explorer.js:materializePass` is its reader.
+
+`dump_html(fa, source_fn, cg_base)` runs after codegen so it can embed
+`<cg_base>.c` or `.ll`, and writes `<source_fn>.html` / `.json` beside
+the program; under `pyc -x` codegen's base is a cache entry. The page itself is `common/explorer/explorer.{html,css,js}`,
+plain files the Makefile wraps as raw string literals (`*.inc`) for
+`html.cc` to include. The call-graph view loads cytoscape and elkjs from
+a CDN; offline it shows a fallback and the other views still work.
 
 ---
 

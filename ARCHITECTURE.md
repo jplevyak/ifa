@@ -103,7 +103,7 @@ void ifa_cg(cchar *fn);                   // emit C
 void ifa_compile(cchar *fn);              // shell out to system C compiler
 // Optional / debug
 void ifa_graph(cchar *fn);
-void ifa_html(cchar *fn, cchar *mktree_dir);
+void ifa_html(cchar *source_fn, cchar *cg_base);  // compilation explorer (--html / --dump-json)
 void ifa_code(cchar *fn);                 // dump IF1 textual form
 ```
 
