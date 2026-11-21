@@ -1335,7 +1335,7 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
                                    : Builder->CreateSRem(lhs, rhs);
       llvm::Value *zero = is_float ? (llvm::Value *)llvm::ConstantFP::get(lhs->getType(), 0.0)
                                     : (llvm::Value *)llvm::ConstantInt::get(lhs->getType(), 0);
-      llvm::Value *rem_nonzero = is_float ? Builder->CreateFCmpONE(rem, zero)
+      llvm::Value *rem_nonzero = is_float ? Builder->CreateFCmpUNE(rem, zero)  // C's !=
                                            : Builder->CreateICmpNE(rem, zero);
       llvm::Value *rem_neg = is_float ? Builder->CreateFCmpOLT(rem, zero)
                                        : Builder->CreateICmpSLT(rem, zero);
@@ -1373,7 +1373,10 @@ bool emit_send_binop(EmitCtx &ctx, PNode *pn) {
                      : Builder->CreateICmpEQ(lhs, rhs);
       break;
     case P_prim_notequal:
-      res = is_float ? Builder->CreateFCmpONE(lhs, rhs)
+      // UNORDERED not-equal, as C's != and Python's: true when either side
+      // is a NaN, so `x != x` is the NaN test (math.isnan, issues/207).
+      // ONE (ordered) made it false for a NaN, unlike the C backend.
+      res = is_float ? Builder->CreateFCmpUNE(lhs, rhs)
                      : Builder->CreateICmpNE(lhs, rhs);
       break;
     default:
