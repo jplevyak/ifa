@@ -25,6 +25,8 @@
 #include "llvm/Transforms/IPO/Internalize.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #if LLVM_VERSION_MAJOR >= 22
+#undef FREAD
+#undef FWRITE
 #include "llvm/Analysis/RuntimeLibcallInfo.h"
 #endif
 #include "llvm/Support/SourceMgr.h"

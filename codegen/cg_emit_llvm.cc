@@ -2907,7 +2907,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         for (int i = 0; i < arg_var->type->has.n; i++) tags += tag_of(arg_var->type->has[i]->type);
       else
         tags += tag_of(arg_var->type);
-      llvm::Value *tagv = Builder->CreateGlobalStringPtr(tags);
+      llvm::Value *tagv = Builder->CreateGlobalString(tags, ".tags");
       args.insert(args.begin() + 1, tagv);
       ft = llvm::FunctionType::get(ptr_ty, {ptr_ty, ptr_ty}, /*isVarArg=*/true);
       fn = TheModule->getOrInsertFunction("_CG_format_string_tagged", ft);
