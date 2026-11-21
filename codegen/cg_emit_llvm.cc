@@ -2922,7 +2922,7 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
         for (int i = 0; i < arg_var->type->has.n; i++) tags += tag_of(arg_var->type->has[i]->type);
       else
         tags += tag_of(arg_var->type);
-      llvm::Value *tagv = Builder->CreateGlobalString(tags, ".tags");
+      llvm::Value *tagv = Builder->CreateGlobalStringPtr(tags);
       args.insert(args.begin() + 1, tagv);
       ft = llvm::FunctionType::get(ptr_ty, {ptr_ty, ptr_ty}, /*isVarArg=*/true);
       fn = TheModule->getOrInsertFunction("_CG_format_string_tagged", ft);
@@ -3441,7 +3441,7 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
   bool produced = ctx.watch_result_put;
   ctx.watch_result = saved;
   ctx.watch_result_put = saved_put;
-  if (watch && !produced && Builder->GetInsertBlock() && !bb_has_terminator(Builder->GetInsertBlock())) {
+  if (watch && !produced && Builder->GetInsertBlock() && !Builder->GetInsertBlock()->getTerminator()) {
     codegen_unresolved_send(pn, ctx.fn ? ctx.fn->calls.get(pn) : nullptr, "no dispatch plan produced its result");
     emit_salvage_trap(ctx, "no_dispatch_plan_result", dst);
   }
@@ -4964,7 +4964,7 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
         // sees the pending exception. What follows is unreachable.
         if (pn->fa_noreturn && pn->fa_noreturn_raises && !ctx.fn->sym->is_generator && !ctx.fn->sym->is_async &&
             Builder->GetInsertBlock() &&
-            !bb_has_terminator(Builder->GetInsertBlock())) {
+            !Builder->GetInsertBlock()->getTerminator()) {
           llvm::Type *ret_ty = ctx.llvm_fn->getReturnType();
           if (ret_ty->isVoidTy())
             Builder->CreateRetVoid();
@@ -5022,7 +5022,7 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
 
 
   if (is_closer && Builder->GetInsertBlock() &&
-      !bb_has_terminator(Builder->GetInsertBlock())) {
+      !Builder->GetInsertBlock()->getTerminator()) {
     emit_block_terminator(ctx, pn);
   }
   // Recurse to successors -- must agree with discover_blocks and
@@ -5343,7 +5343,7 @@ void emit_fun(EmitCtx &ctx, Fun *f) {
   // when the closer-detection missed a case) gets an
   // unreachable so verifyModule doesn't reject the function.
   for (llvm::BasicBlock &bb : *ctx.llvm_fn) {
-    if (!bb_has_terminator(bb)) {
+    if (!bb.getTerminator()) {
       Builder->SetInsertPoint(&bb);
       if (!llvm::pred_empty(&bb)) cg_trap_census("llvm", "unterminated_block", ctx.fn);
       Builder->CreateUnreachable();
