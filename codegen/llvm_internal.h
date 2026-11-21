@@ -43,4 +43,14 @@ void llvm_build_type_strings(FA *fa);
 // are silent and golden-file tests can diff stdout/stderr cleanly.
 #define DEBUG_LOG(...) do { if (ifa_debug) fprintf(stderr, "DEBUG: " __VA_ARGS__); } while (0)
 
+// LLVM 23 changed BasicBlock::getTerminator() to assert hasTerminator().
+inline bool bb_has_terminator(const llvm::BasicBlock *bb) {
+  if (!bb) return false;
+#if LLVM_VERSION_MAJOR >= 23
+  return bb->hasTerminator();
+#else
+  return bb->getTerminator() != nullptr;
+#endif
+}
+
 #endif // _llvm_internal_H_
