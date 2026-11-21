@@ -2574,6 +2574,8 @@ void emit_none_check(EmitCtx &ctx, Var *recv, cchar *sel);
 // Special: __pyc_c_call__(ret_type, fn_name, (type, arg)*) for FFI.
 // -------------------------------------------------------------
 
+static EmitCtx *g_active_emit_ctx = nullptr;
+
 bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_primitive) return false;
   if (pn->rvals.n < 2 || !pn->rvals.v[1] || !pn->rvals.v[1]->sym) return false;
@@ -2581,6 +2583,14 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
   cchar *name = pn->rvals.v[1]->sym->name;
   if (!name) name = pn->rvals.v[1]->sym->constant;
   if (!name) return false;
+
+  if (RegisteredPrim *rp = prim_get(name); rp && rp->llvm_cgfn) {
+    EmitCtx *saved = g_active_emit_ctx;
+    g_active_emit_ctx = &ctx;
+    rp->llvm_cgfn(pn, ctx.fn);
+    g_active_emit_ctx = saved;
+    return true;
+  }
 
   // __pyc_c_call__(ret_type, fn_name_const, (arg_type, arg_value)*)
   // rvals layout:
@@ -5426,3 +5436,15 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
   cg_check_layout_contract();
   return true;
 }
+
+llvm::Value *llvm_emit_get_var(Var *v) {
+  return g_active_emit_ctx ? value_for_var(*g_active_emit_ctx, v) : nullptr;
+}
+
+void llvm_emit_put_result(Var *dst, llvm::Value *val) {
+  if (g_active_emit_ctx && dst && val) {
+    put_result(*g_active_emit_ctx, dst, val);
+  }
+}
+
+llvm::Type *llvm_emit_type(Sym *s) { return sym_to_llvm_type(s); }
