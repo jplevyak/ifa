@@ -61,7 +61,7 @@ bool llvm_jit_read_cache(const char *path) {
 }
 
 // Run the module's `main` with argc/argv: the program's sys.argv.
-int llvm_jit_execute(int argc, char **argv) {
+static int llvm_jit_execute_impl(int argc, char **argv, bool do_fork) {
   // Ensure LLVM knows about the native target.  This is a no-op when the
   // full pipeline already called llvm_codegen_initialize(), and required
   // when the cache-hit path skips that function entirely.
@@ -116,6 +116,10 @@ int llvm_jit_execute(int argc, char **argv) {
     fail("JIT lookup 'main': %s", llvm::toString(sym.takeError()).c_str());
   auto entry = sym->toPtr<int(*)(int, char **)>();
 
+  if (!do_fork) {
+    return entry(argc, argv);
+  }
+
   // Fork so that exit() (or an abort/signal) from Python code doesn't
   // kill the pyc process.  The child inherits the JIT's mapped pages
   // copy-on-write and runs the entry directly.
@@ -129,4 +133,10 @@ int llvm_jit_execute(int argc, char **argv) {
   if (waitpid(pid, &status, 0) < 0)
     fail("JIT: waitpid failed: %s", strerror(errno));
   return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+}
+
+int llvm_jit_execute(int argc, char **argv) { return llvm_jit_execute_impl(argc, argv, true); }
+
+int llvm_jit_execute_in_process(int argc, char **argv) {
+  return llvm_jit_execute_impl(argc, argv, false);
 }
