@@ -19,6 +19,13 @@ int llvm_jit_execute(int argc, char **argv);
 // callbacks that interact directly with host process state.
 int llvm_jit_execute_in_process(int argc, char **argv);
 
+// Persistent LLJIT module for pre-compiling Phase-1 transfer functions /
+// callbacks once and invoking them repeatedly in-process without re-entering IFA.
+struct LLVMJitModule;
+LLVMJitModule *llvm_jit_compile_persistent();
+int llvm_jit_call_persistent(LLVMJitModule *mod, int argc, char **argv);
+void llvm_jit_free_persistent(LLVMJitModule *mod);
+
 // Stage-2 REPL bitcode cache.
 // llvm_jit_cache_path: set by the caller (repl.cc) before calling
 //   llvm_jit_execute() on a cache-miss; cleared after the write.
