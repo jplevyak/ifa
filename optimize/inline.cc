@@ -467,12 +467,12 @@ static Vec<PNode *> *match_prim_chain(Fun *f) {
 static bool prim_chain_substitution_safe(Fun *fn, PNode *p, Vec<PNode *> *chain) {
   for (int i = 0; i < chain->n; i++) {
     for (Var *v : chain->v[i]->rvals) {
-      if (v->constant) continue;
+      if (inline_rval_constant(v)) continue;
       Sym *fs = first_var(v)->sym;
       int formal_idx = (fs ? fn->sym->has.index(fs) : -1);
       if (formal_idx < 0 || formal_idx >= p->rvals.n) continue;
       Var *actual = p->rvals[formal_idx];
-      if (!actual || actual->constant) continue;
+      if (!actual || inline_rval_constant(actual)) continue;
       if (actual->type == v->type) continue;
       if (actual->type && v->type && actual->type->type_kind == Type_SUM && v->type->type_kind == Type_SUM)
         return false;
@@ -512,13 +512,13 @@ static void inline_prim_chain(Fun *f, PNode *p, Fun *fn, Vec<PNode *> *chain) {
   auto subst_rvals = [&](PNode *dst, PNode *src, int src_index) {
     dst->rvals.clear();
     for (Var *v : src->rvals) {
-      if (v->constant) { dst->rvals.add(new_live_Var(v->constant)); continue; }
+      if (Sym *c = inline_rval_constant(v)) { dst->rvals.add(new_live_Var(c)); continue; }
       Sym *fs = first_var(v)->sym;
       int formal_idx = (fs ? fn->sym->has.index(fs) : -1);
       if (formal_idx >= 0) {
         Var *actual = actuals[formal_idx];
-        if (actual->constant) {
-          dst->rvals.add(new_live_Var(actual->constant));
+        if (Sym *c = inline_rval_constant(actual)) {
+          dst->rvals.add(new_live_Var(c));
         } else if (actual->type == v->type) {
           dst->rvals.add(actual);
         } else {
