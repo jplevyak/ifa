@@ -3454,33 +3454,37 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
     Var *dst_var = pn->lvals.v[0];
     if (!dst_var->live) return;
     llvm::StructType *closure_struct = sym_to_llvm_struct(dst_var->type);
-    if (closure_struct && closure_struct->isSized()) {
-      const llvm::DataLayout &DL = TheModule->getDataLayout();
-      uint64_t sz = DL.getTypeAllocSize(closure_struct);
-      llvm::Value *sz_v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), sz);
-      llvm::Value *dst = Builder->CreateCall(
-          get_gc_malloc(), { sz_v },
-          cg_get_string(dst_var) ? cg_get_string(dst_var) : "closure");
-      put_result(ctx, dst_var, dst);
-      unsigned nfields = closure_struct->getNumElements();
-      for (int i = 0; i < pn->rvals.n && static_cast<unsigned>(i) < nfields; ++i) {
-        if (!pn->rvals.v[i]) continue;
-        llvm::Value *val = value_for_var(ctx, pn->rvals.v[i]);
-        if (!val) continue;
-        llvm::Value *ep = Builder->CreateStructGEP(closure_struct, dst, static_cast<unsigned>(i));
-        llvm::Type *ety = closure_struct->getElementType(static_cast<unsigned>(i));
-        if (val->getType() != ety) {
-          if (val->getType()->isIntegerTy() && ety->isPointerTy())
-            val = Builder->CreateIntToPtr(val, ety);
-          else if (val->getType()->isPointerTy() && ety->isIntegerTy())
-            val = Builder->CreatePtrToInt(val, ety);
-          else if (val->getType()->isIntegerTy() && ety->isIntegerTy())
-            val = Builder->CreateSExtOrTrunc(val, ety);
-        }
-        Builder->CreateStore(val, ep);
-      }
+    if (!closure_struct || !closure_struct->isSized()) {
+      codegen_fail(pn, "partial-application closure type is unsized");
       return;
     }
+    const llvm::DataLayout &DL = TheModule->getDataLayout();
+    uint64_t sz = DL.getTypeAllocSize(closure_struct);
+    llvm::Value *sz_v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), sz);
+    llvm::Value *dst = Builder->CreateCall(
+        get_gc_malloc(), { sz_v },
+        cg_get_string(dst_var) ? cg_get_string(dst_var) : "closure");
+    put_result(ctx, dst_var, dst);
+    unsigned nfields = closure_struct->getNumElements();
+    for (int i = 0; i < pn->rvals.n && static_cast<unsigned>(i) < nfields; ++i) {
+      if (!pn->rvals.v[i]) continue;
+      llvm::Value *val = value_for_var(ctx, pn->rvals.v[i]);
+      if (!val) continue;
+      llvm::Value *ep = Builder->CreateStructGEP(closure_struct, dst, static_cast<unsigned>(i));
+      llvm::Type *ety = closure_struct->getElementType(static_cast<unsigned>(i));
+      if (val->getType() != ety) {
+        if (val->getType()->isIntegerTy() && ety->isPointerTy())
+          val = Builder->CreateIntToPtr(val, ety);
+        else if (val->getType()->isPointerTy() && ety->isIntegerTy())
+          val = Builder->CreatePtrToInt(val, ety);
+        else if (val->getType()->isIntegerTy(1) && ety->isIntegerTy())
+          val = Builder->CreateZExt(val, ety);
+        else if (val->getType()->isIntegerTy() && ety->isIntegerTy())
+          val = Builder->CreateSExtOrTrunc(val, ety);
+      }
+      Builder->CreateStore(val, ep);
+    }
+    return;
   }
 
   Vec<Fun *> *callees = ctx.fn->calls.get(pn);

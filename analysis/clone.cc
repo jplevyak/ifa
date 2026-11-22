@@ -111,7 +111,8 @@ Sym *to_basic_type(Sym *t) {
 }
 
 static Sym *to_concrete_type(Sym *t) {
-  t = t->type;
+  if (!t) return nullptr;
+  if (t->type) t = t->type;
   if (t->is_symbol) return sym_symbol;
   if (t->type_kind == Type_TAGGED && t->specializes.n) return t->specializes[0];
   return t;
