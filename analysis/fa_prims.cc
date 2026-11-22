@@ -155,6 +155,7 @@ switch (p->prim->index) {
         AVar *index = make_AVar(p->rvals[o + 1], es);
         AVar *val = make_AVar(p->rvals[o + 2], es);
         fill_tvals(es->fun, p, 1);
+        set_index_tval_store.put(p->tvals[0], p);
         AVar *tval = make_AVar(p->tvals[0], es);
         flow_vars(val, tval);
         set_container(tval, vec);

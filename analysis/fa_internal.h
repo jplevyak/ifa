@@ -99,6 +99,9 @@ bool mixed_basics(AVar *av);
 bool scalar_with_pointer(AType *t);  // ifa/188: a numeric scalar and an object in one union
 
 extern Vec<Var *> fa_internal_vars;  // fa.cc: FA-created tvals, see fill_tvals
+// fa.cc: a set_index_object's stored temporary (tvals[0]) -> that store, which
+// a tval does not record in Var::def. CONST_DEMAND follows the store's key.
+extern Map<Var *, PNode *> set_index_tval_store;
 template <class F>
 inline void foreach_avar(F f) {
   auto do_var = [&](Var *v) {

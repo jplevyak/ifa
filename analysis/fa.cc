@@ -1836,6 +1836,7 @@ void set_container(AVar *av, AVar *container) {
 // later, which reached tuple.__getitem__ with no element type. Every pass
 // must re-derive from bottom; this makes the reset complete for them.
 Vec<Var *> fa_internal_vars;
+Map<Var *, PNode *> set_index_tval_store;
 
 void fill_tvals(Fun *fn, PNode *p, int n) {
   p->tvals.fill(n);
@@ -11575,6 +11576,22 @@ static void controlling_ifs(PNode *site, Vec<PNode *> &out) {
         int o = d->rvals.v[0]->sym == sym_primitive ? 2 : 1;
         if (d->rvals.n > o + 1) push(make_AVar(d->rvals[o + 1], X));
       }
+      // The same for a STORE: `set_index_object(self, key, value)` writes
+      // the field `key` selects, and the walk reaches the store through
+      // the value it wrote (its tval, a writer of the field). Two stores
+      // through one `list.__setitem__` contour, `a[3] = int` and
+      // `a[4] = int`, have identical types, so nothing else separates them:
+      // with the key merged to {3, 4} neither store is constant-indexed, and
+      // each writes every field of the record -- a list `[int x6, list]`
+      // then reads `{int, list}` at index 6 (tests/termios_fcntl.py's
+      // `a[3] = a[3] & ~ICANON; a[4] = B9600`). The key's callers
+      // disagreeing on a constant is the demand's answer.
+      if (a->var && a->var->is_internal)
+        if (PNode *d = set_index_tval_store.get(a->var))
+          if (X->fun->fa_all_PNodes.in(d)) {
+            int o = d->rvals.v[0]->sym == sym_primitive ? 2 : 1;
+            if (d->rvals.n > o + 1) push(make_AVar(d->rvals[o + 1], X));
+          }
     }
     if (dbg && getenv("IFA_DBG_CONSTDEMAND")[0] >= '2')
       fprintf(stderr, "  [constdemand-walk] viol av=%d kind=%d es=%d fun=%s reached=%d\n", v->av->id, (int)v->kind,
