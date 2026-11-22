@@ -3444,6 +3444,42 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
 
 static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
   if (!pn || !ctx.fn) return;
+
+  // Partial-application closure construction (mirrors cg.cc:688).
+  if (pn->lvals.n > 0 && pn->lvals.v[0] && pn->lvals.v[0]->type &&
+      pn->lvals.v[0]->type->type_kind == Type_FUN && pn->creates && pn->creates->n > 0) {
+    Var *dst_var = pn->lvals.v[0];
+    if (!dst_var->live) return;
+    llvm::StructType *closure_struct = sym_to_llvm_struct(dst_var->type);
+    if (closure_struct && closure_struct->isSized()) {
+      const llvm::DataLayout &DL = TheModule->getDataLayout();
+      uint64_t sz = DL.getTypeAllocSize(closure_struct);
+      llvm::Value *sz_v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), sz);
+      llvm::Value *dst = Builder->CreateCall(
+          get_gc_malloc(), { sz_v },
+          cg_get_string(dst_var) ? cg_get_string(dst_var) : "closure");
+      put_result(ctx, dst_var, dst);
+      unsigned nfields = closure_struct->getNumElements();
+      for (int i = 0; i < pn->rvals.n && static_cast<unsigned>(i) < nfields; ++i) {
+        if (!pn->rvals.v[i]) continue;
+        llvm::Value *val = value_for_var(ctx, pn->rvals.v[i]);
+        if (!val) continue;
+        llvm::Value *ep = Builder->CreateStructGEP(closure_struct, dst, static_cast<unsigned>(i));
+        llvm::Type *ety = closure_struct->getElementType(static_cast<unsigned>(i));
+        if (val->getType() != ety) {
+          if (val->getType()->isIntegerTy() && ety->isPointerTy())
+            val = Builder->CreateIntToPtr(val, ety);
+          else if (val->getType()->isPointerTy() && ety->isIntegerTy())
+            val = Builder->CreatePtrToInt(val, ety);
+          else if (val->getType()->isIntegerTy() && ety->isIntegerTy())
+            val = Builder->CreateSExtOrTrunc(val, ety);
+        }
+        Builder->CreateStore(val, ep);
+      }
+      return;
+    }
+  }
+
   Vec<Fun *> *callees = ctx.fn->calls.get(pn);
   if (!callees || !callees->n) {
     // A call FA found no target for: the C backend's
