@@ -292,6 +292,15 @@ int cg_isinstance_tag_targets(PNode *pn, Sym *cls_type, Vec<Sym *> &concrete) {
     }
   if (yes == members.n) return 1;
   if (!yes) return 0;
+  // {None, T...} with every T an instance: None is the null pointer (the
+  // nullable representation, ifa/164), so the answer is `x is not None`
+  // and needs no tag, even for an untagged T such as str. msp_ss's
+  // `bauratetable[self.cpu]` with cpu {None, str} reaches str.__eq__'s
+  // `isinstance(x, str)` this way.
+  int nils = 0;
+  for (Sym *m : members)
+    if (m == sym_nil_type) ++nils;
+  if (nils && yes + nils == members.n) return 2;
   if (untagged_yes) {
     std::string un;
     for (Sym *m : members) {

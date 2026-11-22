@@ -92,6 +92,8 @@ bool cg_union_read_arms(Fun *f, Sym *recv, cchar *symbol, Vec<Sym *> &members, V
 // tag. When such a member exists (`{list, str}` against `list`) no run-time
 // test can answer, and this refuses the program -- as an undispatchable
 // `len(x)` on the same value is refused -- rather than fold it to False.
+// Returns 2 when the members that are not instances are exactly None: the
+// test is then `x is not None`, a null-pointer compare, tag or no tag.
 int cg_isinstance_tag_targets(PNode *pn, Sym *cls_type, Vec<Sym *> &concrete);
 
 // Is field i of record s live (present in the emitted struct)?

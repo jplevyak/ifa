@@ -2016,7 +2016,11 @@ class CBackendEmitter : public VirtualCGEmitter {
         Vec<Sym *> concrete;
         int decided = cg_isinstance_tag_targets(pn, cls_type, concrete);
         fprintf(fp, "  %s = ", cg_get_string(pn->lvals[0]));
-        if (decided >= 0) {
+        if (decided == 2 && opnd) {
+          fprintf(fp, "((void*)%s != 0);\n", opnd);
+        } else if (decided == 2) {
+          codegen_fail(pn, "isinstance against a {None, T} value with no operand to test");
+        } else if (decided >= 0) {
           fprintf(fp, "%d;\n", decided);
         } else if (!opnd || !concrete.n) {
           fputs("0;\n", fp);

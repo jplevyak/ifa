@@ -1927,7 +1927,11 @@ static bool emit_send_is(EmitCtx &ctx, PNode *pn) {
     int decided = cg_isinstance_tag_targets(pn, cls_type, concrete);
     llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
     llvm::Value *res;
-    if (decided >= 0) {
+    if (decided == 2) {
+      // {None, T}: an instance exactly when not None (the null pointer)
+      res = lhs->getType()->isPointerTy() ? Builder->CreateIsNotNull(lhs, "isnotnone")
+                                          : Builder->CreateICmpNE(lhs, llvm::ConstantInt::get(lhs->getType(), 0));
+    } else if (decided >= 0) {
       res = decided ? llvm::ConstantInt::getTrue(*TheContext) : llvm::ConstantInt::getFalse(*TheContext);
     } else if (!concrete.n) {
       res = llvm::ConstantInt::getFalse(*TheContext);
