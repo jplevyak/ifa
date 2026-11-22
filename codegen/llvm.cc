@@ -777,6 +777,11 @@ int llvm_codegen_compile(cchar *input_filename) {
     argv.insert(argv.end(), {(char *)"-o", exe_file, (char *)"-L/opt/homebrew/lib", (char *)"-L/usr/local/lib"});
     if (!linked_runtime) argv.insert(argv.end(), {libdir_arg, (char *)"-L..", (char *)"-lpyc_runtime"});
     argv.push_back((char *)"-lm");
+#ifdef __linux__
+    // the runtime dlopens libcrypto for hashlib; dlopen is in libc only
+    // from glibc 2.34 (Makefile.cg's C-backend link has the same -ldl)
+    argv.push_back((char *)"-ldl");
+#endif
     llvm_gc_link_args(argv);
 #ifdef __APPLE__
     argv.push_back((char *)"-stdlib=libc++");
