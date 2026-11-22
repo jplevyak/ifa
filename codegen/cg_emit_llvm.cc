@@ -1053,23 +1053,26 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
     }
   }
   if (field_idx < 0) return false;
+
+  // Dead-field elision: skip the store when the receiver or field is non-live
+  // or constant-folded (matching cg.cc:812 `cg_field_live`).
+  bool obj_live = pn->rvals.v[1] && pn->rvals.v[1]->live;
+  bool field_live = obj_live && cg_field_live(obj_sym, field_idx);
+  bool res_live = pn->lvals.n > 0 && pn->lvals.v[0] && pn->lvals.v[0]->live;
+  if (!field_live && !res_live) return true;
+
   cg_note_field_access(ctx.fn, pn->rvals.v[1], obj_sym, field_idx);  // ifa/200 A1, as at the read
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
   int slot_idx = llvm_fld(obj_sym, field_idx);
-  if (!obj_struct || slot_idx >= (int)obj_struct->getNumElements())
+  if (field_live && (!obj_struct || slot_idx >= (int)obj_struct->getNumElements()))
     return false;
 
-  llvm::Value *obj = value_for_var(ctx, pn->rvals.v[1]);
+  llvm::Value *obj = field_live ? value_for_var(ctx, pn->rvals.v[1]) : nullptr;
   llvm::Value *val = value_for_var(ctx, pn->rvals.v[4]);
-  if (!obj || !val) return false;
+  if (field_live && (!obj || !val)) return false;
+  if (!field_live && !val) return false;
 
-  // Dead-field elision: skip the store when the field's
-  // `has[i]->var` is non-live (issue 026 in cg.cc).
-  bool field_live =
-      obj_sym->has.v[field_idx]->type &&
-      !(obj_sym->has.v[field_idx]->var &&
-        !obj_sym->has.v[field_idx]->var->live);
   if (field_live) {
     llvm::Value *gep =
         Builder->CreateStructGEP(obj_struct, obj, slot_idx);
@@ -1086,7 +1089,7 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
     Builder->CreateStore(val, gep);
   }
   // Chained-assignment forward into lvals[0].
-  if (pn->lvals.n > 0 && pn->lvals.v[0] && pn->lvals.v[0]->live) {
+  if (res_live) {
     put_result(ctx, pn->lvals.v[0], val);
   }
   return true;
