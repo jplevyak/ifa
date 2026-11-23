@@ -216,6 +216,19 @@ switch (p->prim->index) {
             if (pcs) out.add(pcs);
           return true;
         };
+        // Is there a function dispatched on selector `sel` whose receiver is
+        // the class value `ocs` (a meta-typed receiver formal)? Such
+        // functions are specializers of their selector symbol
+        // (build_type_hierarchy).
+        auto has_meta_method = [&](Sym *sel, CreationSet *ocs) {
+          if (!sel || !ocs || !ocs->sym || !ocs->sym->is_meta_type) return false;
+          for (Sym *f : sel->specializers) {
+            if (!f || !f->is_fun || f->has.n < 2 || f->has[0]->must_specialize != sel) continue;
+            Sym *r = f->has[1]->must_specialize;
+            if (r && r->is_meta_type && r->specializers.set_in(ocs->sym)) return true;
+          }
+          return false;
+        };
         for (CreationSet *sel : selector->out->sorted) {
           cchar *symbol = sel->sym->name;
           if (!symbol) symbol = sel->sym->constant;
@@ -223,6 +236,13 @@ switch (p->prim->index) {
           assert(symbol);
           for (CreationSet *ocs : obj->out->sorted) {
             Vec<CreationSet *> protos;
+            // A method of the receiver's META type (a function whose
+            // receiver formal specializes a meta type the class value has)
+            // answers before the prototype, as a metaclass's method answers
+            // `len(C)` in Python: what the prototype holds of that name is
+            // the class's attribute for its INSTANCES. Left to the selector
+            // dispatch below.
+            if (has_meta_method(sel->sym, ocs)) continue;
             if (proto_css(ocs, protos)) {
               for (CreationSet *pcs : protos) {
                 AVar *iv = pcs->var_map.get(symbol);

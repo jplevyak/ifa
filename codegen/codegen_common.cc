@@ -2910,6 +2910,13 @@ cchar *cg_trap_c_at(cchar *s, int line) {
 // found, fall back to the historical `obj->has[0]` so
 // the getter's "not a field" refusal still fires for
 // genuinely-unresolvable cases.
+Var *cg_meta_proto_var(Sym *meta) {
+  if (!meta || !meta->is_meta_type) return nullptr;
+  Sym *cls = meta->meta_type;
+  if (!cls || cls == meta || !cls->self || cls->self == cls) return nullptr;
+  return cls->self->var;
+}
+
 Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
   if (!obj || obj->type_kind != Type_SUM) return obj;
   if (symbol) {

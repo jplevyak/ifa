@@ -761,6 +761,28 @@ static int c_prim_period(FILE *fp, FA *fa, Fun *f, PNode *n) {
           fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s, ifa/206 */\n", cg_get_string(n->lvals[0]), t,
                   cg_get_string(arms[k]), rv, arm_slots[k], symbol);
         }
+      } else if (obj && obj->is_meta_type) {
+        // issues/184: a read through a CLASS VALUE (`cls.attr` in a
+        // @classmethod or a metamethod) reads the class's prototype, where
+        // its attributes live (FA's P_prim_period reads it the same way).
+        // Inside a contour the class value is one class -- FA splits a
+        // contour per receiver class -- so this is the prototype global.
+        Var *pv = cg_meta_proto_var(obj);
+        Sym *pt = pv ? pv->type : nullptr;
+        int slot = -1;
+        if (pt)
+          for (int i = 0; i < pt->has.n; i++)
+            if (pt->has[i] && symbol == pt->has[i]->name) slot = i;
+        if (slot < 0) {
+          if (!cg_get_string(n->lvals[0]) || !n->lvals[0]->live) goto Lgetter_found;
+          codegen_fail(n, "the class attribute '%s' is not a field of class '%s' (issues/184)", symbol,
+                       obj->meta_type && obj->meta_type->name ? obj->meta_type->name : "?");
+        }
+        if (cg_get_string(n->lvals[0]) && cg_field_live(pt, slot)) {
+          cg_note_slot_use(pt, slot, 1);
+          fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s, class attribute */\n", cg_get_string(n->lvals[0]), t,
+                  cg_get_string(pt), cg_get_string(pv), slot, symbol);
+        }
       } else {
         for (int i = 0; i < obj->has.n; i++) {
           // ifa/185 (doom): a read kept live only for its None check
