@@ -176,7 +176,14 @@ static int is_simple_closure_create(PNode *n, bool verify_other) {
   if (n->lvals[0]->uses.n != 1 || n->lvals[0]->uses[0] != s) return 0;
   while (s->code->kind == Code_MOVE && s->rvals[0] == v) {
     v = s->lvals[0];
-    s = s->cfg_succ[0];
+    PNode *next = s->cfg_succ[0];
+    // Every Var the closure is moved through must also have exactly one use,
+    // the next step of the chain. INLINE_CLOSURE kills this create; if the
+    // closure reaches a second call (`let f = fn(x) => x + s in f(1) + f(2)`,
+    // where `f` is used twice), that call would be left reading a closure that
+    // is never built, and pass too few arguments to its target.
+    if (v->uses.n != 1 || v->uses[0] != next) return 0;
+    s = next;
   }
   if (verify_other && !simple_closure_call(s, false)) return 0;
   return 1;
