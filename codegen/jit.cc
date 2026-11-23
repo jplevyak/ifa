@@ -61,7 +61,7 @@ bool llvm_jit_read_cache(const char *path) {
 }
 
 // Run the module's `main` with argc/argv: the program's sys.argv.
-int llvm_jit_execute(int argc, char **argv) {
+static int llvm_jit_execute_impl(int argc, char **argv, bool do_fork) {
   // Ensure LLVM knows about the native target.  This is a no-op when the
   // full pipeline already called llvm_codegen_initialize(), and required
   // when the cache-hit path skips that function entirely.
@@ -116,6 +116,10 @@ int llvm_jit_execute(int argc, char **argv) {
     fail("JIT lookup 'main': %s", llvm::toString(sym.takeError()).c_str());
   auto entry = sym->toPtr<int(*)(int, char **)>();
 
+  if (!do_fork) {
+    return entry(argc, argv);
+  }
+
   // Fork so that exit() (or an abort/signal) from Python code doesn't
   // kill the pyc process.  The child inherits the JIT's mapped pages
   // copy-on-write and runs the entry directly.
@@ -130,3 +134,53 @@ int llvm_jit_execute(int argc, char **argv) {
     fail("JIT: waitpid failed: %s", strerror(errno));
   return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
+
+int llvm_jit_execute(int argc, char **argv) { return llvm_jit_execute_impl(argc, argv, true); }
+
+int llvm_jit_execute_in_process(int argc, char **argv) {
+  return llvm_jit_execute_impl(argc, argv, false);
+}
+
+struct LLVMJitModule {
+  std::unique_ptr<llvm::orc::LLJIT> jit;
+  int (*entry)(int, char **) = nullptr;
+};
+
+LLVMJitModule *llvm_jit_compile_persistent() {
+  llvm::InitializeNativeTarget();
+  llvm::InitializeNativeTargetAsmPrinter();
+  llvm::InitializeNativeTargetAsmParser();
+
+  auto jit_exp = llvm::orc::LLJITBuilder().setNumCompileThreads(0).create();
+  if (!jit_exp) fail("JIT: %s", llvm::toString(jit_exp.takeError()).c_str());
+
+  auto mod = std::make_unique<LLVMJitModule>();
+  mod->jit = std::move(*jit_exp);
+
+  char prefix = mod->jit->getDataLayout().getGlobalPrefix();
+  auto gen = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(prefix);
+  if (!gen) fail("JIT: DynamicLibrarySearchGenerator: %s", llvm::toString(gen.takeError()).c_str());
+  mod->jit->getMainJITDylib().addGenerator(std::move(*gen));
+
+  if (!jit_module_from_cache) {
+    bool linked_runtime;
+    llvm_optimize_module(false, &linked_runtime);
+  }
+  jit_module_from_cache = false;
+
+  auto tsm = llvm::orc::ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+  if (auto err = mod->jit->addIRModule(std::move(tsm)))
+    fail("JIT addIRModule: %s", llvm::toString(std::move(err)).c_str());
+
+  auto sym = mod->jit->lookup("main");
+  if (!sym) fail("JIT lookup 'main': %s", llvm::toString(sym.takeError()).c_str());
+  mod->entry = sym->toPtr<int (*)(int, char **)>();
+  return mod.release();
+}
+
+int llvm_jit_call_persistent(LLVMJitModule *mod, int argc, char **argv) {
+  if (!mod || !mod->entry) return 1;
+  return mod->entry(argc, argv);
+}
+
+void llvm_jit_free_persistent(LLVMJitModule *mod) { delete mod; }

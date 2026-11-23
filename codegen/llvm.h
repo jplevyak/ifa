@@ -15,6 +15,16 @@ int llvm_codegen_compile(cchar *filename);
 // If llvm_jit_cache_path is non-empty, writes LLVM bitcode to that path
 // before handing the module to the JIT (Stage-2 REPL cache protocol).
 int llvm_jit_execute(int argc, char **argv);
+// In-process (non-forking) LLJIT execution for compile-time metaprogramming
+// callbacks that interact directly with host process state.
+int llvm_jit_execute_in_process(int argc, char **argv);
+
+// Persistent LLJIT module for pre-compiling Phase-1 transfer functions /
+// callbacks once and invoking them repeatedly in-process without re-entering IFA.
+struct LLVMJitModule;
+LLVMJitModule *llvm_jit_compile_persistent();
+int llvm_jit_call_persistent(LLVMJitModule *mod, int argc, char **argv);
+void llvm_jit_free_persistent(LLVMJitModule *mod);
 
 // Stage-2 REPL bitcode cache.
 // llvm_jit_cache_path: set by the caller (repl.cc) before calling

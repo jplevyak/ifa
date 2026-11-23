@@ -1065,23 +1065,26 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
     }
   }
   if (field_idx < 0) return false;
+
+  // Dead-field elision: skip the store when the receiver or field is non-live
+  // or constant-folded (matching cg.cc:812 `cg_field_live`).
+  bool obj_live = pn->rvals.v[1] && pn->rvals.v[1]->live;
+  bool field_live = obj_live && cg_field_live(obj_sym, field_idx);
+  bool res_live = pn->lvals.n > 0 && pn->lvals.v[0] && pn->lvals.v[0]->live;
+  if (!field_live && !res_live) return true;
+
   cg_note_field_access(ctx.fn, pn->rvals.v[1], obj_sym, field_idx);  // ifa/200 A1, as at the read
 
   llvm::StructType *obj_struct = sym_to_llvm_struct(obj_sym);
   int slot_idx = llvm_fld(obj_sym, field_idx);
-  if (!obj_struct || slot_idx >= (int)obj_struct->getNumElements())
+  if (field_live && (!obj_struct || slot_idx >= (int)obj_struct->getNumElements()))
     return false;
 
-  llvm::Value *obj = value_for_var(ctx, pn->rvals.v[1]);
+  llvm::Value *obj = field_live ? value_for_var(ctx, pn->rvals.v[1]) : nullptr;
   llvm::Value *val = value_for_var(ctx, pn->rvals.v[4]);
-  if (!obj || !val) return false;
+  if (field_live && (!obj || !val)) return false;
+  if (!field_live && !val) return false;
 
-  // Dead-field elision: skip the store when the field's
-  // `has[i]->var` is non-live (issue 026 in cg.cc).
-  bool field_live =
-      obj_sym->has.v[field_idx]->type &&
-      !(obj_sym->has.v[field_idx]->var &&
-        !obj_sym->has.v[field_idx]->var->live);
   if (field_live) {
     llvm::Value *gep =
         Builder->CreateStructGEP(obj_struct, obj, slot_idx);
@@ -1098,7 +1101,7 @@ bool emit_send_setter(EmitCtx &ctx, PNode *pn) {
     Builder->CreateStore(val, gep);
   }
   // Chained-assignment forward into lvals[0].
-  if (pn->lvals.n > 0 && pn->lvals.v[0] && pn->lvals.v[0]->live) {
+  if (res_live) {
     put_result(ctx, pn->lvals.v[0], val);
   }
   return true;
@@ -2593,6 +2596,8 @@ void emit_none_check(EmitCtx &ctx, Var *recv, cchar *sel);
 // Special: __pyc_c_call__(ret_type, fn_name, (type, arg)*) for FFI.
 // -------------------------------------------------------------
 
+static EmitCtx *g_active_emit_ctx = nullptr;
+
 bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
   if (!pn || !pn->prim || pn->prim->index != P_prim_primitive) return false;
   if (pn->rvals.n < 2 || !pn->rvals.v[1] || !pn->rvals.v[1]->sym) return false;
@@ -2600,6 +2605,14 @@ bool emit_send_primitive(EmitCtx &ctx, PNode *pn) {
   cchar *name = pn->rvals.v[1]->sym->name;
   if (!name) name = pn->rvals.v[1]->sym->constant;
   if (!name) return false;
+
+  if (RegisteredPrim *rp = prim_get(name); rp && rp->llvm_cgfn) {
+    EmitCtx *saved = g_active_emit_ctx;
+    g_active_emit_ctx = &ctx;
+    rp->llvm_cgfn(pn, ctx.fn);
+    g_active_emit_ctx = saved;
+    return true;
+  }
 
   // __pyc_c_call__(ret_type, fn_name_const, (arg_type, arg_value)*)
   // rvals layout:
@@ -3463,6 +3476,46 @@ void emit_send_call(EmitCtx &ctx, PNode *pn) {
 
 static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
   if (!pn || !ctx.fn) return;
+
+  // Partial-application closure construction (mirrors cg.cc:688).
+  if (pn->lvals.n > 0 && pn->lvals.v[0] && pn->lvals.v[0]->type &&
+      pn->lvals.v[0]->type->type_kind == Type_FUN && pn->creates && pn->creates->n > 0) {
+    Var *dst_var = pn->lvals.v[0];
+    if (!dst_var->live) return;
+    llvm::StructType *closure_struct = sym_to_llvm_struct(dst_var->type);
+    if (!closure_struct || !closure_struct->isSized()) {
+      codegen_fail(pn, "partial-application closure type is unsized");
+      return;
+    }
+    const llvm::DataLayout &DL = TheModule->getDataLayout();
+    uint64_t sz = DL.getTypeAllocSize(closure_struct);
+    llvm::Value *sz_v = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*TheContext), sz);
+    llvm::Value *dst = Builder->CreateCall(
+        get_gc_malloc(), { sz_v },
+        cg_get_string(dst_var) ? cg_get_string(dst_var) : "closure");
+    put_result(ctx, dst_var, dst);
+    unsigned nfields = closure_struct->getNumElements();
+    for (int i = 0; i < pn->rvals.n && static_cast<unsigned>(i) < nfields; ++i) {
+      if (!pn->rvals.v[i]) continue;
+      llvm::Value *val = value_for_var(ctx, pn->rvals.v[i]);
+      if (!val) continue;
+      llvm::Value *ep = Builder->CreateStructGEP(closure_struct, dst, static_cast<unsigned>(i));
+      llvm::Type *ety = closure_struct->getElementType(static_cast<unsigned>(i));
+      if (val->getType() != ety) {
+        if (val->getType()->isIntegerTy() && ety->isPointerTy())
+          val = Builder->CreateIntToPtr(val, ety);
+        else if (val->getType()->isPointerTy() && ety->isIntegerTy())
+          val = Builder->CreatePtrToInt(val, ety);
+        else if (val->getType()->isIntegerTy(1) && ety->isIntegerTy())
+          val = Builder->CreateZExt(val, ety);
+        else if (val->getType()->isIntegerTy() && ety->isIntegerTy())
+          val = Builder->CreateSExtOrTrunc(val, ety);
+      }
+      Builder->CreateStore(val, ep);
+    }
+    return;
+  }
+
   Vec<Fun *> *callees = ctx.fn->calls.get(pn);
   if (!callees || !callees->n) {
     // A call FA found no target for: the C backend's
@@ -4995,7 +5048,7 @@ void emit_pnode(EmitCtx &ctx, PNode *pn, Vec<PNode *> &done) {
     }
   }
   if (pn->code->kind == Code_SEND && pn->fa_live && pn->fa_noreturn && !pn->fa_noreturn_raises &&
-      Builder->GetInsertBlock() && !Builder->GetInsertBlock()->getTerminator()) {
+      Builder->GetInsertBlock() && !bb_has_terminator(Builder->GetInsertBlock())) {
     // ifa/178, as cg.cc: a send that cannot complete in any contour of
     // this clone (a callee that never returns, a read on None), whether
     // or not DCE kept the send itself. Trap rather than run on into the
@@ -5466,3 +5519,15 @@ bool cg_emit_llvm(FA *fa, Fun *main_fun) {
 
 // ifa/issues/212: the type mapper, for llvm.cc's exported entry points.
 llvm::Type *cg_llvm_type_of(Sym *s) { return sym_to_llvm_type(s); }
+
+llvm::Value *llvm_emit_get_var(Var *v) {
+  return g_active_emit_ctx ? value_for_var(*g_active_emit_ctx, v) : nullptr;
+}
+
+void llvm_emit_put_result(Var *dst, llvm::Value *val) {
+  if (g_active_emit_ctx && dst && val) {
+    put_result(*g_active_emit_ctx, dst, val);
+  }
+}
+
+llvm::Type *llvm_emit_type(Sym *s) { return sym_to_llvm_type(s); }
