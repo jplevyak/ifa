@@ -110,11 +110,28 @@ static void mark_live_avars(FA *fa) {
         // handed it to _CG_string_join, and joined N empty strings
         // (minpng). Keep the contents of every opaque call's arguments.
         bool opaque = false;
+        bool reads_fields = false;
         if (p->code && p->code->kind == Code_SEND && p->prim && p->prim->index == P_prim_primitive &&
             p->code->rvals.n > 1) {
           RegisteredPrim *rp = prim_get(p->code->rvals[1]->name);
           opaque = rp && rp->is_visible && !rp->is_functional;
+          reads_fields = rp && rp->reads_fields;
         }
+        auto mark_record_fields_live = [&](auto &self, AVar *a, int depth) -> void {
+          if (!a || !a->out || depth > 8) return;
+          for (CreationSet *cs : a->out->sorted) {
+            if (!cs || !cs->sym) continue;
+            if (cs->sym->is_meta_type || cs->sym->is_fun) continue;
+            if (cs->type && cs->type->type_kind == Type_RECORD) {
+              for (AVar *iv : cs->vars) {
+                if (iv && !iv->live) {
+                  mark_live_avar(iv);
+                  self(self, iv, depth + 1);
+                }
+              }
+            }
+          }
+        };
         for (Var *v : p->rvals) if (is_await || !v->constant) {
           form_AVarMapElem(x, v->avars) {
             AVar *av = x->value;
@@ -131,6 +148,7 @@ static void mark_live_avars(FA *fa) {
                 }
                 for (AVar *iv : cs->vars) if (iv && !iv->live) mark_live_avar(iv);
               }
+            if (reads_fields) mark_record_fields_live(mark_record_fields_live, av, 0);
           }
         }
       }
@@ -243,7 +261,7 @@ static void mark_live_pnodes(FA *fa) {
                     // send's analysis (programs with type violations
                     // proceed under fruntime_errors); an unanalyzed
                     // setter has no target to keep live.
-                    if (p->tvals.n && forward_live(p->tvals.v[0])) goto Live;
+                    if (p->tvals.n && (p->tvals.v[0]->live || forward_live(p->tvals.v[0]))) goto Live;
                     break;
                   }
                   case P_prim_set_index_object: {

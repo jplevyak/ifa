@@ -32,8 +32,15 @@ class RegisteredPrim : public gc {
   PrimitiveLLVMCGPtr llvm_cgfn;
   uint is_functional : 1;
   uint is_visible : 1;
+  uint reads_fields : 1;
   RegisteredPrim(PrimitiveTransferFunctionPtr atfn, PrimitiveCGPtr acgfn, PrimitiveLLVMCGPtr allvm_cgfn = nullptr)
-      : tfn(atfn), check_fn(nullptr), cgfn(acgfn), llvm_cgfn(allvm_cgfn), is_functional(1), is_visible(0) {}
+      : tfn(atfn),
+        check_fn(nullptr),
+        cgfn(acgfn),
+        llvm_cgfn(allvm_cgfn),
+        is_functional(1),
+        is_visible(0),
+        reads_fields(0) {}
 };
 
 class Primitives : public gc {

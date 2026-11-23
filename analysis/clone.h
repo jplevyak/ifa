@@ -7,6 +7,7 @@ class FA;
 class EntrySet;
 class AType;
 
+void clone_reset();
 int clone(FA *fa);
 Sym *basic_type(FA *fa, AType *t, Sym *fail);
 void log_test_fa(FA *fa);

@@ -283,15 +283,9 @@ int cg_isinstance_tag_targets(PNode *pn, Sym *cls_type, Vec<Sym *> &concrete) {
   // implementor set themselves.
   auto is_instance = [&](Sym *m) {
     Sym *fam = cg_tag_family(m);
-    if (cls_type->implementors.in(m) || cls_type->implementors.in(fam) ||
-        (fam && fam->type && cls_type->implementors.in(fam->type)))
-      return true;
-    int mid = m ? m->id : -1;
-    int fid = fam ? fam->id : -1;
-    for (Sym *impl : cls_type->implementors) {
-      if (impl && ((mid > 0 && impl->id == mid) || (fid > 0 && impl->id == fid))) return true;
-    }
-    return false;
+    return m == cls_type || fam == cls_type || cls_type->implementors.in(m) ||
+           cls_type->implementors.in(fam) ||
+           (fam && fam->type && cls_type->implementors.in(fam->type));
   };
   int yes = 0, untagged_yes = 0;
   Sym *culprit = nullptr;

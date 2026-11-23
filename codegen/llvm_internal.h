@@ -48,6 +48,8 @@ void llvm_build_type_strings(FA *fa);
 llvm::Value *llvm_emit_get_var(Var *v);
 void llvm_emit_put_result(Var *dst, llvm::Value *val);
 llvm::Type *llvm_emit_type(Sym *s);
+llvm::Value *llvm_emit_record_field(Sym *rec_ty, llvm::Value *obj, int idx, Sym **out_field_ty);
+llvm::Value *llvm_emit_classtag_eq(Sym *rec_ty, llvm::Value *obj);
 
 // LLVM 23 asserts in BasicBlock::getTerminator() when a block is not
 // terminated yet (replacing the null test with BasicBlock::hasTerminator()),
