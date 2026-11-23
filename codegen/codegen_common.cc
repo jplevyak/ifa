@@ -278,17 +278,32 @@ int cg_isinstance_tag_targets(PNode *pn, Sym *cls_type, Vec<Sym *> &concrete) {
   } else if (t)
     members.add(t);
   if (!members.n) return -1;
-  // A member is an instance when it, or the class it was cloned from, is
-  // an implementor -- clones are not in the implementor set themselves.
+  // A member is an instance when it, or the class it was cloned from (or its
+  // CreationSet's class type), is an implementor -- clones are not in the
+  // implementor set themselves.
   auto is_instance = [&](Sym *m) {
-    return cls_type->implementors.in(m) || cls_type->implementors.in(cg_tag_family(m));
+    Sym *fam = cg_tag_family(m);
+    if (cls_type->implementors.in(m) || cls_type->implementors.in(fam) ||
+        (fam && fam->type && cls_type->implementors.in(fam->type)))
+      return true;
+    int mid = m ? m->id : -1;
+    int fid = fam ? fam->id : -1;
+    for (Sym *impl : cls_type->implementors) {
+      if (impl && ((mid > 0 && impl->id == mid) || (fid > 0 && impl->id == fid))) return true;
+    }
+    return false;
   };
   int yes = 0, untagged_yes = 0;
   Sym *culprit = nullptr;
   for (Sym *m : members)
     if (is_instance(m)) {
       ++yes;
-      if (!cg_has_classtag(m)) { ++untagged_yes; culprit = m; }
+      if (!cg_has_classtag(m)) {
+        ++untagged_yes;
+        culprit = m;
+      } else if (!concrete.in(m)) {
+        concrete.add(m);
+      }
     }
   if (yes == members.n) return 1;
   if (!yes) return 0;
