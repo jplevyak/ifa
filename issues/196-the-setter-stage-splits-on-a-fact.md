@@ -179,6 +179,39 @@ clause:
 The experiment's code is not in the tree. The modes are described above
 and are reproducible from this text.
 
+## 2026-11-24: a compile-time witness, pyc's `re` (issues/210)
+
+The rewritten `pyc_lib/re.py` (a parser class, a program of op records, a
+Match and a Pattern) is a clean, self-contained witness of the cost side.
+One test using most of the module (`re_api.py`, since split into
+`tests/re_find_sub.py`, `re_match_flags.py`, `re_syntax.py`) measured:
+
+| | passes | ES at end | flow analysis | output |
+| --- | --- | --- | --- | --- |
+| default | 54 | 725 | 18.0 s | CPython's |
+| `PYC_NOSETTER=1` | 12 | 570 | 3.0 s | CPython's |
+
+Violations are zero from pass 12. Passes 12 to 55 are a tail of one to
+thirteen splits each: `SETTER` / `SETTER_EQ_CLASS` on `_ReParser.__init__`'s
+`self.names = {}` and `self.open_groups = []` (passes 14, 18, 30), then on
+the `_ReParser` CreationSet (19, 31), `Pattern` (41) and `Match` (50,
+`SETTER_OF_SETTER`), each followed by `TYPE_CONFL` splits of every method of
+that class on `self` (`node`, `fail`, `peek`, `advance`, `parse_*`, ...).
+Nothing downstream needed any of them: with the stage off the program types
+and prints the same 41 lines. In the corpus, the new module raised compile
+time for minilight from 26 s to 35 s and for sunfish from 53 s to 66 s
+(sweep `check__default__c58b051a+a90a2485` against `b77498e0`, verdicts
+unchanged).
+
+What makes it a good test case for the counterfactual gate: the merged
+members here (`names`, `open_groups`, the parser and pattern objects) never
+become irrepresentable, so a gate of the shape above should decline every
+one of these splits and bring the program to 12 passes, while keeping the 11
+programs that need SETTER today. Reproduce:
+`IFA_DBG_ESPERFUN=1 PYC_DBG_PHASES=1 ./pyc` on the three tests concatenated,
+with and without `PYC_NOSETTER=1`; `--dump-json` gives every split with its
+stage and trigger.
+
 ## Watch list (no current witness; do not build without one)
 
 - **One creation point whose element takes two types** through paths that
