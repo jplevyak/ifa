@@ -1412,6 +1412,10 @@ void sum_audit_check(cchar *phase) {
 // is never interned, and never returned for a value union.
 // PYC_INTERN_SUMS=0 turns it off.
 static std::map<std::string, Sym *> sum_intern_table;
+void clone_reset() {
+  sum_intern_table.clear();
+  cs_member_classes.clear();
+}
 static Sym *intern_sum(Sym *t) {
   static int on = -1;
   if (on < 0) { cchar *e = getenv("PYC_INTERN_SUMS"); on = e ? atoi(e) : 1; }

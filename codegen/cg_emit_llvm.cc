@@ -5543,3 +5543,25 @@ void llvm_emit_put_result(Var *dst, llvm::Value *val) {
 }
 
 llvm::Type *llvm_emit_type(Sym *s) { return sym_to_llvm_type(s); }
+
+llvm::Value *llvm_emit_record_field(Sym *rec_ty, llvm::Value *obj, int idx, Sym **out_field_ty) {
+  if (!rec_ty || !obj || rec_ty->type_kind != Type_RECORD) return nullptr;
+  if (idx < 0 || idx >= rec_ty->has.n) return nullptr;
+  if (!llvm_member_exists(rec_ty, idx)) return nullptr;
+  llvm::StructType *st = sym_to_llvm_struct(rec_ty);
+  if (!st || st->isOpaque()) return nullptr;
+  unsigned slot = (unsigned)llvm_fld(rec_ty, idx);
+  if (slot >= st->getNumElements()) return nullptr;
+  llvm::Type *fty = st->getElementType(slot);
+  if (out_field_ty) *out_field_ty = rec_ty->has[idx] ? rec_ty->has[idx]->type : nullptr;
+  llvm::Value *gep = Builder->CreateStructGEP(st, obj, slot);
+  return Builder->CreateLoad(fty, gep);
+}
+
+llvm::Value *llvm_emit_classtag_eq(Sym *rec_ty, llvm::Value *obj) {
+  if (!rec_ty || !obj || !obj->getType()->isPointerTy() || !cg_has_classtag(rec_ty)) return nullptr;
+  llvm::Type *ptr_ty = llvm::PointerType::getUnqual(*TheContext);
+  llvm::Value *tag = Builder->CreateLoad(ptr_ty, obj, "wb_tag");
+  llvm::GlobalVariable *g = get_classtag_global(rec_ty);
+  return Builder->CreateICmpEQ(tag, g, "wb_tageq");
+}

@@ -7,6 +7,7 @@
 #include "optimize/dom.h"
 #include "analysis/escape.h"
 #include "fa.h"
+#include "clone.h"
 #include "fun.h"
 #include "graph.h"
 #include "html.h"
@@ -32,6 +33,7 @@ void ifa_reset() {
   // pointers held by another (e.g., fa_reset clears AType globals which
   // reference Sym globals that ast_reset nulls).
   fa_reset();
+  clone_reset();
   pattern_reset();
   ast_reset();
   if1 = NULL;
