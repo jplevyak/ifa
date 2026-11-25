@@ -375,6 +375,53 @@ Before committing to Option 1 vs Option 2:
    `AType*` classes already brings `re` to ~12 passes and `go` to one
    `UCTNode` layout without losing the four corpus programs.
 
+### Review of the options (2026-11-25)
+
+**Target: Option 1. Option 2 is the fallback only with hard proof** (the
+triage below) that route 4 cannot carry the demand. Reasons and corrections:
+
+- **The counterfactual dissolves without SETTER.** The demand looked
+  counterfactual only because SETTER acts before the union forms. Under
+  `PYC_NOSETTER=1` the union DOES form (the 11 corpus failures are exactly
+  those unions) and is then an ordinary quiescent demand, which CSBACKTRACK
+  ([closed/152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md))
+  exists to backtrack. That is "a merge can be taken back", and it is the
+  case for Option 1. The title's diagnosis is superseded by it.
+- **Option 2 is Option 1 at stage 3's priority.** Seeded from real demands
+  and keyed on `AType`, stage 3 becomes a second backtracker beside route 4;
+  structural reason 3 shrinks but remains.
+- **The clause that admits `re`'s tail was never measured.** Those splits
+  were measured (11-24) after the gate landed (11-08), with zero violations,
+  so `sos_viol_reach` was empty and some other clause of
+  `setter_contour_demanded` admitted them. Options 2 and 3 assume it is the
+  `{None, T*}` receiver dispatch. Measure it first (see below).
+- **`go`'s `maxscore` reach was a question on 11-08** ("Which violation is
+  it?") and is stated as fact in structural reason 2. Confirm it.
+- **Option 3's step 2 repeats 11-08's modes 2 and 3**, which hit that
+  section's stop condition. Its new content is step 1, the `AType*`
+  coarsening, and that is what the probe measures. Its reach is wider than
+  SETTER: `sset_compatible` drives `split_entry_set`'s setter edge partition
+  (`fsetters`) and both 170 vetoes.
+- **`AType` coarsening is Option 2/3's central risk, not a corner case.**
+  Two writers of the same merged CS compare equal, so a separation that only
+  appears after a split is invisible: the 10-17 shape. It is the likeliest
+  way to lose dijkstra2, plcfrs, pylife or sunfish. Option 2's claim to keep
+  them is unmeasured.
+- **"By construction" overclaims for Option 1.** `go` and `re` inherit the
+  `PYC_NOSETTER=1` results only if the new route-4 demands (callable union,
+  multi-`Fun` dispatch) do not fire on them. They join its stop condition.
+- **`go`'s target is recorded inconsistently.** "The defect" says
+  `PYC_NOSETTER=1` gives one layout; 11-08 says "three `UCTNode` structs, as
+  with the stage off"; Verification asks for one layout. Reconcile.
+- **`decorator_recursion`'s wrong answer is a separate soundness bug.** A
+  two-callee dispatch (`f = {fact, down}`) must dispatch or refuse, never
+  miscompile; SETTER's precision only hides it. Fix it under any option.
+- Stage numbering: "stage 2" above is the zero-based `FAPassStage` index;
+  "stage 3" / "stage 8" in the options are the one-based ladder comments.
+
+Order: (0) the clause probe on `re` and `go`; (1) the `PYC_NOSETTER=1`
+triage; (2) Option 3's coarsening probe, only if it still discriminates.
+
 ## Watch list (no current witness; do not build without one)
 
 - **One creation point whose element takes two types** through paths that
