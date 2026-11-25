@@ -162,7 +162,17 @@ void init_default_builtin_types() {
   // in FA's numeric constant-fold/coercion (coerce_num, type_num_fold)
   // instead of vanishing from it (which used to produce an empty,
   // unindexable AType and crash the compiler on e.g. `n * True`).
-  if (if1->callback && if1->callback->bool_is_numeric()) sym_bool->inherits_add(sym_anyint);
+  if (if1->callback && if1->callback->bool_is_numeric()) {
+    sym_bool->inherits_add(sym_anyint);
+    // And an INSTANCE of the language's int (int64): implementors is the
+    // is-instance relation that isinstance, issubclass, their narrowing
+    // and codegen's tag test read, so `isinstance(True, int)` is True.
+    // Not a specializer: dispatch still picks bool's own methods
+    // (pyc issues/214; it was False, and a library check
+    // `if not isinstance(v, int): raise` raised on every bool).
+    sym_bool->implements.add(sym_int64);
+    sym_int64->implementors.set_add(sym_bool);
+  }
 
   new_builtin_lub_type(sym_anyfloat, "anyfloat", 0, sym_float32, sym_float64, sym_float128, NULL);
   new_builtin_lub_type(sym_anycomplex, "anycomplex", 0, sym_complex32, sym_complex64, sym_complex128, NULL);
