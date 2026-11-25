@@ -442,12 +442,14 @@ through the content walk.
 | `re_all.py:56` `print(re.compile(...), ...)` → 8 × `__str__` | `{Pattern, Pattern, Pattern, Pattern}` (k = 2 to 4) | four contours of ONE class, all dispatching to one `Pattern.__str__`. The eight targets come from the send's other receivers |
 | `re_all.py:43` `m.lastindex` → 2 × `__pyc_get_lastindex__` | (24) | |
 
-The second row is the feedback loop behind the tail. SETTER splits
-`Pattern`, so a member now holds k `Pattern` contours. `sos_member_demanded`
+~~The second row is the feedback loop behind the tail.~~ **Corrected by
+Measurement 1 below.** The second row is a real defect (`sos_member_demanded`
 counts *two or more receiver CreationSets of a multi-function send*, never
-whether those CreationSets reach different functions. So the split's own
-product is the next demand, k grows 2 → 3 → 4, and each step pays a round
-of `TYPE_CONFLUENCE` method splits.
+whether they reach different functions, so a split's own product becomes the
+next demand). But it is NOT what drives `re`'s tail. The content walk stops at
+its first witness, so this log named `Pattern×k` wherever it came first. With
+the defect fixed, the same 1,593 contours are admitted, every one of them on
+the first row's `{str, None}`.
 
 **`go`: `UCTNode`'s split (pass 10, stage SETTER) is admitted on two
 clauses, both invariant under the split:**
@@ -478,15 +480,75 @@ Two local defects follow, separable from the strategy choice:
 
 - `sos_poly_recvs` should require the member's receivers to reach **two or
   more distinct targets** of the send. A receiver set of one class is
-  monomorphic at that send. This alone should break `re`'s `Pattern` loop.
-  It does not touch `{str, None}` or `go`.
+  monomorphic at that send. (Measurement 1: this does NOT break `re`'s tail
+  alone.)
 - `{None, T*}` dispatch and `viol_reach` through single-typed members are
-  never separable by a CS split. They are the 11-08 modes 2 and 3, and that
-  section's corpus losses (dijkstra2, plcfrs, pylife, sunfish) are still
-  unexplained. Run the same probe on those four before any gate is rebuilt.
+  never separable by a CS split. They are the 11-08 modes 2 and 3.
 
 The probe's patch is reproducible from this text: about 160 lines in
 `fa.cc` (`setter_contour_demanded`, `sos_build_demand`).
+
+### Measurement 1: the four corpus programs, and the `poly_recv` fix (2026-11-25)
+
+**The same probe on dijkstra2, plcfrs, pylife and sunfish** (`pylife.py`, the
+sweep's entry; `pylife_main.py` imports `curses`). They have 410, 4,095, 2,485
+and 1,355 admissions. The dominant `poly_recv` receivers are again several
+contours of ONE class, at sends whose many targets come from OTHER receivers:
+
+| program | receivers | send |
+| --- | --- | --- |
+| plcfrs | `{ChartItem×2}` (2,305), `{Entry×6..8}` (1,321) | `dict.__getitem__`'s `self._keys[p - 1] == key` → 20 × `__eq__`; `heapq.py:40` `<` → 24 × `__lt__` |
+| pylife | `{tuple×2}` (2,390) | the same `dict` key compare |
+| sunfish | `{Position×2}`, `{tuple×4..9}` | the `dict` key compare; `sunfish.py:76` slice, `:165` iter |
+| dijkstra2 | `{tuple×2..3}`, `{list×2}` | `dijkstra2.py:57` `__getitem__`, `:52` truthiness |
+
+The rest is `viol_reach` from BOXING numeric mixes through single-typed
+members (`dict._len`, `agenda.counter`, `LifeBoard.nextid`, `Vertex.id_`),
+plus a few `elem_irrep` and `cs_demanded` hits (sunfish's
+`_ReNode.group_index`).
+
+**The experiment** (`PYC_SOSTARGETS`, temporary, removed). In
+`sos_build_demand`, each receiver CS of a multi-function send gets the set of
+target `Fun`s whose edges carry it in `filtered_args`. `sos_member_demanded`
+then counts a send only if the member's receivers reach two or more distinct
+target sets. Mode 2 also drops `None` receivers, since a null test is not a
+dispatch. Same binary throughout; compile with `IFA_DBG_DEMAND=1`:
+
+| program | default | mode 1 (distinct targets) | mode 2 (+ drop `None`) |
+| --- | --- | --- | --- |
+| `re` (3 tests) | 55 p, 747 ES, 4710 CS | 55, 747, 4710 | **13**, 591, 3283 |
+| plcfrs | 73 p, 1416, 4189 | **46**, 1304, 3835 | 44, 1301, 3833 |
+| pylife | 32 p, 318, 1453 | **23**, 270, 1383 | 23, 270, 1383 |
+| dijkstra2 | 24 p, 364, 1452 | 23, 358, 1448 | 23, 358, 1448 |
+| sunfish | 45 p, 1015, 4884 | 45, 1015, 4884 | 45, 1011, 4821 |
+| go | 27 p, 540, 1991 | unchanged | unchanged |
+
+- All six compile with no new warnings, and the mode-2 binaries match
+  CPython except for `TIME` lines and argv[0].
+- `PYC_NOSETTER=1` gives `re` 12 passes, so mode 2 reaches the target. The
+  four programs 11-08 lost all still compile, and plcfrs (its 94 → 67 note in
+  `fa.cc`) falls to 44 passes.
+- **Suite under mode 2** (`./test_pyc.py`, C backend) differs from the
+  same-binary default only in `nil_receiver_method_send`'s `niltest` golden
+  (3 → 6 with `dynamic=0`), as 11-08 found. The other 12 failures are
+  environmental and fail on the default run too: ctypes' `-lm` warning,
+  macOS libm, the local CPython's messages, pty/termios.
+
+**`go` is untouched**, because its split stands on `viol_reach` through
+single-typed `int64` members. That is the remaining clause, and it is the one
+whose 11-08 restriction (rule 1) cost the four corpus programs. Their
+`viol_reach` admissions are the same shape as `go`'s, so the next probe is
+whether those programs need the `viol_reach` admission, or only the
+`poly_recv` ones mode 2 still allows.
+
+**Status of the strategy.** Mode 2 is a local repair of one clause. It is
+monotone on every program measured, and it removes `re`'s whole tail. It
+does not change the conclusion above that Option 1 is the target. It is
+cheap, though, and it removes most of SETTER's wasted work in the meantime.
+Before landing it: a same-binary corpus `check` A/B, `make test` on both
+backends, and a decision on the `niltest` golden. Its 3 → 6 is more null
+tests from fewer splits, with no dynamic dispatch, and whether that is an
+acceptable trade is the question to settle.
 
 ## Watch list (no current witness; do not build without one)
 
