@@ -422,6 +422,72 @@ triage below) that route 4 cannot carry the demand. Reasons and corrections:
 Order: (0) the clause probe on `re` and `go`; (1) the `PYC_NOSETTER=1`
 triage; (2) Option 3's coarsening probe, only if it still discriminates.
 
+### Measurement 0: which clause admits the splits (2026-11-25)
+
+A temporary probe (`PYC_DBG_SETTERWHY`, removed) logged, at every admission
+by `setter_contour_demanded`, each demanded member and the exact clause.
+For `poly_recv` it also logged the send's site and target functions, and
+for `viol_reach` the violations whose backward reach holds the member. It
+was run on `re` (the three `re_*.py` tests concatenated) and on `go`.
+`viol_reach` is empty for `re`, and **every admission in both programs
+comes from just two clauses**.
+
+**`re`: all 1,593 admissions are `poly_recv`, from three `print` sends.**
+None is irrepresentable, a violation, or a callee union. Most arrive
+through the content walk.
+
+| send | receivers in the member | what it is |
+| --- | --- | --- |
+| `re_all.py:69` `print(..., m.groups(), ...)` → 2 × `__str__` | `{str, None}` (1,251) | a real optional (`groups()` can hold `None`). It is in every part of any split, and a null test resolves it |
+| `re_all.py:56` `print(re.compile(...), ...)` → 8 × `__str__` | `{Pattern, Pattern, Pattern, Pattern}` (k = 2 to 4) | four contours of ONE class, all dispatching to one `Pattern.__str__`. The eight targets come from the send's other receivers |
+| `re_all.py:43` `m.lastindex` → 2 × `__pyc_get_lastindex__` | (24) | |
+
+The second row is the feedback loop behind the tail. SETTER splits
+`Pattern`, so a member now holds k `Pattern` contours. `sos_member_demanded`
+counts *two or more receiver CreationSets of a multi-function send*, never
+whether those CreationSets reach different functions. So the split's own
+product is the next demand, k grows 2 → 3 → 4, and each step pays a round
+of `TYPE_CONFLUENCE` method splits.
+
+**`go`: `UCTNode`'s split (pass 10, stage SETTER) is admitted on two
+clauses, both invariant under the split:**
+
+| members | clause | the demand |
+| --- | --- | --- |
+| `parent`, `bestchild`; `pos_child` via content | `poly_recv(k=2, nil)` | `go.py:337` `if not child` → 6 × `__not__` on `{None, UCTNode}`. A real optional, null-testable |
+| `losses`, `pos`, `wins`; `unexplored` via content | `viol_reach` | BOXING (kind 6) `{int64, float64}` violations: `count@score`, `__getitem__`, a tuple. They are the numeric mixes behind the `maxscore` coercion warning. Every member on their reach is a single `int64` |
+
+So the 11-08 question "which violation is it?" is answered. It is the numeric
+coercion family (`score`, not only `maxscore`), and no `UCTNode` partition
+can change it. The `__new__`/`__init__` EntrySet admissions (passes 8, 9,
+22–26) are the same `bestchild` and `pos_child` `{None, UCTNode}` dispatch,
+reached through the content walk.
+
+**What it means.** Each admitting demand is a union that every part of the
+proposed split would still hold, or that the split itself created. That
+gives the missing test a precise form: **a demand admits a split only if the
+partition SEPARATES it**, meaning the parts receive different subsets of the
+demanded union, or receivers that reach different targets. That is
+Option 2's per-demand question, and Option 1 gets it for free, since
+CSBACKTRACK partitions by what reaches the demand. It also explains 11-08's
+stop condition: a per-member test on the merged contour cannot ask it.
+Whether a partition separates a union depends on the partition, not on the
+member.
+
+Two local defects follow, separable from the strategy choice:
+
+- `sos_poly_recvs` should require the member's receivers to reach **two or
+  more distinct targets** of the send. A receiver set of one class is
+  monomorphic at that send. This alone should break `re`'s `Pattern` loop.
+  It does not touch `{str, None}` or `go`.
+- `{None, T*}` dispatch and `viol_reach` through single-typed members are
+  never separable by a CS split. They are the 11-08 modes 2 and 3, and that
+  section's corpus losses (dijkstra2, plcfrs, pylife, sunfish) are still
+  unexplained. Run the same probe on those four before any gate is rebuilt.
+
+The probe's patch is reproducible from this text: about 160 lines in
+`fa.cc` (`setter_contour_demanded`, `sos_build_demand`).
+
 ## Watch list (no current witness; do not build without one)
 
 - **One creation point whose element takes two types** through paths that
