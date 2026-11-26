@@ -9814,13 +9814,16 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = 
     Vec<AVar *> seen, work;
     for (ATypeViolation *v : fa->type_violations)
       if (v && v->av && seen.set_add(v->av)) work.add(v->av);
-    for (int i = 0; i < work.n; i++)
+    for (int i = 0; i < work.n; i++) {
+      if (higher_stages_idle && work.v[i]->container && seen.set_add(work.v[i]->container))
+        work.add(work.v[i]->container);
       for (AVar *b : work.v[i]->backward)
         if (b && seen.set_add(b)) {
           work.add(b);
           if (!b->contour_is_entry_set && b->contour != GLOBAL_CONTOUR)
             if (CreationSet *bcs = (CreationSet *)b->contour) viol_reach.set_add(bcs);
         }
+    }
   }
   Vec<CreationSet *> demanded;
   for (CreationSet *cs : css)
