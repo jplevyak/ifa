@@ -591,6 +591,28 @@ Same binary, tree `799183aa+7174753f` (the experiment uncommitted in
 What remains before landing mode 2 is `make test` on both backends and the
 `niltest` golden decision. The A/B has no regressions.
 
+### Plan after Measurement 2 (2026-11-25)
+
+1. **Land `PYC_SOSTARGETS=2` unconditionally and remove the temporary flag and
+   `PYC_DBG_SETTERWHY` probe.** Update `tests/nil_receiver_method_send.py.check`
+   (`niltest=3 → 6`, `dynamic=0` — `f` and `g` hold `{None, V}` vs `{V}`, which
+   a null test resolves without splitting, as [closed/124](closed/124-FA-refuse-imprecise-inference.md)
+   recorded). This banks `re` (55 → 13 passes) and `plcfrs` (73 → 44 passes)
+   and leaves no off-by-default lever in `fa.cc`.
+2. **Skip tightening `viol_reach` inside `SETTER`; go straight to the
+   `PYC_NOSETTER=1` failure triage (Option 1).** Tightening `viol_reach` might
+   fix `go`'s `UCTNode` split, but leaves `SETTER` keying on writer-`AVar*`
+   singletons (`same_eq_classes`), which still blocks
+   [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3
+   (`PYC_CSMERGE=1`) and keeps two competing CreationSet splitters in `fa.cc`.
+   Bucket the 27 suite failures and 11 corpus failures (especially the 3
+   timeouts: `quameon`, `sudoku4`, `sunfish`) by root cause to test whether
+   Option 1 is achievable or hits a cascade-priority wall that forces Option 2.
+3. **Fix `decorator_recursion`'s two-callee soundness bug** (`f = {fact, down}`
+   silently miscompiling under `PYC_NOSETTER=1`) independently of the splitting
+   choice: a multi-callee send must dispatch or refuse, never silently pick one
+   target.
+
 ## Watch list (no current witness; do not build without one)
 
 - **One creation point whose element takes two types** through paths that
