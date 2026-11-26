@@ -8845,6 +8845,7 @@ static CreationSet *cs_peel_group(CreationSet *cs, Vec<AVar *> &group, cchar *ro
   dec->avpos = nullptr;  // not an argument-position confluence; not ledgered
   dec->fsetters = SPLIT_TYPE;
   dec->fmark = SPLIT_VALUE;
+  dec->type_only = false;
   dec->all_edges.copy(all_edges);
   // ifa/143, author's imperative: no arbitrary splitting, only demand
   // splitting. What follows is the ONLY path -- group the in-edges by which
@@ -9866,6 +9867,33 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
             continue;
           }
           if (split_es_at_union_origin(cs, reads, mix.v[0], dbg)) {
+            analyze_again = 1;
+            continue;
+          }
+        }
+      }
+      // ifa/196: generalize the defs==1 factory climb beyond numeric mixes to
+      // any demanded CreationSet (e.g. list.__mul__ for `[None] * n`, or
+      // __pyc_generator__.__new__ for generators). Only when higher stages are
+      // idle, and over the demanded channels with the call-/receiver-matched
+      // walk so callers' writes stay attributed to their own calls.
+      if (higher_stages_idle && defs.n == 1 && demanded.set_in(cs) && defs.v[0] && defs.v[0]->contour_is_entry_set &&
+          defs.v[0]->contour != GLOBAL_CONTOUR) {
+        Vec<AVar *> all_c, dch;
+        cs_content_avars_both(cs, all_c);
+        for (AVar *c : all_c)
+          if (c && c->out && (atype_irrepresentable(c->out) || elem_irrepresentable(c))) dch.add(c);
+        if (!dch.n) cs_content_avars(cs, dch);
+        if (dch.n) {
+          int hops = 0;
+          EntrySet *target = es_climb_to_choice((EntrySet *)defs.v[0]->contour, &hops);
+          AmbiguousReads reads;
+          CSFlowGraph *g = build_cs_flow_graph_over(cs, dch, kCallMatchNumeric, &reads);
+          if (target && split_es_by_call_site(target, dch.v[0], dbg, g)) {
+            analyze_again = 1;
+            continue;
+          }
+          if (split_es_at_union_origin(cs, reads, dch.v[0], dbg)) {
             analyze_again = 1;
             continue;
           }
