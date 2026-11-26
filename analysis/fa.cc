@@ -9600,12 +9600,17 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   // `higher_stages_idle` so transient pass-0/1 unions that higher stages are
   // still separating do not fan records prematurely (unlike the deleted
   // ungated PYC_CSSLOTDEMAND).
+  auto member_irrep = [](AVar *v) {
+    if (!v || !v->out) return false;
+    ATypeRepr r = atype_repr(v->out);
+    return r.irrepresentable() || r.element_irrepresentable() || (r.unit && r.numerics > 0);
+  };
   Vec<CreationSet *> member_named;
   if (higher_stages_idle)
     for (CreationSet *cs : fa->css) {
       if (!cs || !cs->sym) continue;
       for (AVar *v : cs->vars)
-        if (v && v->out && (atype_irrepresentable(v->out) || elem_irrepresentable(v))) {
+        if (member_irrep(v)) {
           member_named.set_add(cs);
           break;
         }
@@ -9882,7 +9887,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         Vec<AVar *> all_c, dch;
         cs_content_avars_both(cs, all_c);
         for (AVar *c : all_c)
-          if (c && c->out && (atype_irrepresentable(c->out) || elem_irrepresentable(c))) dch.add(c);
+          if (member_irrep(c)) dch.add(c);
         if (!dch.n) cs_content_avars(cs, dch);
         if (dch.n) {
           int hops = 0;
@@ -10148,6 +10153,34 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
                       cs->id, cs->sym->name ? cs->sym->name : "?", defs.n, ngroups);
           } else {
             sig.swap(nsig);
+            regroup();
+          }
+        }
+      }
+      // ifa/196: the same matched walk over irrepresentable channels (`dch`)
+      // when the blind content walk collapses to one group (e.g. a record
+      // whose other members share writers across defs, such as
+      // `__pyc_generator__` after its `defs == 1` `__new__` split).
+      if (ngroups < 2 && higher_stages_idle) {
+        Vec<AVar *> all_c, dch;
+        cs_content_avars_both(cs, all_c);
+        for (AVar *c : all_c)
+          if (member_irrep(c)) dch.add(c);
+        CSFlowGraph *gd = dch.n ? build_cs_flow_graph_over(cs, dch, kCallMatchNumeric) : nullptr;
+        if (gd && gd->keys.n >= 2) {
+          std::vector<std::string> dsig((size_t)defs.n);
+          for (int i = 0; i < defs.n; i++)
+            for (int k = 0; k < gd->keys.n; k++) dsig[(size_t)i] += gd->paths.v[k]->set_in(defs.v[i]) ? '1' : '0';
+          sig.swap(dsig);
+          regroup();
+          if (ngroups >= 2) {
+            g = gd;
+            informative = 1;
+            if (dbg)
+              fprintf(stderr, "[csdefsplit] p=%d cs=%d sym=%s defs=%d DEMAND-MATCH-KEY -> %d groups\n", analysis_pass,
+                      cs->id, cs->sym->name ? cs->sym->name : "?", defs.n, ngroups);
+          } else {
+            sig.swap(dsig);
             regroup();
           }
         }
