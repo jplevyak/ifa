@@ -7508,6 +7508,7 @@ static void sos_build_demand();
 static bool sos_member_demanded(AVar *av);
 static bool sos_type_conflict(AVar *av);
 static bool sos_callee_demanded(AVar *av);
+static bool sos_atype_dispatch_demanded(AType *t);
 static bool sos_dispatch_demanded(AVar *av);
 static bool setter_contour_demanded(Vec<AVar *> &avs) {
   for (AVar *a : avs) {
@@ -9690,25 +9691,41 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = 
     if (r.irrepresentable() || r.element_irrepresentable() || (r.unit && r.numerics > 0)) return true;
     if (v->out->type && v->out->type->sorted.n >= 2) {
       int arity0 = -2;
-      for (CreationSet *c : v->out->type->sorted)
+      Vec<CreationSet *> elem_css;
+      int n_cont = 0;
+      for (CreationSet *c : v->out->type->sorted) {
         if (c && c->sym == sym_tuple && c->static_arity >= 0) {
           if (arity0 == -2) arity0 = c->static_arity;
           else if (arity0 != c->static_arity) return true;
         }
+        if (c && c->added_element_var && c->sym && c->sym->element && c->sym->element->var) {
+          ++n_cont;
+          if (AVar *ev = unique_AVar(c->sym->element->var, c))
+            if (ev->out && ev->out->type)
+              for (CreationSet *ec : ev->out->type->sorted)
+                if (ec) elem_css.set_add(ec);
+        }
+      }
+      if (n_cont >= 2 && elem_css.set_count() >= 2) {
+        AType *eu = make_AType(elem_css);
+        ATypeRepr er = atype_repr(eu);
+        if (er.irrepresentable() || (er.unit && er.numerics > 0) ||
+            (include_dispatch && sos_atype_dispatch_demanded(eu)))
+          return true;
+      }
     }
     return include_dispatch && sos_dispatch_demanded(v);
   };
   // ifa/196: an irrepresentable member or positional literal slot (`cs->vars`)
   // or a member/element holding receivers/callees of an unresolved multi-Fun
   // dispatch (distinct non-None targets), gated on `higher_stages_idle`.
-  auto member_irrep = [&](AVar *v) { return member_irrep_or_dispatch(v, false); };
   Vec<CreationSet *> member_named;
   if (higher_stages_idle) {
     sos_build_demand();
     for (CreationSet *cs : fa->css) {
       if (!cs || !cs->sym) continue;
       for (AVar *v : cs->vars) {
-        if (member_irrep(v)) member_named.set_add(cs);
+        if (member_irrep_or_dispatch(v, true)) member_named.set_add(cs);
         if (sos_dispatch_demanded(v)) dispatch_named.set_add(cs);
       }
       if (cs->added_element_var && cs->sym->element && cs->sym->element->var) {
@@ -10625,12 +10642,12 @@ static void sos_build_demand() {
     }
   }
 }
-static bool sos_dispatch_demanded(AVar *av) {
-  if (!av || !av->out) return false;
+static bool sos_atype_dispatch_demanded(AType *t) {
+  if (!t) return false;
   for (size_t i = 0; i < sos_poly_recvs.size(); i++) {
     Vec<CreationSet *> &rs = sos_poly_recvs[i];
     std::set<uintptr_t> sigs;
-    for (CreationSet *c : av->out->sorted)
+    for (CreationSet *c : t->sorted)
       if (c && rs.set_in(c)) {
         if (c->sym == sym_nil_type) continue;
         auto it = sos_poly_tsig[i].find(c);
@@ -10638,7 +10655,11 @@ static bool sos_dispatch_demanded(AVar *av) {
       }
     if (sigs.size() > 1) return true;
   }
-  return sos_callee_demanded(av);
+  return false;
+}
+static bool sos_dispatch_demanded(AVar *av) {
+  if (!av || !av->out) return false;
+  return sos_atype_dispatch_demanded(av->out) || sos_callee_demanded(av);
 }
 static bool sos_member_demanded(AVar *av) {
   if (!av || !av->out) return false;
