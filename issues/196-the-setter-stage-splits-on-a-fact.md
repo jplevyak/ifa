@@ -615,6 +615,38 @@ What remains before landing mode 2 is `make test` on both backends and the
    choice: a multi-callee send must dispatch or refuse, never silently pick one
    target.
 
+### Measurement 3: `PYC_NOSETTER=1` failure triage (2026-11-25)
+
+Baseline `b51b9c91` with `PYC_NOSETTER=1`: **44 suite failures** (over the 12
+macOS-environment baseline failures; `pathlib_glob` and `serial_pty` flip from
+env diff to `COMPILE`) and **11 corpus failures** (`bh`, `dijkstra2`, `doom`,
+`mastermind2`, `plcfrs`, `pygasus`, `pylife`, `sudoku2`, `sudoku4`, `quameon`,
+`sunfish`). Every failure collapses into five concrete Route-4 gaps — **none**
+is a cascade-starvation wall that would force Option 2:
+
+| bucket | suite | corpus | mechanism (measured) |
+| --- | --- | --- | --- |
+| 1. `cs_elem_irrepresentable` ignores `cs->vars` | **24** (4 `random`/`sum_float`, 5 `<tuple_cmp>` `format`/`logging`, 10 `generator_*`/`staticmethod_generator`, 5 class/record fields: `decorator_class_based`, `serial_pty`, `deepcopy_union_receiver_keeps_method_slots`, `enum_basic`, `functools_cache`) | **2** (`mastermind2`, `pylife`) | `cs_elem_irrepresentable` (`fa.cc:8991`) checks only `cs->sym->element` (`added_element_var`), never `cs->vars`. Fixed-arity list/tuple literals (`random.py:324-325` `_gauss_state = [0.0]` / `_gauss_have = [False]` → `cs=1749 defs=2`; `format_nonconstant_repr` `tuple` → `cs=1517 defs=2`) and generator/record fields are therefore `DECLINED (confluence only, no demand)` despite holding irrepresentable unions (`{bool, float64}`, `{bool, str}`, `{None, int64, str}`) |
+| 2. `defs == 1` factory climb is numeric-only | **6** (`list_mul_element_cross_contamination`, `nil_union_prealloc`, `bytes_format_mixed`, `bytes_strip_mod_int_base`, `str_builders`, `numeric_member_split_enumerate`) | **4** (`bh`, `pygasus`, `sudoku2`, `doom`) | `list_mul_element_cross_contamination`: `cs=1453 sym=list` has `keys=4` assign sets and `defs=1` (inside `list.__mul__`), `CSOWNER` finds no multi-def owner, and `split_css_by_defs` declines (`DECLINED (single creation point)`). `csnumsplit`'s `es_climb_to_choice` + `split_es_by_call_site` (`fa.cc:9819`) is wired only to `cs_numeric_mix_content`, not general `demanded` `defs == 1` CreationSets |
+| 3. Multi-hop container-in-record / generic methods | **10** (`bisect_operator`, `builtin_type_factory`, `collections_more`, `defaultdict_eq`, `generic_method_type_degeneration`, `match_map_star`, `pathlib_filesystem`, `pathlib_glob`, `plcfrs_grammar_tables_nonconvergence`, `itertools_more` timeout) | **4** (`dijkstra2`, `plcfrs`, `sudoku4`, `sunfish` timeout) | Shared container methods (`heapq`, `dict`, `list.__add__`/`sort`, `defaultdict`, `operator`) and nested-CS demands (`SETTER_OF_SETTER`). On `sunfish` and `itertools_more`, `VIOLATION` and `CS_DEF_PARTITION` are **not** starved by the cascade gate (both fire repeatedly on passes 12–25); they time out slowly untangling 154–1,452 violations |
+| 4. Stage 8 missing callable / multi-`Fun` dispatch demand | **4** (`decorator_recursion` **wrong answer**, `splitter_setter` `dynamic=2`, `splitter_setter_of_setter` `dynamic=2`, `splitter_mark_type` golden) | **0** | `dispatch_named` checks only untagged same-`Fun` return-type ambiguity, not callable-union (`f = {fact, down}`) or multi-`Fun` zero-dispatch demands. `decorator_recursion` is also a standalone soundness bug |
+| 5. `UNTAGGED_DISPATCH` ↔ `TYPE_CONFL` ping-pong | **0** | **1** (`quameon` timeout) | Not a cascade blowup: from pass 30 on, `CS_DEF_PARTITION` (`[untagged] split es=883/1236/1238`, `d_ess=0 d_css=0`) and `TYPE_CONFL` re-point the same edges back and forth (`viol` 19 ↔ 17) to the pass cap |
+
+**Verdict:** Option 1 is unblocked. Recommended execution order under
+`PYC_NOSETTER=1`:
+1. Fix `decorator_recursion`'s two-callee soundness bug and `quameon`'s
+   `UNTAGGED_DISPATCH` ↔ `TYPE_CONFL` period-2 oscillation (standalone bugs).
+2. Extend Route 4's `demanded` predicate (`cs_elem_irrepresentable` /
+   `higher_stages_idle` gate) to check `cs->vars` for irrepresentable unions
+   (bucket 1: clears ~24 suite + 2 corpus failures in one step).
+3. Generalize `csnumsplit`'s `defs == 1` climb (`es_climb_to_choice` +
+   `split_es_by_call_site`) from numeric-only to any `demanded` `defs == 1`
+   CreationSet (bucket 2: clears `bh`, `list.__mul__`, `nil_union_prealloc`,
+   etc.).
+4. Re-measure buckets 3–4 once 1–3 land (several bucket-3 failures, including
+   `sunfish` and `itertools_more`, may collapse once buckets 1–2 stop leaving
+   record fields and `defs == 1` factories merged).
+
 ## Watch list (no current witness; do not build without one)
 
 - **One creation point whose element takes two types** through paths that
