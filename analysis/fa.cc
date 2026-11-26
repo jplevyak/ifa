@@ -1662,6 +1662,16 @@ static int cur_split_type_only = 0;
 
 
 
+static bool es_preserves_filters(EntrySet *from, EntrySet *to) {
+  if (!from || !to) return false;
+  form_MPositionAType(x, from->filters) {
+    if (!x->key || !x->value) continue;
+    AType *tf = to->filters.get(x->key);
+    if (!tf || type_diff(tf, x->value) != fa->type_world.bottom_type) return false;
+  }
+  return true;
+}
+
 static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = nullptr, EntrySet *preference = 0) {
   if (e->to) {
     edges.add(e);
@@ -1686,6 +1696,7 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
       // symmetric "anything but `split`" choice to ping-pong between.
       for (EntrySet *x : e->match->fun->ess) {
         if (!x || x == split || x->type_key_pass < 0 || !x->args.n) continue;
+        if (!es_preserves_filters(split, x)) continue;
         bool all = true;
         int matched = 0;
         for (MPosition *p : e->match->fun->positional_arg_positions) {
@@ -1735,6 +1746,7 @@ static void make_entry_set(AEdge *e, Vec<AEdge *> &edges, EntrySet *split = null
   set_entry_set(e, es);
   if (!es) {
     e->to->split = split;
+    if (split && split->filters.n) e->to->filters.copy(split->filters);
     // ifa/133: the same parent, recorded durably. `split` is cleared every
     // pass; `split_origin` is not.
     if (!e->to->split_origin) e->to->split_origin = split;
@@ -6244,7 +6256,8 @@ static ESSplitDecision *decide_entry_set_split(AVar *av, int fsetters, int fmark
       // Gating it (PYC_ROUTEGATE) stopped deepcopy_recursive_nested_growth's
       // period-2 churn only by minting instead (ess 144 -> 279); deleted
       // (ifa/074, ifa/146). PYC_SELFPROD=6 fixes the oscillation instead.
-      if (d && d->pass_made != analysis_pass && d->product && d->product != es) {
+      if (d && d->pass_made != analysis_pass && d->product && d->product != es &&
+          es_preserves_filters(es, d->product)) {
         product = d->product;
         // ifa/issues/101: break a ledger cycle. If `product` was itself
         // routed to `es` earlier, the two contours are, by the ledger's
