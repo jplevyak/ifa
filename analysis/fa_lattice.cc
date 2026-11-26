@@ -378,6 +378,19 @@ Ldone:
 static inline int subsumed_by(Sym *a, Sym *b) {
   return (a == b) || a->type == b || b->specializers.set_in(a->type);
 }
+// ifa/196: A CreationSet is concrete if it has live defs this pass OR is a
+// concrete instance/split CS distinct from its Sym's canonical abstract_type
+// CreationSet. Testing `defs.n` alone misclassifies a concrete CS whose
+// allocation site has not yet been reached during the current pass as an
+// abstract type, causing type_intersection to match every sibling CS of the
+// same class and leak past EntrySet::filters (quameon compute_nn_value).
+static inline bool cs_is_concrete(CreationSet *cs) {
+  if (cs->defs.n) return true;
+  if (cs->sym && cs->sym->abstract_type && cs->sym->abstract_type->n)
+    return cs->sym->abstract_type->v[0] != cs;
+  return false;
+}
+
 AType *type_diff(AType *a, AType *b) {
   AType *r;
   if ((r = a->diff_map.get(b))) return r;
@@ -387,8 +400,8 @@ AType *type_diff(AType *a, AType *b) {
   }
   r = new AType();
   for (CreationSet *aa : a->sorted) {
-    if (aa->defs.n && b->set_in(aa)) continue;
-    for (CreationSet *bb : b->sorted) if (!bb->defs.n) {
+    if (cs_is_concrete(aa) && b->set_in(aa)) continue;
+    for (CreationSet *bb : b->sorted) if (!cs_is_concrete(bb)) {
       if (subsumed_by(aa->sym, bb->sym)) goto Lnext;
     }
     r->set_add(aa);
@@ -418,12 +431,12 @@ AType *type_diff_all(AType *a, Vec<AType *> &bs) {
   for (AType *b : live) if (b)
     for (CreationSet *bb : b->sorted) {
       concrete.set_add(bb);
-      if (!bb->defs.n) abstract.set_add(bb);
+      if (!cs_is_concrete(bb)) abstract.set_add(bb);
     }
   AType *r = new AType();
   bool changed = false;
   for (CreationSet *aa : a->sorted) {
-    bool covered = aa->defs.n && concrete.set_in(aa);
+    bool covered = cs_is_concrete(aa) && concrete.set_in(aa);
     if (!covered)
       for (CreationSet *bb : abstract) if (bb && subsumed_by(aa->sym, bb->sym)) { covered = true; break; }
     if (covered)
@@ -460,8 +473,8 @@ AType *type_intersection(AType *a, AType *b) {
   r = new AType();
   for (CreationSet *aa : a->sorted) {
     for (CreationSet *bb : b->sorted) {
-      if (aa->defs.n) {
-        if (bb->defs.n) {
+      if (cs_is_concrete(aa)) {
+        if (cs_is_concrete(bb)) {
           if (aa == bb) {
             r->set_add(aa);
             goto Lnexta;
@@ -473,7 +486,7 @@ AType *type_intersection(AType *a, AType *b) {
           }
         }
       } else {
-        if (bb->defs.n) {
+        if (cs_is_concrete(bb)) {
           if (subsumed_by(bb->sym, aa->sym)) r->set_add(bb);
         } else {
           if (subsumed_by(aa->sym, bb->sym)) {
