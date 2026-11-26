@@ -1261,23 +1261,6 @@ void html_record_cs_split(FA *fa, int stage, cchar *sub_kind, CreationSet *cs, C
 
     if (sig_or_reason && *sig_or_reason) {
       rsd.detail = std::string("sig: ") + sig_or_reason;
-    } else if (d->setters) {
-      std::vector<std::string> sparts;
-      for (AVar *s : *d->setters) {
-        if (!s || !s->out || !s->out->n) continue;
-        std::string st = format_atype_with_cs_ids(s->out);
-        if (std::find(sparts.begin(), sparts.end(), st) == sparts.end()) {
-          sparts.push_back(st);
-          if (sparts.size() >= 3) break;
-        }
-      }
-      if (!sparts.empty()) {
-        rsd.detail = "writes: ";
-        for (size_t k = 0; k < sparts.size(); k++) {
-          if (k > 0) rsd.detail += ", ";
-          rsd.detail += sparts[k];
-        }
-      }
     }
     target_rs->affected_defs.push_back(rsd);
   }

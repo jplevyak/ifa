@@ -76,7 +76,6 @@ class AVar;
 class AEdge;
 class AType;
 class SettersHashFns;
-class Setters;
 class CreationSet;
 class ATypeViolation;
 class Patterns;
@@ -303,15 +302,6 @@ class CreationSet : public gc {
   CreationSet(CreationSet *cs);
 };
 
-class Setters : public Vec<AVar *> {
- public:
-  uint hash;
-  Vec<AVar *> sorted;
-  Map<AVar *, Setters *> add_map;
-
-  Setters() : hash(0) {}
-};
-
 typedef Map<Sym *, CreationSet *> CSMap;
 typedef MapElem<Sym *, CreationSet *> CSMapElem;
 
@@ -363,8 +353,6 @@ class AVar : public gc {
   AVarRestrictPred restrict_pred;
   Sym *restrict_pred_cls;
   AVar *container;
-  Setters *setters;
-  Setters *setter_class;
   CSMap *cs_map;
   MatchCache *match_cache;
   Sym *type;
@@ -454,17 +442,6 @@ class ATypeChainHashFns {
  public:
   static uint hash(AType *a) { return a->hash; }
   static int equal(AType *a, AType *b) {
-    if (a->sorted.n != b->sorted.n) return 0;
-    for (int i = 0; i < a->sorted.n; i++)
-      if (a->sorted[i] != b->sorted[i]) return 0;
-    return 1;
-  }
-};
-
-class SettersHashFns {
- public:
-  static uint hash(Setters *a) { return a->hash; }
-  static int equal(Setters *a, Setters *b) {
     if (a->sorted.n != b->sorted.n) return 0;
     for (int i = 0; i < a->sorted.n; i++)
       if (a->sorted[i] != b->sorted[i]) return 0;
@@ -596,7 +573,6 @@ class SplitDecisionHashFns {
 class TypeWorld : public gc {
  public:
   ChainHash<AType *, ATypeChainHashFns> cannonical_atypes;
-  ChainHash<Setters *, SettersHashFns> cannonical_setters;
   ChainHash<ATypeFold *, ATypeFoldChainHashFns> type_fold_cache;
   ChainHash<ATypeViolation *, ATypeViolationHashFuns> type_violation_hash;
 
@@ -886,8 +862,8 @@ void fa_reset();
 enum class FAPassStage {
   TYPE_CONFLUENCE,        // split_ess_for_type
   MARK_TYPE,              // split_ess_for_mark_type
-  SETTER,                 // split_for_setters (type-based)
-  SETTER_OF_SETTER,       // split_for_setters_of_setters (type-based)
+  SETTER,                 // retired (ifa/196); slot stays so stage numbering is stable
+  SETTER_OF_SETTER,       // retired (ifa/196); slot stays so stage numbering is stable
   MARK_SETTER,            // split_for_setters with marks
   MARK_SETTER_OF_SETTER,  // split_for_setters_of_setters with marks
   VIOLATION,              // split_for_violations

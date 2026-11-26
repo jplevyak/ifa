@@ -1,6 +1,6 @@
 # 146 — remove every arbitrary split; only demand splitting
 
-**CLOSED 2026-11-03: the audit is complete.** The off-by-default inventory has been empty since 2026-10-15 and every removal below carries its same-binary corpus A/B. The two-question test, the non-monotone diagnostic and the delete-don't-default-off rule now live in [README.md](../README.md) "Read first" and in AGENTS.md. One default-path violation of the rule remains and is its own issue: the SETTER stage nominates a confluence on a fact ([196](../196-the-setter-stage-splits-on-a-fact.md)). The "Dead ends" list below is the record not to rebuild from.
+**CLOSED 2026-11-03: the audit is complete.** The off-by-default inventory has been empty since 2026-10-15 and every removal below carries its same-binary corpus A/B. The two-question test, the non-monotone diagnostic and the delete-don't-default-off rule now live in [README.md](../README.md) "Read first" and in AGENTS.md. One default-path violation of the rule remains and is its own issue: the SETTER stage nominates a confluence on a fact ([196](196-the-setter-stage-splits-on-a-fact.md)). The "Dead ends" list below is the record not to rebuild from.
 
 **Status: open. Umbrella / audit.** Rewritten 2026-09-28. The full
 chronological record, 2026-09-08 → 09-25, is in git:

@@ -1,6 +1,6 @@
 # 195 — what the Concert compiler (1992–96) still has that ifa does not
 
-**CLOSED 2026-11-03: distributed.** C1 and C2 → [198](../198-decision-snapshot-across-compiles.md) (which carries the design section below); C3 → [203](../203-shrink-the-graph-fa-walks.md); C4 → [050](../050-FA-general-constant-propagation-unreachable-code.md); C5 → [204](../204-optimize-pass-fixes.md); C6 → [205](../205-ai-centric-interface.md); the recursion level → [196](../196-the-setter-stage-splits-on-a-fact.md); the switch threshold → [199](../199-emitted-code-performance.md). "What NOT to take" stays here as the record.
+**CLOSED 2026-11-03: distributed.** C1 and C2 → [198](../198-decision-snapshot-across-compiles.md) (which carries the design section below); C3 → [203](../203-shrink-the-graph-fa-walks.md); C4 → [050](../050-FA-general-constant-propagation-unreachable-code.md); C5 → [204](../204-optimize-pass-fixes.md); C6 → [205](../205-ai-centric-interface.md); the recursion level → [196](196-the-setter-stage-splits-on-a-fact.md); the switch threshold → [199](../199-emitted-code-performance.md). "What NOT to take" stays here as the record.
 
 **Status: open. Umbrella**, like [146](146-remove-all-arbitrary-splitting.md).
 Written 2026-11-03 from a reading of the Illinois Concert compiler's

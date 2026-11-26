@@ -1,6 +1,6 @@
 # 178 — route 4 cannot separate two creation points of a class built through one constructor
 
-**CLOSED 2026-11-03: merged into [196](../196-the-setter-stage-splits-on-a-fact.md).** The repro passes by default since 2026-10-02 (None kept in the type projection). The receiver-aware route-4 key and the writer split have no known witness (six shared-constructor variants tried, 2026-10-15); they are a row of 196's watch list. Fixes 1 and 2 below (`gate_send`, `reroute_uncovered_edges`) are landed and stand on their own.
+**CLOSED 2026-11-03: merged into [196](196-the-setter-stage-splits-on-a-fact.md).** The repro passes by default since 2026-10-02 (None kept in the type projection). The receiver-aware route-4 key and the writer split have no known witness (six shared-constructor variants tried, 2026-10-15); they are a row of 196's watch list. Fixes 1 and 2 below (`gate_send`, `reroute_uncovered_edges`) are landed and stand on their own.
 
 **Status:** open. Filed 2026-09-30 from
 [132](132-arity-is-representation-not-provenance.md), whose synthetic test it

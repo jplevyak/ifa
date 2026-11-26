@@ -5,12 +5,12 @@
   total-passes:      4
   events:            4
   splits[type]: 2
-  splits[setter]: 2
+  splits[cs-def-partition]: 2
 )
 
 (history
-  pass 1 setter splits=1 ess=3→3 css=27→27 violations=6→6
+  pass 1 cs-def-partition splits=1 ess=3→3 css=27→27 violations=6→6
   pass 2 type splits=1 ess=3→3 css=28→28 violations=6→6
-  pass 3 setter splits=1 ess=4→4 css=28→28 violations=7→7
+  pass 3 cs-def-partition splits=1 ess=4→4 css=28→28 violations=7→7
   pass 4 type splits=1 ess=4→4 css=29→29 violations=7→7
 )

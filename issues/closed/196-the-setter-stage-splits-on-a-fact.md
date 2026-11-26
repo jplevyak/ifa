@@ -1,15 +1,17 @@
 # 196 — the SETTER stage splits on a fact; the demand it needs is a counterfactual
 
-**Status: open; the demand-free half landed 2026-11-08; re-analyzed 2026-11-25**
+**CLOSED 2026-11-26: Option 1 landed — Stage 3 (`SETTER` and `SETTER_OF_SETTER`) is retired.** Route 4 (`CS_DEF_PARTITION`) absorbed every missing demand/actuator and moved into Stage 3's slot before Stage 5 (`VIOLATION`); `Setters`, `AVar::setters`, `AVar::setter_class`, `TypeWorld::cannonical_setters`, `compute_setters`, `split_ess_setters`, `split_css`, `split_for_setters_of_setters`, `PYC_NOSETTER`, and both `ifa/170` setter-compatibility vetoes are deleted.
+
+**Earlier status: open; the demand-free half landed 2026-11-08; re-analyzed 2026-11-25**
 (options below; earlier draft at
 `git show 194d92e1:ifa/issues/196-the-setter-stage-splits-on-a-fact.md`). `go`'s
 split and `re`'s 42-pass zero-violation tail are still there, and why is now
 measured. Filed 2026-11-03 as the survivor of
-[closed/124](closed/124-FA-refuse-imprecise-inference.md) residual 2,
-[closed/146](closed/146-remove-all-arbitrary-splitting.md)'s last
-default-path violation, [closed/178](closed/178-FA-route4-declines-records-built-through-one-constructor.md)
-(the writer split, no witness), [closed/185](closed/185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md)
-phase A, and [closed/129](closed/129-plan-demand-driven-creation-set-splitting.md)'s
+[closed/124](124-FA-refuse-imprecise-inference.md) residual 2,
+[closed/146](146-remove-all-arbitrary-splitting.md)'s last
+default-path violation, [closed/178](178-FA-route4-declines-records-built-through-one-constructor.md)
+(the writer split, no witness), [closed/185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md)
+phase A, and [closed/129](129-plan-demand-driven-creation-set-splitting.md)'s
 residual family. This is the one open design question in the splitter.
 Everything it blocks is listed at the end.
 
@@ -18,7 +20,7 @@ Everything it blocks is listed at the end.
 `SETTER` (stage 2, `split_for_setters` and `split_css`) nominates a
 member or element whenever its writers disagree: "the setters of this
 confluence differ" is a FACT about the program, not a demand (README
-"Read first", rule 1). Measured on `go` (closed/124): `UCTNode.parent` is
+"Read first", rule 1). Measured on `go` (124): `UCTNode.parent` is
 `{None}` from `__init__` and `{UCTNode}` from `play`; the stage splits the
 CreationSet by setter class, `go` ends with two `UCTNode` layouts where
 shedskin has one, and nothing ever observed `{None, UCTNode}` and failed
@@ -28,7 +30,7 @@ CPython.
 ## Why a plain demand gate does not work (measured, do not repeat)
 
 Four gate formulations were built on 2026-10-17 and reverted
-(closed/124, "The full demand gate"): nominate a SETTER confluence only on
+(124, "The full demand gate"): nominate a SETTER confluence only on
 SETTER_OF_SETTER's demand test (`sos_type_conflict`), with and without its
 content walk, with numeric mixes counted, with reach from every
 irrepresentable AVar. Each either left `go` unchanged or lost suite tests
@@ -41,7 +43,7 @@ happened. So the demand is a counterfactual: *would merging these writers
 make an irrepresentable union downstream?*
 
 The same wall appears from the other side in
-[170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)
+[170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md)
 step 3: every merge of two converged-equal CreationSets is re-split by
 SETTER on the next pass, to the pass cap.
 
@@ -188,19 +190,19 @@ stage and trigger.
 
 ## 2026-11-25: why gating SETTER's output hit a structural wall
 
-Every attempt above and in [closed/124](closed/124-FA-refuse-imprecise-inference.md)
+Every attempt above and in [closed/124](124-FA-refuse-imprecise-inference.md)
 kept SETTER's engine (`compute_setters` → `AVar::setters` → `same_eq_classes`)
 and put a boolean gate (`setter_contour_demanded`) in front of
 `split_ess_setters` and `split_css`. That strategy is exhausted for three
 structural reasons:
 
 1. **`setter_class` is `(Var, EntrySet)` writer provenance, not written type.**
-   As measured in [closed/157](closed/157-FA-all-demand-must-be-evaluated-at-quiescence.md)
+   As measured in [closed/157](157-FA-all-demand-must-be-evaluated-at-quiescence.md)
    (`fa.cc` `recompute_eq_classes`), `setter_class`es are singletons in
    practice (3,704 of 3,704 on `plcfrs`). Two writes of `int64` from two
    contours of a split method — or `{None}` in `__init__` and `{UCTNode}` in
    `play` — have distinct `Setters` sets. That drives `re`'s 42-pass
-   zero-violation tail ([issues/210](../../issues/210-re-complete.md)): an
+   zero-violation tail ([issues/210](../../../issues/210-re-complete.md)): an
    EntrySet splits → its field or container writes become distinct `AVar*`
    singletons → `SETTER` splits the `CreationSet` → `TYPE_CONFLUENCE` splits
    every method of that class on `self` → their writes become new `AVar*`
@@ -220,7 +222,7 @@ structural reasons:
    keyed on assigned `AType`s) and **stage 3** (`SETTER` / `SETTER_OF_SETTER`,
    seeded bottom-up from type confluences, keyed on writer `AVar*`s). Because
    stage 3 keys on writer identity,
-   [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)'s
+   [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md)'s
    `merge_equivalent_entry_sets` and `merge_equivalent_creation_sets` must carry
    `same_eq_classes` / `cs_setter_compatible` vetoes solely to keep SETTER from
    re-splitting converged-equal contours to the pass cap.
@@ -237,7 +239,7 @@ that stage 8 (`split_css_by_defs`) lacks:
    `__new__`, `defaultdict`, generator frames) and write incompatible types
    into the returned object at the call sites. Stage 8 declines at `defs.n < 2`
    except for `CSOWNER` and numeric mixes (`csnumsplit`,
-   [closed/156](closed/156-FA-split-int-from-float-coerce-last.md)).
+   [closed/156](156-FA-split-int-from-float-coerce-last.md)).
 2. **Splitting pass-through `EntrySet`s (`__init__`, mutating helpers) along
    `e->args`.** Stage 8's `ESBLOCK` splits only direct container-element writer
    contours when `defs.n > 1`.
@@ -259,19 +261,19 @@ demand-driven and `AType`-keyed:
 - **Generalize `csnumsplit`'s `defs == 1` climb (`fa.cc`) to any demanded
   channel.** Run `build_cs_flow_graph_over` with the call-, receiver- and
   heap-object-matched walk (`kCallMatchNumeric` / `heap_pts`,
-  [closed/156](closed/156-FA-split-int-from-float-coerce-last.md)) over *only*
+  [closed/156](156-FA-split-int-from-float-coerce-last.md)) over *only*
   the demanded channel(s), climb `defs[0]->contour` to the nearest choice
   point, and partition callers by which assigned `AType`s reach their returned
   or passed object — never by writer `AVar*` identity.
 - **Widen `ESBLOCK`, `CSOWNER` and `CSBACKTRACK`**
-  ([closed/152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md))
+  ([closed/152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md))
   to cover record-member channels as well as container elements.
 - **Bring stage 8's `demanded` set to parity:** add callable-union dispatch
   (`sos_poly_callees`) and unresolved multi-`Fun` dispatch (excluding
   `{None, single-T*}` null tests and shared-ancestor `virtualvars`).
 - **Payoff:** deletes `AVar::setters`, `setter_class`, `SETTER`,
   `SETTER_OF_SETTER`, and both setter-compatibility vetoes in
-  [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md). Fixes
+  [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md). Fixes
   `go`, `re` (54 → 12 passes) and `PYC_CSMERGE=1` by construction, against a
   closed worklist (27 suite tests, 11 corpus programs).
 - **Risk / stop condition:** `quameon`, `sudoku4` and `sunfish` time out under
@@ -313,14 +315,14 @@ but replace fact-seeding, writer-`AVar*` singletons, and the mixed
   preserving `dijkstra2`, `plcfrs`, `pylife` and `sunfish` (a demand inside a
   one-contour member propagates its two incompatible writer classes onto the
   outer receiver `x->container`). Lets
-  [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) drop
+  [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md) drop
   `cs_setter_compatible`.
 - **Cost:** retains both stage 3 and stage 8 in `fa.cc`.
 - **Stop condition:** if a program requires separating two writers of the
   *same* converged `AType*` because their types only diverge after the split
-  (circular pass-0 fixed point, [closed/185](closed/185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md)
+  (circular pass-0 fixed point, [closed/185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md)
   phase A), pair with a demand-triggered call-site writer split and
-  [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)'s
+  [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md)'s
   convergence re-merge rather than restoring writer-`AVar*` identity.
 
 ### Option 3: `AType`-keyed `compute_setters` + scoped `sos_*` inside current `SETTER`
@@ -342,16 +344,16 @@ The minimum-surface probe of Option 2 inside the existing data structures:
 - **Stop condition:** if two *real* multi-CS members on one class still cross-talk
   through the shared `av->setters` set, move to Option 2 or Option 1.
 
-### Option 4: permissive split + LUB re-merge at quiescence ([170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)-driven)
+### Option 4: permissive split + LUB re-merge at quiescence ([170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md)-driven)
 
 Let upstream splits happen (including call-site splits on circular merges,
-[closed/185](closed/185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md)
+[closed/185](185-FA-merged-tuple-receiver-makes-the-arity-unroll-live.md)
 phase A), drop `cs_setter_compatible` from `merge_equivalent_creation_sets`,
-and generalize [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)
+and generalize [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md)
 to merge CreationSets whose member-wise join (`X.m ⊔ Y.m`) is representable and
 introduces no dispatch ambiguity.
 
-- **Not standalone:** in `re` ([issues/210](../../issues/210-re-complete.md))
+- **Not standalone:** in `re` ([issues/210](../../../issues/210-re-complete.md))
   the cost is 42 wasted passes before quiescence, which a post-hoc merge does
   not recover; in `go`, root (`parent = {None}`) and child
   (`parent = {UCTNode}`) are not `cs_state_equal`, and re-merging while stage 3
@@ -384,7 +386,7 @@ triage below) that route 4 cannot carry the demand. Reasons and corrections:
   counterfactual only because SETTER acts before the union forms. Under
   `PYC_NOSETTER=1` the union DOES form (the 11 corpus failures are exactly
   those unions) and is then an ordinary quiescent demand, which CSBACKTRACK
-  ([closed/152](closed/152-FA-backtrack-the-demand-to-the-merged-creation-set.md))
+  ([closed/152](152-FA-backtrack-the-demand-to-the-merged-creation-set.md))
   exists to backtrack. That is "a merge can be taken back", and it is the
   case for Option 1. The title's diagnosis is superseded by it.
 - **Option 2 is Option 1 at stage 3's priority.** Seeded from real demands
@@ -605,7 +607,7 @@ What remains before landing mode 2 is `make test` on both backends and the
    `PYC_NOSETTER=1` failure triage (Option 1).** Tightening `viol_reach` might
    fix `go`'s `UCTNode` split, but leaves `SETTER` keying on writer-`AVar*`
    singletons (`same_eq_classes`), which still blocks
-   [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3
+   [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md) step 3
    (`PYC_CSMERGE=1`) and keeps two competing CreationSet splitters in `fa.cc`.
    Bucket the 27 suite failures and 11 corpus failures (especially the 3
    timeouts: `quameon`, `sudoku4`, `sunfish`) by root cause to test whether
@@ -695,19 +697,19 @@ and `go` (27 p, 540 ES, 1991 CS) unchanged:
 ## Watch list (no current witness; do not build without one)
 
 - **One creation point whose element takes two types** through paths that
-  agree on argument types and call site (closed/129's residual family).
+  agree on argument types and call site (129's residual family).
   Every past instance was a single wrong edge found with a probe
-  (closed/152, closed/133's `__delitem__`, heapq, closed/139, closed/172,
+  (152, closed/133's `__delitem__`, heapq, closed/139, closed/172,
   closed/175). When a program appears: `IFA_DBG_ELEMCONF`,
   `IFA_DBG_CSVARS`, `ELEMWRITER`, `IFA_DBG_CSDEFSPLIT`.
-- **A receiver-aware route-4 key** (closed/178 fact 2): a store's receiver
+- **A receiver-aware route-4 key** (178 fact 2): a store's receiver
   creation point is not on the content path, so two records built through
   one constructor reach the same assign sets. Six variants tried; each is
   either already separated or temporal (bh's shape, no split).
 - Two shapes that look like this family and are not: one slot holding two
   types over time (temporal; the fix is in the program, PYC_CHANGES.md),
   and a branch that should fold per contour (a constant demand,
-  [134](134-remove-the-frontend-forced-split-opt-in.md)).
+  [134](../134-remove-the-frontend-forced-split-opt-in.md)).
 
 **Do not restart from these** (each deleted with its measurement in
 closed/146 or closed/157): `PYC_CSELEM`, `PYC_CSSITELESS`,
@@ -719,7 +721,7 @@ unconditional receiver filtering, a bounded wholesale fan.
 
 ## Blocked on this
 
-- [170](170-FA-contours-minted-on-transient-types-are-never-remerged.md)
+- [170](../170-FA-contours-minted-on-transient-types-are-never-remerged.md)
   step 3, the CreationSet merge (`PYC_CSMERGE`, built, off).
 - `go`'s one-layout `UCTNode`, and every corpus program whose clone count
   SETTER inflates (voronoi: two `list[int64]` to shedskin's one).
@@ -731,3 +733,61 @@ unconditional receiver filtering, a bounded wholesale fan.
 green on both backends; same-binary corpus `check` A/B with no verdict
 regression and `ess`/`css` down; then `PYC_CSMERGE=1` runs voronoi and bh
 to a fixed point without hitting the pass cap.
+
+## Resolution (2026-11-26): Stage 3 retired via Option 1
+
+All remaining `PYC_NOSETTER=1` failures (44 suite, 11 corpus) were closed by
+extending Route 4 (`CS_DEF_PARTITION`) and fixing latent bugs exposed once
+Stage 3 stopped masking them:
+
+- `c66529d0` / `03bcf0f2` / `4ad3b3e7`: `{None, scalar}` in `member_irrep`,
+  `DEMAND-MATCH-KEY` (`kCallMatchNumeric` over `dch`), `sos_dispatch_demanded`
+  in Route 4 `dispatch_named`, and `CSOWNER` `allow_defs1` at
+  `higher_stages_idle`.
+- `92ae01ec`: latent codegen fixes (`cg.cc` voidish tuple-element cast;
+  `PolymorphicSlot` keyed on `(slot, ct)` and filtered by `classes->set_in(dt)`).
+- `51078a6a`: `CSOWNER` follows `a->backward` past `is_load_result(a)` at
+  `depth > 0` under `allow_defs1` (fixed 6 programs: `builtin_type_factory`,
+  `collections_more`, `functools_cache`, `dijkstra2`, `doom`, `pylife`).
+- `c2c1103e` / `40849b29`: `repair_filtered_edge_coverage()` in
+  `split_for_violations` (fixed `defaultdict_eq`, `str_builders`, `mastermind2`).
+- `bd69c990` / `9bb529fc`: `(type, member-slot)` fallback key in `CSOWNER`
+  for symmetric swapped-type dicts and C function-identifier casts in
+  polymorphic dispatch arms (fixed `plcfrs`, `plcfrs_grammar_tables_nonconvergence`).
+- `cd7db942`: Route 4 runs in Stage 3's slot before Stage 5 (`VIOLATION`)
+  (fixed `mastermind2`, `sunfish`, `plcfrs_grammar`).
+- `af57dfc5`: `cs_is_concrete(cs)` in `fa_lattice.cc` (`type_diff`,
+  `type_diff_all`, `type_intersection`) replacing `cs->defs.n` (fixed
+  `quameon` — 77/77 corpus compiling).
+- `027b7393` / `6cb9f10a` / `ae828030`: mixed-arity fixed tuples in
+  `member_irrep_or_dispatch` (`bisect_operator`), container-element union
+  dispatch demand (`itertools_more`), and `container` link in `viol_reach`
+  (`match_map_star`).
+- `01418ef3`: preserve call-edge context across bound-method `sym_closure`
+  and factory exits in `callctx_step` (`numeric_member_split_enumerate`).
+- Retirement commit: deleted `Setters`, `AVar::setters`, `AVar::setter_class`,
+  `TypeWorld::cannonical_setters`, `compute_setters`, `split_ess_setters`,
+  `split_css`, `split_for_setters_of_setters`, `PYC_NOSETTER`, and both
+  `ifa/170` setter-compatibility vetoes; declined same-class non-receiver
+  clone splits in `split_edges` (eliminating `union_argument_field_float_vs_int`'s
+  `ifa/121` warnings and layout mismatch) and deduplicated `targets` in
+  `split_edges` (fixing an $O(n!)$ duplicate-`AEdge` blowup that cut
+  `softrender` from >180 s timeout to 7.6 s).
+
+**Measured results (2026-11-26):**
+- **CI gates:** `test-unit` 58/0, `test-ir` all 17 phases 0 failed (8
+  `fa-converge` goldens updated `setter` → `cs-def-partition` with identical
+  pass/ES/CS/violation counts), `test-ifa-llvm` passed, `test-dparse` passed,
+  `test-links` 0 dangling, `test-explorer` OK; `test_pyc.py` 601 passed / 0
+  regressions on both C and LLVM (only the 12 pre-existing macOS-environment
+  failures).
+- **77-program corpus vs `check__PYC_SOSTARGETS_2__799183aa+7174753f`:**
+  **77/77 compile** in 126.7 s; `ess` 36,506 → 36,181 (−0.9%), `css`
+  149,745 → 149,119 (−0.4%), warnings 65 → 63 (−2, `fysphun` 6 → 4).
+- **Acceptance checks:**
+  1. `go`: single `UCTNode` layout (`_CG_type_UCTNode_57051`), `--refuse-imprecise`
+     6 → 2 sites (0 `UCTNode` sites).
+  2. `re_syntax` / `re_find_sub` / `re_search`: 11–14 passes.
+  3. `PYC_CSMERGE=1`: `voronoi` converges in 14 passes (was 101 pass cap);
+     `bh` still hits the pass cap on a separate non-setter path (tracked in
+     `ifa/170`).
