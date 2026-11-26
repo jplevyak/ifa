@@ -593,12 +593,14 @@ What remains before landing mode 2 is `make test` on both backends and the
 
 ### Plan after Measurement 2 (2026-11-25)
 
-1. **Land `PYC_SOSTARGETS=2` unconditionally and remove the temporary flag and
-   `PYC_DBG_SETTERWHY` probe.** Update `tests/nil_receiver_method_send.py.check`
-   (`niltest=3 → 6`, `dynamic=0` — `f` and `g` hold `{None, V}` vs `{V}`, which
-   a null test resolves without splitting, as [closed/124](closed/124-FA-refuse-imprecise-inference.md)
-   recorded). This banks `re` (55 → 13 passes) and `plcfrs` (73 → 44 passes)
-   and leaves no off-by-default lever in `fa.cc`.
+1. **Landed 2026-11-25: `PYC_SOSTARGETS=2` is now unconditional** in `fa.cc`
+   (`sos_build_demand` / `sos_member_demanded`), with the temporary
+   `PYC_SOSTARGETS` flag and `PYC_DBG_SETTERWHY` probe removed and
+   `tests/nil_receiver_method_send.py.check` updated (`direct=88 dynamic=0
+   niltest=6`). All six non-e2e CI gates pass (`unit` 58/0, `test-ir` all 17
+   phases 0 failed, `test-ifa-llvm`, `test-dparse`, `test-links`,
+   `test-explorer`), and `test_pyc.py` matches `5b765923`'s baseline on both
+   backends (601 passed, same 12 macOS-environment failures).
 2. **Skip tightening `viol_reach` inside `SETTER`; go straight to the
    `PYC_NOSETTER=1` failure triage (Option 1).** Tightening `viol_reach` might
    fix `go`'s `UCTNode` split, but leaves `SETTER` keying on writer-`AVar*`
