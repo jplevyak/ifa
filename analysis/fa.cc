@@ -11330,11 +11330,30 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
             form_MPositionAVar(x, e->args) {
               if (x->value != av || !x->key->is_positional()) continue;
               MPosition *pos = x->key;
-              if (!e->to->filters.get(pos)) continue;
+              AType *cur_f = e->to->filters.get(pos);
+              if (!cur_f) continue;
               AType *formal_f = e->match->formal_filters.get(pos);
               if (!formal_f) continue;
               AType *uncovered = type_intersection(t, formal_f);
               if (!uncovered || uncovered == fa->type_world.bottom_type) continue;
+              // If every uncovered CS is an untagged sym already present in cur_f,
+              // spawning a second contour at this call site creates an
+              // undispatchable untagged call (mastermind2). Widen cur_f instead:
+              // compatible CSs share one contour; incompatible ones surface a
+              // demand in that contour and split upstream.
+              bool same_untagged = true;
+              for (CreationSet *uc : uncovered->sorted) {
+                if (!uc || !uc->sym || uc->sym->type_kind == Type_RECORD) { same_untagged = false; break; }
+                bool in_cur = false;
+                for (CreationSet *cc : cur_f->sorted) if (cc && cc->sym == uc->sym) { in_cur = true; break; }
+                if (!in_cur) { same_untagged = false; break; }
+              }
+              if (same_untagged) {
+                e->to->filters.put(pos, type_union(cur_f, uncovered));
+                repaired = 1;
+                spawned = true;
+                break;
+              }
               Map<MPosition *, AType *> nf;
               nf.copy(e->to->filters);
               nf.put(pos, uncovered);
