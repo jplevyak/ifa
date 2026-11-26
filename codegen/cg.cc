@@ -661,8 +661,11 @@ static int c_prim_make(FILE *fp, FA *fa, Fun *f, PNode *n) {
           }
           if (rec_fields && !cg_field_live(rec, i - 3)) continue;
           cg_note_slot_use(rec, i - 3, 0);
+          Sym *mtype = rec_fields ? rec->has[i - 3]->type : nullptr;
           cchar *mt = rec_fields ? cg_member_ctype(rec, i - 3) : nullptr;
-          if (cg_needs_nil_union_cast(rec_fields ? rec->has[i - 3]->type : nullptr, mt, n->rvals.v[i]))
+          bool voidish_to_ptr = mt && mtype && !mtype->num_kind && !cg_voidish(mtype) &&
+                                cg_voidish(n->rvals.v[i]->type);
+          if (voidish_to_ptr || cg_needs_nil_union_cast(mtype, mt, n->rvals.v[i]))
             fprintf(fp, "  %s->e%d = (%s)%s;\n", cg_get_string(n->lvals[0]), i - 3, mt, c_rhs(n->rvals.v[i]));
           else
             fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, c_rhs(n->rvals.v[i]));
@@ -1313,6 +1316,7 @@ static int c_prim_clone(FILE *fp, FA *fa, Fun *f, PNode *n) {
           for (int si = 0; si < pslots->n; si++) {
             int slot = (*pslots)[si].slot;
             Fun *fun_val = (*pslots)[si].fun_val;
+            if ((*pslots)[si].classes && !(*pslots)[si].classes->set_in(n->lvals[0]->type)) continue;
             if (!cg_field_live(n->lvals[0]->type, slot)) continue;
             if (!cg_get_string(fun_val)) continue;
             cg_note_slot_use(n->lvals[0]->type, slot, 0);

@@ -2218,6 +2218,7 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
       for (int si = 0; si < pslots->n; si++) {
         int slot = (*pslots)[si].slot;
         Fun *fun_val = (*pslots)[si].fun_val;
+        if ((*pslots)[si].classes && !(*pslots)[si].classes->set_in(dt)) continue;
         if (!cg_field_live(dt, slot)) continue;
         if (!fun_val->cg_string) continue;
         llvm::Function *fv = TheModule->getFunction(fun_val->cg_string);

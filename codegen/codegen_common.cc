@@ -683,10 +683,12 @@ void cg_build_new_to_val_map(FA *fa) {
             slots = new Vec<PolymorphicSlot>();
             cg_new_to_val_map.put(fun_new, slots);
           }
-          // Find existing registration for this (slot) — replace if less specific.
+          // Find existing registration for this (slot, ct) — replace if less specific.
+          // Keying on (slot, ct) prevents two unrelated classes constructed in the
+          // same function (e.g. __main__) from colliding when they share a slot index.
           int existing = -1;
           for (int k = 0; k < slots->n; k++)
-            if ((*slots)[k].slot == slot) {
+            if ((*slots)[k].slot == slot && (*slots)[k].classes && (*slots)[k].classes->set_in(ct)) {
               existing = k;
               break;
             }
