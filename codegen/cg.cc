@@ -2722,7 +2722,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
               if (wrote_one) fputs(", ", fp);
               wrote_one = 1;
-              if (!strcmp(ft, at))
+              if (!strcmp(ft, at) && !pn->rvals[i]->sym->is_fun)
                 fputs(cg_get_string(pn->rvals[i]), fp);
               else if (cg_repr(av).scalar())
                 fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
@@ -2816,7 +2816,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
               if (wrote_one) fputs(", ", fp);
               wrote_one = 1;
-              if (!strcmp(ft, at))
+              if (!strcmp(ft, at) && !pn->rvals[i]->sym->is_fun)
                 fputs(cg_get_string(pn->rvals[i]), fp);
               else if (cg_repr(av).scalar())
                 fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
@@ -2912,7 +2912,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
               if (wrote_one) fputs(", ", fp);
               wrote_one = 1;
-              if (!strcmp(ft, at))
+              if (!strcmp(ft, at) && !pn->rvals[i]->sym->is_fun)
                 fputs(cg_get_string(pn->rvals[i]), fp);
               else if (cg_repr(av).scalar())
                 fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
