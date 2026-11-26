@@ -8097,11 +8097,19 @@ static const ObjVec *heap_pts(AVar *R, CallCtx *C, CreationSet *L) {
   memo[key] = r;
   return r;
 }
+static bool callctx_compatible(CallCtx *a, CallCtx *b) {
+  while (a && b && a->e && b->e) {
+    if (a->e != b->e) return false;
+    a = a->up;
+    b = b->up;
+  }
+  return true;
+}
 static bool objs_share_def(const ObjVec *a, const ObjVec *b) {
   if (!a || !b) return true;
   for (auto &x : *a)
     for (auto &y : *b)
-      if (x.first == y.first) return true;
+      if (x.first == y.first && callctx_compatible(x.second, y.second)) return true;
   return false;
 }
 
@@ -8125,7 +8133,30 @@ static CallCtx *callctx_step(AVar *a, AVar *x, CallCtx *c, bool &ok, int walk) {
         // the receiver came in.
         Vec<MPosition *> pos;
         recv_formal_positions(E->to, c->recv, c->recv_cs, pos);
-        if (!pos.n) return nullptr;  // allocated here: every caller is real
+        if (!pos.n) {
+          // Allocated inside E->to (directly or via a factory it called).
+          // If every known object in c->objs records which call to E->to
+          // allocated it, leave only through a matching call.
+          if (c->objs && !c->objs->empty() && (walk & kCallMatchNumeric)) {
+            bool all_constrained = true, matched = false;
+            std::set<CallCtx *> resumed;
+            for (auto &o : *c->objs) {
+              CallCtx *k = o.second;
+              while (k && k->e && k->e->to != E->to) k = k->up;
+              if (!k || !k->e) { all_constrained = false; break; }
+              if (k->e == E) { matched = true; resumed.insert(k->up); }
+            }
+            if (all_constrained) {
+              if (!matched) {
+                ok = false;
+                callmatch_refused(a, x, c, E);
+                return nullptr;
+              }
+              return resumed.size() == 1 ? *resumed.begin() : nullptr;
+            }
+          }
+          return nullptr;  // allocated here: every caller is real
+        }
         for (MPosition *p : pos) {
           AVar *act = E->args.get(p);
           if (!av_holds(act, c->recv_cs)) continue;
@@ -8180,6 +8211,11 @@ static CallCtx *callctx_step(AVar *a, AVar *x, CallCtx *c, bool &ok, int walk) {
   if ((walk & (kCallMatchFlowGraph | kCallMatchNumeric)) && !a->contour_is_entry_set && a->contour &&
       a->contour != GLOBAL_CONTOUR && x->contour_is_entry_set && x->container &&
       x->container->contour == x->contour) {
+    // Stepping from a filtered argument directly through a bound-method /
+    // closure CreationSet back into its caller contour: keep the caller's
+    // active call-edge frame instead of replacing it with an unconstrained
+    // RECEIVER frame for the temporary CreationSet.
+    if (c && c->e && c->e->to == (EntrySet *)x->contour) return c;
     CreationSet *L = (CreationSet *)a->contour;
     const ObjVec *objs = ((walk & kCallMatchNumeric) && c && !c->e && !c->recv && c->recv_cs == L) ? c->objs : nullptr;
     if (objs) {
