@@ -7508,6 +7508,7 @@ static void sos_build_demand();
 static bool sos_member_demanded(AVar *av);
 static bool sos_type_conflict(AVar *av);
 static bool sos_callee_demanded(AVar *av);
+static bool sos_dispatch_demanded(AVar *av);
 static bool setter_contour_demanded(Vec<AVar *> &avs) {
   for (AVar *a : avs) {
     if (!a || !a->out) continue;
@@ -9595,26 +9596,31 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       analyze_again = 1;
     }
   }
-  // ifa/196: an irrepresentable member or positional literal slot (`cs->vars`)
-  // is the same demand as `cs_elem_irrepresentable`, gated on
-  // `higher_stages_idle` so transient pass-0/1 unions that higher stages are
-  // still separating do not fan records prematurely (unlike the deleted
-  // ungated PYC_CSSLOTDEMAND).
-  auto member_irrep = [](AVar *v) {
+    auto member_irrep_or_dispatch = [](AVar *v, bool include_dispatch) {
     if (!v || !v->out) return false;
     ATypeRepr r = atype_repr(v->out);
-    return r.irrepresentable() || r.element_irrepresentable() || (r.unit && r.numerics > 0);
+    if (r.irrepresentable() || r.element_irrepresentable() || (r.unit && r.numerics > 0)) return true;
+    return include_dispatch && sos_dispatch_demanded(v);
   };
+  // ifa/196: an irrepresentable member or positional literal slot (`cs->vars`)
+  // or a member/element holding receivers/callees of an unresolved multi-Fun
+  // dispatch (distinct non-None targets), gated on `higher_stages_idle`.
+  auto member_irrep = [&](AVar *v) { return member_irrep_or_dispatch(v, false); };
   Vec<CreationSet *> member_named;
-  if (higher_stages_idle)
+  if (higher_stages_idle) {
+    sos_build_demand();
     for (CreationSet *cs : fa->css) {
       if (!cs || !cs->sym) continue;
-      for (AVar *v : cs->vars)
-        if (member_irrep(v)) {
-          member_named.set_add(cs);
-          break;
-        }
+      for (AVar *v : cs->vars) {
+        if (member_irrep(v)) member_named.set_add(cs);
+        if (sos_dispatch_demanded(v)) dispatch_named.set_add(cs);
+      }
+      if (cs->added_element_var && cs->sym->element && cs->sym->element->var) {
+        AVar *ev = unique_AVar(cs->sym->element->var, cs);
+        if (sos_dispatch_demanded(ev)) dispatch_named.set_add(cs);
+      }
     }
+  }
   Vec<CreationSet *> css;
   for (CreationSet *cs : tc_cs_dropped)
     if (cs && fa->css_set.set_in(cs)) css.set_add(cs);
@@ -9887,7 +9893,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         Vec<AVar *> all_c, dch;
         cs_content_avars_both(cs, all_c);
         for (AVar *c : all_c)
-          if (member_irrep(c)) dch.add(c);
+          if (member_irrep_or_dispatch(c, true)) dch.add(c);
         if (!dch.n) cs_content_avars(cs, dch);
         if (dch.n) {
           int hops = 0;
@@ -10165,7 +10171,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
         Vec<AVar *> all_c, dch;
         cs_content_avars_both(cs, all_c);
         for (AVar *c : all_c)
-          if (member_irrep(c)) dch.add(c);
+          if (member_irrep_or_dispatch(c, true)) dch.add(c);
         CSFlowGraph *gd = dch.n ? build_cs_flow_graph_over(cs, dch, kCallMatchNumeric) : nullptr;
         if (gd && gd->keys.n >= 2) {
           std::vector<std::string> dsig((size_t)defs.n);
@@ -10522,6 +10528,21 @@ static void sos_build_demand() {
       }
     }
   }
+}
+static bool sos_dispatch_demanded(AVar *av) {
+  if (!av || !av->out) return false;
+  for (size_t i = 0; i < sos_poly_recvs.size(); i++) {
+    Vec<CreationSet *> &rs = sos_poly_recvs[i];
+    std::set<uintptr_t> sigs;
+    for (CreationSet *c : av->out->sorted)
+      if (c && rs.set_in(c)) {
+        if (c->sym == sym_nil_type) continue;
+        auto it = sos_poly_tsig[i].find(c);
+        sigs.insert(it == sos_poly_tsig[i].end() ? 0 : it->second);
+      }
+    if (sigs.size() > 1) return true;
+  }
+  return sos_callee_demanded(av);
 }
 static bool sos_member_demanded(AVar *av) {
   if (!av || !av->out) return false;
