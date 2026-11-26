@@ -9256,14 +9256,15 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = 
   // recorded as reached. At most kMaxLift crossings: owner of owner of ...
   const int kMaxLift = 4;
   std::vector<std::map<CreationSet *, std::set<AVar *>>> reach((size_t)keys.n);
+  std::map<CreationSet *, std::map<std::pair<int, Sym *>, std::set<AVar *>>> slot_reach;
   std::vector<std::map<CreationSet *, Vec<AVar *> *>> owner_paths((size_t)keys.n);
   std::map<CreationSet *, int> owner_depth;
   for (int k = 0; k < keys.n; k++) {
-    struct Item { AVar *a; CreationSet *track; int depth; CallCtx *ctx; };
+    struct Item { AVar *a; CreationSet *track; int depth; CallCtx *ctx; Sym *slot; };
     std::vector<Item> work;
-    std::set<std::tuple<AVar *, CreationSet *, CallCtx *>> seen;
+    std::set<std::tuple<AVar *, CreationSet *, CallCtx *, Sym *>> seen;
     for (AVar *t : *targets.v[k])
-      if (t && seen.insert({t, I, nullptr}).second) work.push_back({t, I, 0, nullptr});
+      if (t && seen.insert({t, I, nullptr, nullptr}).second) work.push_back({t, I, 0, nullptr, nullptr});
     for (size_t h = 0; h < work.size() && h < 400000; h++) {
       Item it = work[h];
       AVar *a = it.a;
@@ -9276,6 +9277,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = 
         }
         if (a->cs_map && a->cs_map->get(tr->sym) == tr && tr->defs.set_in(a)) {
           reach[(size_t)k][tr].insert(a);
+          if (allow_defs1 && it.slot) slot_reach[tr][{k, it.slot}].insert(a);
           auto od = owner_depth.find(tr);
           if (od == owner_depth.end() || od->second > it.depth) owner_depth[tr] = it.depth;
         }
@@ -9288,10 +9290,14 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = 
           for (CreationSet *cs : a->container->out->type->sorted)
             if (cs && cs->sym == sym_closure) { has_closure = true; break; }
           if (!has_closure && it.depth < kMaxLift) {
+            Sym *nslot = it.slot;
+            if (allow_defs1 && it.depth == 0 && a->var && a->var->def && a->var->def->prim &&
+                a->var->def->prim->index == P_prim_period && a->var->def->rvals.n > 3 && a->var->def->rvals[3])
+              nslot = a->var->def->rvals[3]->sym;
             for (CreationSet *O : a->container->out->type->sorted)
               if (O && O->sym && O != I && O->sym != sym_closure && fa->css_set.set_in(O) &&
-                  seen.insert({a->container, O, it.ctx}).second)
-                work.push_back({a->container, O, it.depth + 1, it.ctx});
+                  seen.insert({a->container, O, it.ctx, nslot}).second)
+                work.push_back({a->container, O, it.depth + 1, it.ctx, nslot});
           }
         }
         // At depth 0 (tracking I), never cross through I's shared owner member.
@@ -9305,7 +9311,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = 
         if (x && x->out && x->out->type && x->out->type->set_in(tr)) {
           bool ok;
           CallCtx *nc = callctx_step(a, x, it.ctx, ok, kCallMatchOwner);
-          if (ok && seen.insert({x, tr, nc}).second) work.push_back({x, tr, it.depth, nc});
+          if (ok && seen.insert({x, tr, nc, it.slot}).second) work.push_back({x, tr, it.depth, nc, it.slot});
         }
     }
   }
@@ -9330,10 +9336,39 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = 
       }
     std::vector<int> gid((size_t)defs.n, -1);
     int ngroups = 0;
-    for (int i = 0; i < defs.n; i++) {
-      for (int j = 0; j < i; j++)
-        if (sig[(size_t)j] == sig[(size_t)i]) { gid[(size_t)i] = gid[(size_t)j]; break; }
-      if (gid[(size_t)i] < 0) gid[(size_t)i] = ngroups++;
+    auto regroup_owner = [&]() {
+      for (size_t i = 0; i < gid.size(); i++) gid[i] = -1;
+      ngroups = 0;
+      for (int i = 0; i < defs.n; i++) {
+        for (int j = 0; j < i; j++)
+          if (sig[(size_t)j] == sig[(size_t)i]) { gid[(size_t)i] = gid[(size_t)j]; break; }
+        if (gid[(size_t)i] < 0) gid[(size_t)i] = ngroups++;
+      }
+    };
+    regroup_owner();
+    // ifa/196: if flat type keys collapse to 1 group (e.g. symmetric swapped
+    // dicts `dict[str, int]` and `dict[int, str]` whose `_keys` and `_vals`
+    // share one list CS), key on (type, member-slot) so `(_keys, str)` and
+    // `(_vals, str)` remain distinct.
+    if (ngroups < 2 && allow_defs1) {
+      auto sit = slot_reach.find(O);
+      if (sit != slot_reach.end() && sit->second.size() >= 2) {
+        std::vector<std::pair<int, Sym *>> skeys;
+        for (auto &kv : sit->second) skeys.push_back(kv.first);
+        std::sort(skeys.begin(), skeys.end(), [](const std::pair<int, Sym *> &x, const std::pair<int, Sym *> &y) {
+          return x.first != y.first ? x.first < y.first : x.second->id < y.second->id;
+        });
+        std::vector<std::string> ssig((size_t)defs.n);
+        for (int i = 0; i < defs.n; i++)
+          for (auto &sk : skeys)
+            ssig[(size_t)i] += sit->second[sk].count(defs.v[i]) ? '1' : '0';
+        sig.swap(ssig);
+        regroup_owner();
+        if (ngroups < 2) {
+          sig.swap(ssig);
+          regroup_owner();
+        }
+      }
     }
     if (dbg) {
       fprintf(stderr, "[csowner] p=%d cs=%d sym=%s keys=%d -> owner cs=%d sym=%s depth=%d defs=%d groups=%d |",
