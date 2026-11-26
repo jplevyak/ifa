@@ -647,6 +647,51 @@ is a cascade-starvation wall that would force Option 2:
    `sunfish` and `itertools_more`, may collapse once buckets 1–2 stop leaving
    record fields and `defs == 1` factories merged).
 
+### Option 1 progress (2026-11-25): steps 1–3 landed
+
+Four commits landed, all green on `test-unit` (58/0), `test-ir` (all 17 phases,
+0 failed), and `test-ifa-llvm`, with default `plcfrs` (44 p, 1301 ES, 3833 CS)
+and `go` (27 p, 540 ES, 1991 CS) unchanged:
+
+- `bdbf0d5a`: `poly_dispatch_classtag_targets` requires a function-valued slot
+  (`slot_is_fn`), and both backends check `plains` before dereferencing
+  `__pyc_tag`. Fixes `decorator_recursion`'s two-callee crash under
+  `PYC_NOSETTER=1` on both C and LLVM.
+- `dfbc86ad`: `es_preserves_filters` across ledger routing, `HARDREUSE`, and
+  fresh ES mints. Breaks `quameon`'s `UNTAGGED_DISPATCH` ↔ `TYPE_CONFL`
+  period-2 oscillation (`quameon` now converges in <5 s instead of hitting the
+  pass cap).
+- `e039826d`: Route 4 `member_named` nominates `cs->vars` irrepresentable
+  unions at `higher_stages_idle` (fixes `random_*`, `sum_float`,
+  `format_nonconstant_*`, `logging_*`, and removes `{bool, float64}` from
+  `mastermind2` and `pylife`).
+- `d8263b94`: Route 4 generalizes `csnumsplit`'s `defs == 1` climb
+  (`es_climb_to_choice` + `split_es_by_call_site`, with `dec->type_only =
+  false`) to any `demanded` `defs == 1` CreationSet at `higher_stages_idle`.
+
+**Re-measured under `PYC_NOSETTER=1` (`d8263b94`):**
+- **Suite:** **44 → 25** remaining (−19 clean: `random_*`, `sum_float`,
+  `format_nonconstant_*`, `logging_*`, `list_mul_element_cross_contamination`,
+  `nil_union_prealloc`, `bytes_*`, `decorator_recursion`, `generator_closure`,
+  `generator_send_typed`, `generator_yields_nonint`, `staticmethod_generator`,
+  `splitter_mark_type`).
+- **Corpus:** **11 → 8** remaining (`bh`, `pygasus`, `sudoku2` now compile;
+  `quameon` converges in <5 s to an `{int64, float64}` error instead of timing
+  out). Remaining 8: `dijkstra2`, `doom`, `mastermind2`, `plcfrs`, `pylife`,
+  `sudoku4`, `quameon`, `sunfish` (timeout).
+
+**Next for Option 1:**
+- Note why 5 generator tests still warn (`generator_basic`, `generator_infinite`,
+  `generator_methods`, `generator_return_value`, `generator_yield_from`) and
+  `generator_return_types` still errors on `{None, int64}`: `{None, int64}` on
+  `__pyc_generator__.send_val` is suppressed by `PYC_SEND_NONE_ZERO` or not
+  caught by `atype_irrepresentable` when `None` is stripped in `->type` — check
+  `atype_repr(v->out)` on raw `out`.
+- Then tackle the remaining 8 corpus + 20 non-generator suite failures (bucket
+  3: multi-hop container-in-record / `dict` / `heapq` / `defaultdict` /
+  `operator` / `pathlib`, plus `decorator_class_based` / `serial_pty`
+  mismatched field sizes and `splitter_setter*`'s `dynamic=2`).
+
 ## Watch list (no current witness; do not build without one)
 
 - **One creation point whose element takes two types** through paths that
