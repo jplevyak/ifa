@@ -9217,10 +9217,18 @@ static void cs_numeric_mix_content(CreationSet *cs, Vec<AVar *> &out) {
   }
 }
 
-static int split_owner_of_demanded(CreationSet *I, bool dbg) {
+static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = false) {
   if (!I || !I->sym) return 0;
-  Vec<AVar *> content;
-  cs_content_avars(I, content);
+  Vec<AVar *> all_c, content;
+  cs_content_avars_both(I, all_c);
+  for (AVar *c : all_c) {
+    if (!c || !c->out) continue;
+    ATypeRepr r = atype_repr(c->out);
+    if (r.irrepresentable() || r.element_irrepresentable() || (r.unit && r.numerics > 0) ||
+        (allow_defs1 && sos_dispatch_demanded(c)))
+      content.add(c);
+  }
+  if (!content.n) cs_content_avars(I, content);
   if (!content.n) return 0;
   // Assign sets of I: keyed by assigned type, targets = written containers.
   Vec<AType *> keys;
@@ -9248,6 +9256,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   // recorded as reached. At most kMaxLift crossings: owner of owner of ...
   const int kMaxLift = 4;
   std::vector<std::map<CreationSet *, std::set<AVar *>>> reach((size_t)keys.n);
+  std::vector<std::map<CreationSet *, Vec<AVar *> *>> owner_paths((size_t)keys.n);
   std::map<CreationSet *, int> owner_depth;
   for (int k = 0; k < keys.n; k++) {
     struct Item { AVar *a; CreationSet *track; int depth; CallCtx *ctx; };
@@ -9259,10 +9268,17 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       Item it = work[h];
       AVar *a = it.a;
       CreationSet *tr = it.track;
-      if (tr != I && a->cs_map && a->cs_map->get(tr->sym) == tr && tr->defs.set_in(a)) {
-        reach[(size_t)k][tr].insert(a);
-        auto od = owner_depth.find(tr);
-        if (od == owner_depth.end() || od->second > it.depth) owner_depth[tr] = it.depth;
+      if (tr != I) {
+        if (allow_defs1) {
+          Vec<AVar *> *&op = owner_paths[(size_t)k][tr];
+          if (!op) op = new Vec<AVar *>;
+          op->set_add(a);
+        }
+        if (a->cs_map && a->cs_map->get(tr->sym) == tr && tr->defs.set_in(a)) {
+          reach[(size_t)k][tr].insert(a);
+          auto od = owner_depth.find(tr);
+          if (od == owner_depth.end() || od->second > it.depth) owner_depth[tr] = it.depth;
+        }
       }
       if (is_load_result(a)) {
         // Skip closures entirely -- they have internal structure that shouldn't
@@ -9357,6 +9373,38 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       }
     }
     return 1;
+  }
+  // ifa/196: if no defs>=2 owner separated I, climb a defs==1 owner's factory
+  // contour (`es_climb_to_choice` + `split_es_by_call_site`) using the assign
+  // sets of I that reached O (e.g. Holder.__new__ in splitter_setter_of_setter,
+  // defaultdict.__new__ in defaultdict_eq). Gated on `higher_stages_idle`.
+  if (allow_defs1) {
+    std::vector<std::pair<int, CreationSet *>> cands1;
+    for (auto &od : owner_depth)
+      if (cs_live_defs(od.first) == 1) cands1.push_back({od.second, od.first});
+    std::sort(cands1.begin(), cands1.end(), [](const std::pair<int, CreationSet *> &x, const std::pair<int, CreationSet *> &y) {
+      return x.first != y.first ? x.first < y.first : x.second->id < y.second->id;
+    });
+    for (auto &c : cands1) {
+      CreationSet *O = c.second;
+      AVar *d0 = nullptr;
+      for (AVar *d : O->defs)
+        if (d && d->cs_map && d->cs_map->get(O->sym) == O) { d0 = d; break; }
+      if (!d0 || !d0->contour_is_entry_set || d0->contour == GLOBAL_CONTOUR) continue;
+      int hops = 0;
+      EntrySet *target = es_climb_to_choice((EntrySet *)d0->contour, &hops);
+      if (!target) continue;
+      CSFlowGraph *og = new CSFlowGraph;
+      og->cs = O;
+      for (int k = 0; k < keys.n; k++) {
+        auto pit = owner_paths[(size_t)k].find(O);
+        if (pit != owner_paths[(size_t)k].end() && pit->second) {
+          og->keys.add(keys.v[k]);
+          og->paths.add(pit->second);
+        }
+      }
+      if (og->keys.n >= 2 && split_es_by_call_site(target, content.v[0], dbg, og)) return 1;
+    }
   }
   if (dbg && cands.empty())
     fprintf(stderr, "[csowner] p=%d cs=%d sym=%s keys=%d NO OWNER reached\n", analysis_pass, I->id,
@@ -9838,7 +9886,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
     // check__PYC_ESDEFS1_1__e254f017+dcb2b1b0); deleted by ifa/146.
     if (defs.n < 2) {
       if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
-          split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
+          split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"), higher_stages_idle)) {
         analyze_again = 1;
         continue;
       }
@@ -10202,7 +10250,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       }
       if (ngroups < 2) {
         if (csowner_enabled() && (demanded.set_in(cs) || cs_elem_irrepresentable(cs)) &&
-            split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"))) {
+            split_owner_of_demanded(cs, dbg || getenv("IFA_DBG_CSOWNER"), higher_stages_idle)) {
           analyze_again = 1;
           continue;
         }
