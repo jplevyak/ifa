@@ -12488,7 +12488,26 @@ static bool formal_types_moved(int aa) {
   // ifa/issues/055 probe: PYC_NOSETTER=1 skips the SETTER stage entirely.
   static int nosetter = -1;
   if (nosetter < 0) nosetter = getenv("PYC_NOSETTER") ? atoi(getenv("PYC_NOSETTER")) : 0;
-  if (nosetter) { /* skip */ } else if (!analyze_again) {
+  if (nosetter) {
+    // ifa/196: when SETTER is retired, Route 4 (CS_DEF_PARTITION) takes Stage 3's
+    // slot before Stage 5 (VIOLATION) so CreationSet demands are resolved before
+    // VIOLATION shreds callers on transient mixed-type unions (match_map_star,
+    // plcfrs_grammar_tables_nonconvergence).
+    ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
+    census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
+    cur_split_stage = (int)FAPassStage::CS_DEF_PARTITION;
+    int cs_def_r = split_css_by_defs(!analyze_again);
+    fa->stage_time[(int)FAPassStage::CS_DEF_PARTITION] += stage_timer.lap();
+    if (cs_def_r) {
+      record_fa_event(FAPassStage::CS_DEF_PARTITION, cs_def_r, ess0, css0, viol0);
+      if (getenv("PYC_DBG_STAGEDELTA"))
+        fprintf(stderr, "STAGEDELTA p=%d CS_DEF_PARTITION returned=%d d_ess=%d d_css=%d viol=%d\n", analysis_pass,
+                cs_def_r, fa->all_entry_sets.n - census.stage_aes0, fa->all_creation_sets.n - census.stage_acs0,
+                fa->type_violations.set_count());
+      ++fa->stage_progress_count[(int)FAPassStage::CS_DEF_PARTITION];
+      analyze_again = 1;
+    }
+  } else if (!analyze_again) {
     Accum<AVar *> avs;
     // ifa/issues/111 M3 option 2: under selective invalidation, class
     // EVERY CS-contoured AVar, not just this pass's confluences.
@@ -12643,7 +12662,7 @@ static bool formal_types_moved(int aa) {
   // Called on EVERY pass, not only when the gate is open, so the ripeness
   // count above sees every pass; `higher_stages_idle` decides whether an
   // unripe candidate may be acted on. An idle pass behaves exactly as before.
-  {
+  if (!nosetter) {
     ess0 = fa->ess.n, css0 = fa->css.n, viol0 = fa->type_violations.set_count();
       census.stage_aes0 = fa->all_entry_sets.n, census.stage_acs0 = fa->all_creation_sets.n;
     cur_split_stage = (int)FAPassStage::CS_DEF_PARTITION;
