@@ -7495,11 +7495,15 @@ static void sos_build_demand();
 static bool sos_member_demanded(AVar *av);
 static bool sos_type_conflict(AVar *av);
 static bool sos_callee_demanded(AVar *av);
+static void sos_why_log(Vec<AVar *> &avs);  // ifa/196 PROBE (temporary)
 static bool setter_contour_demanded(Vec<AVar *> &avs) {
+  static int why = getenv("PYC_DBG_SETTERWHY") ? 1 : 0;
   for (AVar *a : avs) {
     if (!a || !a->out) continue;
-    if (atype_irrepresentable(a->out) || sos_member_demanded(a) || sos_callee_demanded(a) || sos_type_conflict(a))
+    if (atype_irrepresentable(a->out) || sos_member_demanded(a) || sos_callee_demanded(a) || sos_type_conflict(a)) {
+      if (why) sos_why_log(avs);
       return true;
+    }
   }
   return false;
 }
@@ -10364,7 +10368,17 @@ static std::vector<Vec<CreationSet *>> sos_poly_recvs;
 // ifa/196: the CALLED values of those sends. `f(n)` with `f` holding two
 // functions is the same unresolved dispatch, seen from the callee side.
 static std::vector<Vec<CreationSet *>> sos_poly_callees;
+static std::vector<std::string> sos_poly_desc;  // ifa/196 PROBE (temporary)
+// ifa/196 EXPERIMENT (PYC_SOSTARGETS=1, temporary): per receiver CS, a
+// signature of the target functions whose edges carry it.
+static std::vector<std::map<CreationSet *, uintptr_t>> sos_poly_tsig;
+static int sos_targets_mode() {
+  static int m = -1;
+  if (m < 0) m = getenv("PYC_SOSTARGETS") ? atoi(getenv("PYC_SOSTARGETS")) : 0;
+  return m;
+}
 static void sos_build_demand() {
+  sos_poly_desc.clear();
   sos_viol_reach.clear();
   sos_poly_callees.clear();
   Vec<AVar *> work;
@@ -10380,6 +10394,7 @@ static void sos_build_demand() {
   // the receivers it HOLDS (the confluence is a contour, as for route 4's
   // dispatch demand), not by flow.
   sos_poly_recvs.clear();
+  sos_poly_tsig.clear();
   for (EntrySet *es : fa->ess) {
     if (!es) continue;
     for (int mi = 0; mi < es->out_edge_map.n; mi++) {
@@ -10405,7 +10420,37 @@ static void sos_build_demand() {
         if (!r || !r->out || r->out->sorted.n < 2) continue;
         Vec<CreationSet *> rs;
         for (CreationSet *c : r->out->sorted) if (c && c->sym && c->sym != sym_closure) rs.set_add(c);
-        if (rs.set_count() > 1) sos_poly_recvs.push_back(rs);
+        if (rs.set_count() > 1) {
+          sos_poly_recvs.push_back(rs);
+          {
+            std::map<CreationSet *, std::set<Fun *>> tg;
+            for (AEdge *e : *edges) if (e && e->fun)
+              for (int j = 0; j < e->filtered_args.n; j++) {
+                AVar *xv = e->filtered_args.v[j].key ? e->filtered_args.v[j].value : nullptr;
+                if (xv && xv->out)
+                  for (CreationSet *c : xv->out->sorted) if (c && rs.set_in(c)) tg[c].insert(e->fun);
+              }
+            std::map<CreationSet *, uintptr_t> sig;
+            for (auto &kv : tg) {
+              uintptr_t h = 0;
+              for (Fun *fn : kv.second) h = h * 1000003u + (uintptr_t)fn->id;
+              sig[kv.first] = h;
+            }
+            sos_poly_tsig.push_back(sig);
+          }
+          if (getenv("PYC_DBG_SETTERWHY")) {  // ifa/196 PROBE (temporary)
+            std::string d;
+            char buf[256];
+            IFAAST *ast = pn->code ? pn->code->ast : nullptr;
+            cchar *pth = ast ? ast->pathname() : nullptr;
+            if (pth && strrchr(pth, '/')) pth = strrchr(pth, '/') + 1;
+            snprintf(buf, sizeof(buf), "%s:%d in %s:", pth ? pth : "?", ast ? ast->line() : -1,
+                     (es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?");
+            d += buf;
+            for (Fun *fn : funs) if (fn) { d += " "; d += (fn->sym && fn->sym->name) ? fn->sym->name : "?"; }
+            sos_poly_desc.push_back(d);
+          }
+        }
       }
     }
   }
@@ -10413,7 +10458,20 @@ static void sos_build_demand() {
 static bool sos_member_demanded(AVar *av) {
   if (!av || !av->out) return false;
   if (elem_irrepresentable(av) || sos_viol_reach.set_in(av)) return true;
-  for (Vec<CreationSet *> &rs : sos_poly_recvs) {
+  for (size_t i = 0; i < sos_poly_recvs.size(); i++) {
+    Vec<CreationSet *> &rs = sos_poly_recvs[i];
+    if (sos_targets_mode()) {
+      // only receivers that reach DIFFERENT targets of the send
+      std::set<uintptr_t> sigs;
+      for (CreationSet *c : av->out->sorted)
+        if (c && rs.set_in(c)) {
+          if (sos_targets_mode() >= 2 && c->sym == sym_nil_type) continue;  // null test, not dispatch
+          auto it = sos_poly_tsig[i].find(c);
+          sigs.insert(it == sos_poly_tsig[i].end() ? 0 : it->second);
+        }
+      if (sigs.size() > 1) return true;
+      continue;
+    }
     int k = 0;
     for (CreationSet *c : av->out->sorted)
       if (c && rs.set_in(c) && ++k > 1) return true;
@@ -10446,6 +10504,111 @@ static bool sos_type_conflict(AVar *av) {
     }
   }
   return false;
+}
+// ifa/196 PROBE (temporary, PYC_DBG_SETTERWHY): WHICH clause of
+// setter_contour_demanded admitted a SETTER split. Mirrors the tests above.
+static const char *pw_name(AVar *a) {
+  return (a && a->var && a->var->sym && a->var->sym->name) ? a->var->sym->name : "?";
+}
+static void pw_contour(FILE *f, AVar *a) {
+  if (!a) { fprintf(f, "?"); return; }
+  if (a->contour_is_entry_set) {
+    EntrySet *es = (EntrySet *)a->contour;
+    fprintf(f, "%s/es%d", (es && es->fun && es->fun->sym && es->fun->sym->name) ? es->fun->sym->name : "?", es ? es->id : -1);
+  } else if (a->contour == GLOBAL_CONTOUR) fprintf(f, "global");
+  else {
+    CreationSet *c = (CreationSet *)a->contour;
+    fprintf(f, "%s#%d", (c && c->sym && c->sym->name) ? c->sym->name : "?", c ? c->id : -1);
+  }
+}
+static void pw_types(FILE *f, AType *t) {
+  fprintf(f, "{");
+  int i = 0;
+  if (t) for (CreationSet *c : t->sorted) if (c && c->sym)
+    fprintf(f, "%s%s#%d", i++ ? "," : "", c->sym->name ? c->sym->name : "?", c->id);
+  fprintf(f, "}");
+}
+static void pw_member_clause(FILE *f, AVar *av) {
+  if (elem_irrepresentable(av)) { fprintf(f, "elem_irrep"); return; }
+  if (sos_viol_reach.set_in(av)) {
+    fprintf(f, "viol_reach[");
+    int n = 0;
+    for (ATypeViolation *v : fa->type_violations) {
+      if (!v || !v->av) continue;
+      Vec<AVar *> seen, work;
+      seen.set_add(v->av); work.add(v->av);
+      bool hit = v->av == av;
+      for (int i = 0; i < work.n && !hit && i < 200000; i++)
+        for (AVar *b : work.v[i]->backward)
+          if (b && seen.set_add(b)) { work.add(b); if (b == av) { hit = true; break; } }
+      if (!hit) continue;
+      if (n++ < 3) {
+        fprintf(f, "%skind=%d %s@", n > 1 ? "; " : "", (int)v->kind, pw_name(v->av));
+        pw_contour(f, v->av);
+        fprintf(f, " ");
+        pw_types(f, v->av->out);
+      }
+    }
+    fprintf(f, "%s]", n > 3 ? " ..." : "");
+    return;
+  }
+  for (Vec<CreationSet *> &rs : sos_poly_recvs) {
+    int k = 0;
+    for (CreationSet *c : av->out->sorted) if (c && rs.set_in(c)) ++k;
+    if (k > 1) {
+      bool nil = false;
+      for (CreationSet *c : av->out->sorted) if (c && c->sym == sym_nil_type) nil = true;
+      size_t idx = &rs - &sos_poly_recvs[0];
+      fprintf(f, "poly_recv(k=%d nil=%d) send=[%s]", k, nil, idx < sos_poly_desc.size() ? sos_poly_desc[idx].c_str() : "?");
+      return;
+    }
+  }
+  fprintf(f, "?member");
+}
+static void sos_why_log(Vec<AVar *> &avs) {
+  FILE *f = stderr;
+  AVar *first = nullptr;
+  for (AVar *a : avs) if (a) { first = a; break; }
+  fprintf(f, "[setterwhy] p=%d stage=%d at=", analysis_pass, cur_split_stage);
+  pw_contour(f, first);
+  fprintf(f, "\n");
+  for (AVar *a : avs) {
+    if (!a || !a->out) continue;
+    const char *c = nullptr;
+    if (atype_irrepresentable(a->out)) c = "irrep";
+    else if (sos_member_demanded(a)) c = "member";
+    else if (sos_callee_demanded(a)) c = "callee";
+    else if (sos_type_conflict(a)) c = "content";
+    if (!c) continue;
+    fprintf(f, "    %s ", pw_name(a));
+    pw_types(f, a->out);
+    fprintf(f, " -> %s", c);
+    if (!strcmp(c, "member")) { fprintf(f, ":"); pw_member_clause(f, a); }
+    if (!strcmp(c, "content")) {
+      Vec<CreationSet *> seen, work;
+      for (CreationSet *x : a->out->sorted) if (x && x->sym && seen.set_add(x)) work.add(x);
+      bool done = false;
+      for (int i = 0; i < work.n && !done; i++) {
+        CreationSet *x = work.v[i];
+        if (cs_demanded(x)) { fprintf(f, ": cs_demanded %s#%d", x->sym->name ? x->sym->name : "?", x->id); break; }
+        Vec<AVar *> content;
+        cs_content_avars_both(x, content);
+        for (AVar *ca : content) {
+          if (!ca) continue;
+          if (sos_member_demanded(ca)) {
+            fprintf(f, ": via %s#%d.%s ", x->sym->name ? x->sym->name : "?", x->id, pw_name(ca));
+            pw_types(f, ca->out);
+            fprintf(f, " ");
+            pw_member_clause(f, ca);
+            done = true;
+            break;
+          }
+          if (ca->out) for (CreationSet *d : ca->out->sorted) if (d && d->sym && seen.set_add(d)) work.add(d);
+        }
+      }
+    }
+    fprintf(f, "\n");
+  }
 }
 static void collect_cs_setter_confluences(Vec<AVar *> &setters_confluences) {
   setters_confluences.clear();

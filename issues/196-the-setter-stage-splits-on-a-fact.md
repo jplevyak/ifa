@@ -550,6 +550,47 @@ backends, and a decision on the `niltest` golden. Its 3 → 6 is more null
 tests from fewer splits, with no dynamic dispatch, and whether that is an
 acceptable trade is the question to settle.
 
+### Measurement 2: the corpus `check` A/B for mode 2 (2026-11-25)
+
+Same binary, tree `799183aa+7174753f` (the experiment uncommitted in
+`fa.cc`), `./corpus_sweep.sh -m check` with and without
+`-e PYC_SOSTARGETS=2`. Results are in
+`sweeps/check__{default,PYC_SOSTARGETS_2}__799183aa+7174753f.tsv`.
+
+| | default | mode 2 | Δ |
+| --- | --- | --- | --- |
+| EntrySets (sum of `ess`) | 37,051 | 36,506 | −545 (−1.5%) |
+| CreationSets (sum of `css`) | 150,770 | 149,745 | −1,025 (−0.7%) |
+| container CS / shapes | 3112 / 882 = 3.53 | 3072 / 882 = 3.48 | −40 |
+| compile_fail / run_fail / with_warnings | 0 / 0 / 22 | 0 / 0 / 22 | none |
+| stdout_differs | 1 (`othello2`) | 1 (`othello2`) | none |
+
+- **Monotone on the corpus.** Contours fall in 21 programs and rise in none.
+  The largest drops: plcfrs (ES 1416 → 1301, CS 4189 → 3833), chull
+  (528 → 447), genetic2 (411 → 352), loop (379 → 324), pylife (318 → 270),
+  voronoi2 (CS 2314 → 2203). pshapes move by at most ±3 (ant, doom and
+  kanoodle +1 each; mwmatching −2, plcfrs −3).
+- **No verdict changes.** The stdout verdict is the same for every program in
+  both arms, and pyc's own output is identical across the arms except for
+  timing lines (genetic2's "Finished in", othello3's moves/sec). `othello2`
+  is the existing mismatch the Linux sweeps also report.
+- **No compile-time cost.** The sweep's compile wall total rose 665 s →
+  996 s. That was contention at `-j8`: rsync read 3 s → 34 s with its contours
+  unchanged. Re-timed alone, the two arms are equal or mode 2 is faster:
+  othello3 69 s → 67 s, plcfrs 15 s → 12 s, rsync, rdb, quameon and pygasus
+  unchanged.
+- **A harness defect this sweep exposed (fixed).** On macOS the first reading
+  was `stdout_differs=45` in both arms. `vary_script` used GNU diff's
+  `--*-group-format`, which Apple's diff lacks, so no CPython-varying line was
+  ever masked. It now parses POSIX diff output and maps `\r` before diffing,
+  since Apple's diff also ends a line at a bare `\r` and sed does not
+  (mandelbrot2). The cache key does not cover the script, so the two `.tsv`
+  stdout columns were re-derived from the saved logs, and their INDEX rows
+  say so.
+
+What remains before landing mode 2 is `make test` on both backends and the
+`niltest` golden decision. The A/B has no regressions.
+
 ## Watch list (no current witness; do not build without one)
 
 - **One creation point whose element takes two types** through paths that
