@@ -9594,12 +9594,29 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
       analyze_again = 1;
     }
   }
+  // ifa/196: an irrepresentable member or positional literal slot (`cs->vars`)
+  // is the same demand as `cs_elem_irrepresentable`, gated on
+  // `higher_stages_idle` so transient pass-0/1 unions that higher stages are
+  // still separating do not fan records prematurely (unlike the deleted
+  // ungated PYC_CSSLOTDEMAND).
+  Vec<CreationSet *> member_named;
+  if (higher_stages_idle)
+    for (CreationSet *cs : fa->css) {
+      if (!cs || !cs->sym) continue;
+      for (AVar *v : cs->vars)
+        if (v && v->out && (atype_irrepresentable(v->out) || elem_irrepresentable(v))) {
+          member_named.set_add(cs);
+          break;
+        }
+    }
   Vec<CreationSet *> css;
   for (CreationSet *cs : tc_cs_dropped)
     if (cs && fa->css_set.set_in(cs)) css.set_add(cs);
   for (CreationSet *cs : field_named)
     if (cs && cs->sym) css.set_add(cs);
   for (CreationSet *cs : dispatch_named)
+    if (cs && cs->sym) css.set_add(cs);
+  for (CreationSet *cs : member_named)
     if (cs && cs->sym) css.set_add(cs);
   const int from_confluence = css.set_count();
   // ifa/143: add every live CreationSet carrying its own demand, so the
@@ -9683,7 +9700,7 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg) {
   Vec<CreationSet *> demanded;
   for (CreationSet *cs : css)
     if (cs && cs->sym && (viol_reach.set_in(cs) || field_named.set_in(cs) || dispatch_named.set_in(cs) ||
-                          cs_elem_irrepresentable(cs)))
+                          member_named.set_in(cs) || cs_elem_irrepresentable(cs)))
       demanded.set_add(cs);
   // ifa/152: BACKTRACK THE DEMAND. Every candidate gathered above was
   // nominated because the union is observed AT it; a candidate with one
