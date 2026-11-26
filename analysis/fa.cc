@@ -11163,11 +11163,18 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
     // ifa/133 probe: why does a violation NOT become a split candidate?
     if (getenv("IFA_DBG_VIOL")) {
       AVar *a = v->av;
+      char cbuf[128];
+      cchar *in_name = "(cs)";
+      if (a->contour_is_entry_set && ((EntrySet *)a->contour)->fun &&
+          ((EntrySet *)a->contour)->fun->sym && ((EntrySet *)a->contour)->fun->sym->name)
+        in_name = ((EntrySet *)a->contour)->fun->sym->name;
+      else if (!a->contour_is_entry_set && a->contour != GLOBAL_CONTOUR && a->contour) {
+        CreationSet *acs = (CreationSet *)a->contour;
+        snprintf(cbuf, sizeof(cbuf), "cs#%d(%s)", acs->id, (acs->sym && acs->sym->name) ? acs->sym->name : "?");
+        in_name = cbuf;
+      }
       fprintf(stderr, "[viol] kind=%d av=%d var=%s in=%s type=", (int)v->kind, a->id,
-              (a->var && a->var->sym && a->var->sym->name) ? a->var->sym->name : "(anon)",
-              (a->contour_is_entry_set && ((EntrySet *)a->contour)->fun &&
-               ((EntrySet *)a->contour)->fun->sym && ((EntrySet *)a->contour)->fun->sym->name)
-                  ? ((EntrySet *)a->contour)->fun->sym->name : "(cs)");
+              (a->var && a->var->sym && a->var->sym->name) ? a->var->sym->name : "(anon)", in_name);
       if (a->out && a->out->type)
         for (CreationSet *c : a->out->type->sorted) if (c && c->sym)
           fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
@@ -11274,7 +11281,92 @@ static void collect_violation_imprecisions(Vec<ATypeViolation *> &violations, Ve
   qsort_by_id(imprecisions);
 }
 
+// ifa/196: When an active edge `e` targets a filtered EntrySet (`e->to->filters`)
+// and a positional actual grows to include a CreationSet accepted by
+// `e->match->formal_filters` but excluded by `e->to->filters` (and uncovered by
+// any other active edge at the same call site), spawn a sibling edge covering
+// the uncovered types so valid CreationSets are not misreported as
+// `illegal call argument type`.
+[[nodiscard]] static int repair_filtered_edge_coverage() {
+  int repaired = 0;
+  for (Fun *f : fa->funs) {
+    for (PNode *p : f->fa_send_PNodes) {
+      if (p->prim) continue;
+      Vec<EntrySet *> ess;
+      f->ess.set_intersection(fa->ess_set, ess);
+      for (EntrySet *from : ess) {
+        if (!from || !from->live_pnodes.set_in(p)) continue;
+        Vec<AEdge *> *m = from->out_edge_map.get(p);
+        if (!dispatched_this_pass(from, m)) continue;
+        bool has_filtered = false;
+        for (AEdge *e : *m)
+          if (e && from->out_edges.set_in(e) && e->to && e->to->filters.n) { has_filtered = true; break; }
+        if (!has_filtered) continue;
+        Vec<AVar *> actuals;
+        for (AEdge *me : *m) {
+          if (!me || !from->out_edges.set_in(me)) continue;
+          form_MPositionAVar(x, me->args) if (x->key->is_positional()) actuals.set_add(x->value);
+        }
+        for (AVar *av : actuals) {
+          if (!av || !av->out) continue;
+          Vec<AType *> filters;
+          for (AEdge *e : *m) {
+            if (!e || !from->out_edges.set_in(e)) continue;
+            form_MPositionAVar(x, e->args) {
+              if (x->value != av || !x->key->is_positional()) continue;
+              AVar *filtered = e->filtered_args.get(x->key);
+              if (filtered) filters.add(filtered->out);
+            }
+          }
+          AType *t = type_diff_all(av->out, filters);
+          if (empty_type_minus_partial_applications(t)) continue;
+          t = type_minus_partial_applications(t);
+          // Snapshot active edges before copy_AEdge mutates *m.
+          Vec<AEdge *> snap;
+          for (AEdge *e : *m) if (e && from->out_edges.set_in(e)) snap.add(e);
+          for (AEdge *e : snap) {
+            if (!e->to || !e->to->filters.n) continue;
+            bool spawned = false;
+            form_MPositionAVar(x, e->args) {
+              if (x->value != av || !x->key->is_positional()) continue;
+              MPosition *pos = x->key;
+              if (!e->to->filters.get(pos)) continue;
+              AType *formal_f = e->match->formal_filters.get(pos);
+              if (!formal_f) continue;
+              AType *uncovered = type_intersection(t, formal_f);
+              if (!uncovered || uncovered == fa->type_world.bottom_type) continue;
+              Map<MPosition *, AType *> nf;
+              nf.copy(e->to->filters);
+              nf.put(pos, uncovered);
+              EntrySet *tes = nullptr;
+              for (EntrySet *cand : e->to->fun->ess)
+                if (cand && cand->filters.get(pos) && !cand->filters.some_disjunction(nf)) { tes = cand; break; }
+              if (!tes) {
+                tes = new EntrySet(e->to->fun);
+                e->to->fun->ess.add(tes);
+                tes->filters.copy(nf);
+                tes->split = e->to;
+              }
+              bool dup = false;
+              for (AEdge *oe : *m)
+                if (oe && oe->to == tes && oe->match == e->match) { dup = true; break; }
+              if (dup) continue;
+              copy_AEdge(e, tes);
+              repaired = 1;
+              spawned = true;
+              break;
+            }
+            if (spawned) break;
+          }
+        }
+      }
+    }
+  }
+  return repaired;
+}
+
 [[nodiscard]] static int split_for_violations(Vec<ATypeViolation *> &violations) {
+  if (repair_filtered_edge_coverage()) return 1;
   Vec<AVar *> imprecisions;
   collect_violation_imprecisions(violations, imprecisions);
   log(LOG_SPLITTING, "[stage5] %d violations -> %d imprecisions\n", violations.n, imprecisions.n);
