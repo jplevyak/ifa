@@ -9688,6 +9688,14 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = 
     if (!v || !v->out) return false;
     ATypeRepr r = atype_repr(v->out);
     if (r.irrepresentable() || r.element_irrepresentable() || (r.unit && r.numerics > 0)) return true;
+    if (v->out->type && v->out->type->sorted.n >= 2) {
+      int arity0 = -2;
+      for (CreationSet *c : v->out->type->sorted)
+        if (c && c->sym == sym_tuple && c->static_arity >= 0) {
+          if (arity0 == -2) arity0 = c->static_arity;
+          else if (arity0 != c->static_arity) return true;
+        }
+    }
     return include_dispatch && sos_dispatch_demanded(v);
   };
   // ifa/196: an irrepresentable member or positional literal slot (`cs->vars`)
