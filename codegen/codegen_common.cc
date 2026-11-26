@@ -1537,8 +1537,20 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
       // candidate keeps using that candidate's own override -- this
       // candidate's (looser, unioned) match must not steal it.
       if (from_union && ccls->name && directly_owned.set_in(ccls->name)) continue;
+      auto is_fn_sym = [](Sym *x) { return x && (x->is_fun || x->fun || x->type_kind == Type_FUN); };
+      auto slot_is_fn = [&](Sym *t) {
+        if (!t) return false;
+        if (is_fn_sym(t)) return true;
+        if (t->type_kind == Type_SUM && t->has.n) {
+          for (Sym *x : t->has)
+            if (!is_fn_sym(x)) return false;
+          return true;
+        }
+        return false;
+      };
       for (int k = 0; k < ccls->has.n; k++) {
-        if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k)) {
+        if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k) &&
+            slot_is_fn(ccls->has[k]->type)) {
           classes.add(ccls);
           slots.add(k);
           rval_idxs.add((int)Position2int(cp->pos[0]) - 1);

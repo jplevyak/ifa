@@ -2794,6 +2794,33 @@ class CBackendEmitter : public VirtualCGEmitter {
             fputs("  }\n", fp);
             return;
           }
+          // Check plain function-pointer identities BEFORE dereferencing recv's
+          // classtag slot: a plain function address lives in .text, not a heap
+          // record, so comparing pointer identity first avoids reading through a
+          // function pointer.
+          for (int fi = 0; fi < plains.n; fi++, nb++) {
+            Fun *fv = plains[fi];
+            fprintf(fp, "  %sif ((void*)%s == (void*)&%s) {\n", nb ? "else " : "", recv_str, cg_get_string(fv));
+            fputs("    ", fp);
+            emit_lhs();
+            fprintf(fp, "%s(", cg_get_string(fv));
+            int wrote_one = 0;
+            for (MPosition *p : fv->positional_arg_positions) {
+              Var *av = fv->args.get(p);
+              if (!av->live) continue;
+              int i = (int)Position2int(p->pos[0]) - 1;
+              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+              if (wrote_one) fputs(", ", fp);
+              wrote_one = 1;
+              if (!strcmp(ft, at))
+                fputs(cg_get_string(pn->rvals[i]), fp);
+              else if (cg_repr(av).scalar())
+                fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
+              else
+                fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
+            }
+            fputs(");\n  }\n", fp);
+          }
           for (int ci = 0; ci < classes.n; ci++, nb++) {
             {
               Vec<Sym *> ms;
@@ -2863,29 +2890,6 @@ class CBackendEmitter : public VirtualCGEmitter {
             fprintf(fp, "((%s(*)(%s))((%s)(void*)%s)->e%d)(%s);\n", ret_type_str, fnptr_args.c_str(),
                     cg_get_string(classes[ci]), recv_str, slots[ci], call_args.c_str());
             fputs("  }\n", fp);
-          }
-          for (int fi = 0; fi < plains.n; fi++, nb++) {
-            Fun *fv = plains[fi];
-            fprintf(fp, "  %sif ((void*)%s == (void*)&%s) {\n", nb ? "else " : "", recv_str, cg_get_string(fv));
-            fputs("    ", fp);
-            emit_lhs();
-            fprintf(fp, "%s(", cg_get_string(fv));
-            int wrote_one = 0;
-            for (MPosition *p : fv->positional_arg_positions) {
-              Var *av = fv->args.get(p);
-              if (!av->live) continue;
-              int i = (int)Position2int(p->pos[0]) - 1;
-              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
-              if (wrote_one) fputs(", ", fp);
-              wrote_one = 1;
-              if (!strcmp(ft, at))
-                fputs(cg_get_string(pn->rvals[i]), fp);
-              else if (cg_repr(av).scalar())
-                fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
-              else
-                fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
-            }
-            fputs(");\n  }\n", fp);
           }
           if (directs.n == 1) {
             // The single untagged candidate is everything the nil

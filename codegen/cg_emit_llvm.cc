@@ -4063,8 +4063,23 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
         Builder->CreateBr(merge_bb);
         Builder->SetInsertPoint(nonnull_bb);
       }
+      // Check plain function-pointer identities BEFORE loading the classtag:
+      // a plain function address lives in .text, not a heap record.
+      for (int pi = 0; pi < plains.n; pi++) {
+        Fun *pfun = plains[pi];
+        llvm::Function *plf = TheModule->getFunction(pfun->cg_string);
+        if (!plf) continue;
+        llvm::BasicBlock *phit_bb = llvm::BasicBlock::Create(*TheContext, "poly.phit", cur_fn);
+        llvm::BasicBlock *pnext_bb = llvm::BasicBlock::Create(*TheContext, "poly.pnext", cur_fn);
+        llvm::Value *pcmp = Builder->CreateICmpEQ(recv, plf, "fncmp");
+        Builder->CreateCondBr(pcmp, phit_bb, pnext_bb);
+        Builder->SetInsertPoint(phit_bb);
+        emit_direct_call(pfun);
+        Builder->CreateBr(merge_bb);
+        Builder->SetInsertPoint(pnext_bb);
+      }
       // Load the instance's classtag (slot 0 of any tagged struct).
-      llvm::Value *tag = Builder->CreateLoad(ptr_ty, recv, "classtag");
+      llvm::Value *tag = classes.n ? Builder->CreateLoad(ptr_ty, recv, "classtag") : nullptr;
       for (int ci = 0; ci < classes.n; ci++) {
         llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
         llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
@@ -4157,20 +4172,6 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       // ifa/issues/030(a): plain-function value-identity partition,
       // sharing this same combined dispatch chain (see the plains[]
       // comment at its declaration above for why this can't just be
-      // left to the separate "bare callable value" pass below).
-      for (int pi = 0; pi < plains.n; pi++) {
-        Fun *pfun = plains[pi];
-        llvm::Function *plf = TheModule->getFunction(pfun->cg_string);
-        if (!plf) continue;
-        llvm::BasicBlock *phit_bb = llvm::BasicBlock::Create(*TheContext, "poly.phit", cur_fn);
-        llvm::BasicBlock *pnext_bb = llvm::BasicBlock::Create(*TheContext, "poly.pnext", cur_fn);
-        llvm::Value *pcmp = Builder->CreateICmpEQ(recv, plf, "fncmp");
-        Builder->CreateCondBr(pcmp, phit_bb, pnext_bb);
-        Builder->SetInsertPoint(phit_bb);
-        emit_direct_call(pfun);
-        Builder->CreateBr(merge_bb);
-        Builder->SetInsertPoint(pnext_bb);
-      }
       // Fallthrough (unknown tag / no plains[] match): call
       // default_fn unconditionally if one was claimed (ifa/issues/088
       // -- see its declaration comment: the only candidate left once
