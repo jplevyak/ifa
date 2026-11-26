@@ -351,17 +351,16 @@ sufficient, later ones target rarer imprecision sources:
    Removing it took guard trips 18 → 10, analysis time −55%, contours
    −12.3%.
 
-3. **Setter-based splitting (data splitting on AssignSets)** —
-   `compute_setters` builds `Setters` (canonical sets of "AVars that wrote
-   me") and `setter_class` equivalence; `split_for_setters` and
-   `split_for_setters_of_setters` propagate splits backwards through the
-   write graph until *paths* (`Path(v)` in paper §5.4) are unambiguous.
-   Paper §5.4 "Data Splitting" — implemented as a backward problem over
-   `AVar::backward`, with `update_setter` propagating set growth.
+3. **~~Setter-based splitting~~ — RETIRED (ifa/196, 2026-11-26).**
+   `SETTER` and `SETTER_OF_SETTER` (`Setters`, `AVar::setters`,
+   `AVar::setter_class`, `compute_setters`, `split_ess_setters`, `split_css`,
+   `split_for_setters_of_setters`) were deleted after their missing demands
+   and actuators were folded into Route 4 (`CS_DEF_PARTITION`), which now
+   runs in Stage 3's slot before Stage 5 (`VIOLATION`). Their `FAPassStage`
+   enum slots remain unused so stage numbering stays stable.
 
-4. **~~Setter+marks splitting~~ — off by default** with the marks
-   (`PYC_NOMARK` defaults to 1). `MARK_SETTER` / `MARK_SETTER_OF_SETTER`
-   remain in `FAPassStage` but do not run.
+4. **~~Setter+marks splitting~~ — REMOVED** (ifa/146 D). `MARK_SETTER` /
+   `MARK_SETTER_OF_SETTER` remain in `FAPassStage` unused.
 
 5. **Violation-driven splitting** — `split_for_violations`. Any
    `type_violations` recorded during the pass become drivers:
