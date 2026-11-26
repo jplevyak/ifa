@@ -9294,7 +9294,12 @@ static int split_owner_of_demanded(CreationSet *I, bool dbg, bool allow_defs1 = 
                 work.push_back({a->container, O, it.depth + 1, it.ctx});
           }
         }
-        continue;  // never through the shared member / element AVar
+        // At depth 0 (tracking I), never cross through I's shared owner member.
+        // At depth > 0 (tracking an owner tr != I) under higher_stages_idle,
+        // also follow a->backward so that if tr's own outer owner (e.g. an
+        // already-split defaultdict or closure) has distinct member AVars per
+        // contour, the walk reaches tr's distinct defs instead of jumping over tr.
+        if (!(allow_defs1 && tr != I)) continue;
       }
       for (AVar *x : a->backward)
         if (x && x->out && x->out->type && x->out->type->set_in(tr)) {
