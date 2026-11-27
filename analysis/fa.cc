@@ -7784,101 +7784,36 @@ static bool es_is_formal(EntrySet *es, AVar *a) {
 }
 
 // Backward closure over AVars holding `cs`, optionally treating `stop_es`'s
-// FORMALS as terminal. Stopping there is what breaks the circularity: a
-// shared contour's formal is reachable from every caller, so crossing it
-// while asking "which creation points are upstream" answers "all of them".
+// FORMALS as terminal. Stopping there is what breaks the circularity when
+// starting from a caller's actuals: a shared contour's formal is reachable
+// from every caller, so crossing it while asking "which creation points reach
+// THIS edge" answers "all of them".
 static void cs_backflow(CreationSet *cs, Vec<AVar *> &roots, EntrySet *stop_es, Vec<AVar *> &path) {
   Vec<AVar *> work;
   for (AVar *t : roots) if (t && path.set_add(t)) work.add(t);
   for (int h = 0; h < work.n && h < 100000; h++) {
     AVar *a = work.v[h];
     if (stop_es && a->contour_is_entry_set && (EntrySet *)a->contour == stop_es && es_is_formal(stop_es, a)) continue;
+    if (AVar *src = folded_load_source(a))
+      if (src->out && src->out->type && src->out->type->set_in(cs)) {
+        if (path.set_add(src)) work.add(src);
+        continue;
+      }
     for (AVar *x : a->backward)
       if (x && x->out && x->out->type && x->out->type->set_in(cs) && path.set_add(x)) work.add(x);
   }
 }
 
-// The per-def signature over `g`'s assign sets, computed with `stop_es`
-// held terminal. Returns the number of distinct signatures.
-static int cs_def_groups(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &defs, EntrySet *stop_es,
-                         std::vector<std::string> *out_sig) {
-  std::vector<std::string> sig((size_t)defs.n);
-  for (int k = 0; k < g->keys.n; k++) {
-    Vec<AVar *> path;
-    cs_backflow(cs, *g->targets.v[k], stop_es, path);
-    for (int i = 0; i < defs.n; i++) sig[(size_t)i] += path.set_in(defs.v[i]) ? '1' : '0';
-  }
-  Vec<const char *> distinct;
-  int n = 0;
-  for (int i = 0; i < defs.n; i++) {
-    bool seen = false;
-    for (int j = 0; j < i; j++) if (sig[(size_t)j] == sig[(size_t)i]) { seen = true; break; }
-    if (!seen) ++n;
-  }
-  if (out_sig) *out_sig = sig;
-  return n;
-}
-
-// The contour whose sharing hides the partition: hold its formals terminal
-// and the creation points separate. Candidates are only contours that are
-// actually ON the walk and actually shared (more than one in-edge), and
-// the test is the one that matters -- does removing this contour's sharing
-// make the demanded partition visible?
-static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &defs, bool dbg) {
-  Vec<EntrySet *> cands;
-  for (int k = 0; k < g->keys.n; k++)
-    for (AVar *a : *g->paths.v[k]) {
-      if (!a || !a->contour_is_entry_set) continue;
-      EntrySet *aes = (EntrySet *)a->contour;
-      if (cands.set_in(aes) || !es_is_formal(aes, a)) continue;
-      int nin = 0;
-      for (AEdge *e : aes->edges) if (e && e->args.n && ++nin > 1) break;
-      if (nin > 1) cands.set_add(aes);
-    }
-  Vec<EntrySet *> ordered;
-  for (EntrySet *e : cands) if (e) ordered.add(e);
-  if (ordered.n > 1)
-    qsort(ordered.v, ordered.n, sizeof(ordered[0]), [](const void *x, const void *y) {
-      int a = (*(EntrySet *const *)x)->id, b = (*(EntrySet *const *)y)->id;
-      return a > b ? 1 : (a < b ? -1 : 0);
-    });
-  if (dbg) {
-    fprintf(stderr, "[esblock] p=%d cs=%d candidates=%d:", analysis_pass, cs->id, ordered.n);
-    for (EntrySet *e : ordered)
-      fprintf(stderr, " es%d/%s", e->id, (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?");
-    fprintf(stderr, "\n");
-  }
-  for (EntrySet *e : ordered) {
-    if (cs_def_groups(cs, g, defs, e, nullptr) < 2) continue;
-    if (dbg)
-      fprintf(stderr, "[esblock] p=%d cs=%d BLOCKER es=%d fun=%s\n", analysis_pass, cs->id, e->id,
-              (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?");
-    return e;
-  }
-  return nullptr;
-}
-
-// ifa/133: split the blocking contour, grouping its in-edges by WHICH
-// CREATION POINTS of `cs` each one can reach.
-//
-// Demand decides whether (route 4 was reached on a demand and its key just
-// declined); the creation points -- the demand's own objects, the things
-// being separated -- name the parts. The partition is bounded by the
-// number of creation points, not by the number of callers, so it cannot
-// become ifa/144's fan: when every edge reaches the same set there is
-// nothing to separate and this refuses.
-[[nodiscard]] static int split_blocking_es(CreationSet *cs, EntrySet *bes, Vec<AVar *> &defs, AVar *demand_av,
-                                           bool dbg) {
-  if (!bes || bes->split) return 0;
-  Vec<AEdge *> all_edges;
+// Group `bes`'s in-edges into 2 parts by which `defs` of `cs` reach each
+// edge's actuals (coalescing groups 2..n-1 into group 1, per ifa/144's 2-way
+// bound). Returns false when `bes` cannot be split into 2 distinct groups.
+static bool es_blocking_edge_groups(CreationSet *cs, EntrySet *bes, Vec<AVar *> &defs, Vec<AEdge *> &all_edges,
+                                    Vec<Vec<AEdge *> *> &groups, bool *coalesced = nullptr) {
+  if (coalesced) *coalesced = false;
+  if (!bes || bes->split) return false;
   for (AEdge *e : bes->edges) if (e && e->args.n) all_edges.add(e);
   qsort_by_id(all_edges);
-  if (all_edges.n < 2) return 0;
-
-  // Per edge: the creation points reachable from its actuals, with this
-  // contour's formals held terminal so the walk cannot come back in
-  // through another caller.
-  Vec<Vec<AEdge *> *> groups;
+  if (all_edges.n < 2) return false;
   std::vector<std::string> sigs;
   for (AEdge *e : all_edges) {
     Vec<AVar *> roots;
@@ -7898,38 +7833,236 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
     if (gi < 0) { sigs.push_back(sig); groups.add(new Vec<AEdge *>); gi = (int)sigs.size() - 1; }
     groups.v[gi]->add(e);
   }
-  if (groups.n < 2) {
-    if (dbg)
-      fprintf(stderr, "[esblock] p=%d cs=%d es=%d DECLINED: all %d edge(s) reach the same creation points\n",
-              analysis_pass, cs->id, bes->id, all_edges.n);
-    return 0;
-  }
-  // ifa/144's bound: TWO groups, always.
-  //
-  // "A demand to separate two groups is answered with N contours" is
-  // ifa/144's complaint, and a bound of `defs.n` does not fix it -- a
-  // CreationSet with six creation points licenses six groups, and the
-  // grouping below then hands back one per edge. Measured on `plcfrs`:
-  // `es=59 append edges=7 -> 6 groups`, `es=338 append edges=6 -> 6`.
-  // That is the fan, with a larger licence.
-  //
-  // This split exists ONLY to make route 4's partition possible, and the
-  // minimum that achieves that is separating the creation points into TWO
-  // groups. So take exactly two: the first signature keeps the contour,
-  // everything else peels onto one product. If more separation is needed
-  // the demand survives the re-derivation and the next pass splits again,
-  // which is "separate minimally, re-derive, ask again" rather than
-  // "assume all N are mutually distinct".
-  //
-  // Partition size is 2 by construction and can never track the caller
-  // count, which is the property ifa/144 asks for.
+  if (groups.n < 2) return false;
   if (groups.n > 2) {
     for (int i = 2; i < groups.n; i++)
       for (AEdge *e : *groups.v[i]) groups.v[1]->add(e);
     groups.n = 2;
-    if (dbg)
-      fprintf(stderr, "[esblock] p=%d cs=%d es=%d coalesced to 2 group(s)\n", analysis_pass, cs->id, bes->id);
+    if (coalesced) *coalesced = true;
   }
+  return true;
+}
+
+// Simulate `build_cs_flow_graph`'s assign-set partition as if `bes` were split
+// into two contours `bes_0` (receiving `g0`) and `bes_1` (receiving `g1`).
+//
+// Holding `bes`'s formals terminal instead (the old test) treated a write
+// INSIDE `bes` as reaching NO creation points rather than reaching `g0` in
+// `bes_0` and `g1` in `bes_1`. With a single assign set (`KEY sets=1`), cutting
+// `bes` out of that one set separated defs written through `bes` ("0") from
+// defs written elsewhere ("1"), predicting 2 groups where the real split leaves
+// both `bes_0` and `bes_1` writing into the same single assign set ("1" for
+// every def -> 1 group), oscillating with `merge_equivalent_entry_sets`.
+static int cs_def_groups_after_es_split(CreationSet *cs, EntrySet *bes, Vec<AEdge *> &g0, Vec<AEdge *> &g1,
+                                        Vec<AVar *> &defs) {
+  Vec<AVar *> content;
+  cs_content_avars(cs, content);
+  if (!content.n) return 0;
+
+  std::unordered_map<AVar *, int> filt_grp;
+  std::unordered_set<AVar *> bes_rets;
+  std::map<std::pair<AVar *, AVar *>, int> ret_mask;
+  for (AVar *r : bes->rets) if (r) bes_rets.insert(r);
+  for (int grp = 0; grp < 2; grp++) {
+    Vec<AEdge *> &eg = grp ? g1 : g0;
+    for (AEdge *ee : eg) {
+      if (!ee) continue;
+      form_Map(MapElemMPositionAVarPair, mp, ee->filtered_args) if (mp->value) filt_grp[mp->value] = grp;
+      int rr = ee->pnode ? ee->pnode->lvals.n : 0;
+      for (int i = 0; i < rr && i < bes->rets.n && i < ee->rets.n; i++)
+        if (ee->rets.v[i] && bes->rets.v[i]) ret_mask[{ee->rets.v[i], bes->rets.v[i]}] |= (1 << grp);
+      if (ee->match && ee->match->fun)
+        for (int o = 0; o < ee->match->fun->out_positions.n && rr + o < bes->rets.n; o++)
+          if (AVar *act = ee->args.get(ee->match->fun->out_positions[o]))
+            if (bes->rets.v[rr + o]) ret_mask[{act, bes->rets.v[rr + o]}] |= (1 << grp);
+    }
+  }
+
+  auto in_bes = [&](AVar *a) { return a && a->contour_is_entry_set && (EntrySet *)a->contour == bes; };
+
+  // Type written by `b` (inside `bes`) in copy `grp` when `b` flows purely
+  // from `bes`'s formals (e.g. `value` in `list.__setitem__`); otherwise `b`'s
+  // existing converged type.
+  auto bes_write_type = [&](AVar *b, int grp) -> AType * {
+    Vec<MPosition *> fpos;
+    Vec<AVar *> seen, wk;
+    seen.set_add(b);
+    wk.add(b);
+    for (int i = 0; i < wk.n && i < 32; i++) {
+      AVar *y = wk.v[i];
+      MPosition *fp = nullptr;
+      form_Map(MapElemMPositionAVarPair, mp, bes->args) if (mp->value == y) { fp = mp->key; break; }
+      if (fp) { fpos.set_add(fp); continue; }
+      if (y->gen || !y->backward.n) return b->out->type;
+      for (AVar *z : y->backward) {
+        if (!z || !in_bes(z)) return b->out->type;
+        if (seen.set_add(z)) wk.add(z);
+      }
+    }
+    if (!fpos.n) return b->out->type;
+    Vec<AEdge *> &eg = grp ? g1 : g0;
+    AType *u = fa->type_world.bottom_type;
+    for (MPosition *fp : fpos)
+      for (AEdge *ee : eg) {
+        AVar *fa_av = ee->filtered_args.get(fp);
+        if (!fa_av) fa_av = ee->args.get(fp);
+        if (fa_av && fa_av->out && fa_av->out->type) u = type_union(u, fa_av->out->type);
+      }
+    return u != fa->type_world.bottom_type ? u : b->out->type;
+  };
+
+  // Post-split assign sets: (AVar *target, int copy), where copy is 0/1 inside
+  // `bes` and -1 outside `bes`.
+  Vec<AType *> keys;
+  std::vector<std::vector<std::pair<AVar *, int>>> targets;
+  auto add_target = [&](AType *kt, AVar *t, int copy) {
+    if (!kt || !t) return;
+    int gi = -1;
+    for (int i = 0; i < keys.n; i++) if (keys.v[i] == kt) { gi = i; break; }
+    if (gi < 0) { keys.add(kt); targets.emplace_back(); gi = keys.n - 1; }
+    targets[(size_t)gi].push_back({t, copy});
+  };
+  for (AVar *cv : content) {
+    if (!cv || !cv->out) continue;
+    for (AVar *b : cv->backward) {
+      if (!b || !b->container || !b->out || !b->out->type) continue;
+      if (in_bes(b) && in_bes(b->container)) {
+        add_target(bes_write_type(b, 0), b->container, 0);
+        add_target(bes_write_type(b, 1), b->container, 1);
+      } else if (in_bes(b->container)) {
+        add_target(b->out->type, b->container, 0);
+        add_target(b->out->type, b->container, 1);
+      } else {
+        add_target(b->out->type, b->container, -1);
+      }
+    }
+  }
+  if (!keys.n) return 0;
+
+  std::vector<std::string> sig((size_t)defs.n);
+  for (int k = 0; k < keys.n; k++) {
+    std::set<std::pair<AVar *, int>> seen;
+    std::vector<std::pair<AVar *, int>> work;
+    Vec<AVar *> reached;
+    auto push = [&](AVar *x, int c) {
+      if (x && seen.insert({x, c}).second) {
+        reached.set_add(x);
+        work.push_back({x, c});
+      }
+    };
+    for (auto &tc : targets[(size_t)k]) push(tc.first, tc.second);
+    for (size_t h = 0; h < work.size() && h < 100000; h++) {
+      AVar *a = work[h].first;
+      int copy = work[h].second;
+      bool a_is_bes_filt = in_bes(a) && a->var && a->var->is_filtered && filt_grp.count(a);
+      auto step_to = [&](AVar *x) {
+        if (!x || !x->out || !x->out->type || !x->out->type->set_in(cs)) return;
+        if (a_is_bes_filt) {
+          if (in_bes(x)) { push(x, 0); push(x, 1); }
+          else push(x, -1);
+          return;
+        }
+        auto fg = filt_grp.find(x);
+        if (fg != filt_grp.end()) {
+          if (copy == -1 || copy == fg->second) push(x, fg->second);
+          return;
+        }
+        if (!in_bes(a) && in_bes(x)) {
+          if (bes_rets.count(x)) {
+            auto rm = ret_mask.find({a, x});
+            int m = rm != ret_mask.end() ? rm->second : 3;
+            if ((m & 1) && (copy == -1 || copy == 0)) push(x, 0);
+            if ((m & 2) && (copy == -1 || copy == 1)) push(x, 1);
+          } else if (copy == -1) {
+            push(x, 0);
+            push(x, 1);
+          } else {
+            push(x, copy);
+          }
+          return;
+        }
+        push(x, copy);
+      };
+      if (AVar *src = folded_load_source(a))
+        if (src->out && src->out->type && src->out->type->set_in(cs)) {
+          step_to(src);
+          continue;
+        }
+      for (AVar *x : a->backward) step_to(x);
+    }
+    for (int i = 0; i < defs.n; i++) sig[(size_t)i] += reached.set_in(defs.v[i]) ? '1' : '0';
+  }
+  int n = 0;
+  for (int i = 0; i < defs.n; i++) {
+    bool dup = false;
+    for (int j = 0; j < i; j++) if (sig[(size_t)j] == sig[(size_t)i]) { dup = true; break; }
+    if (!dup) ++n;
+  }
+  return n;
+}
+
+// The contour whose sharing hides the partition: split its in-edges into the
+// two creation-point groups `split_blocking_es` would form, and check whether
+// `build_cs_flow_graph` then separates `defs` into >= 2 groups.
+static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &defs, bool dbg) {
+  Vec<EntrySet *> cands;
+  for (int k = 0; k < g->keys.n; k++)
+    for (AVar *a : *g->paths.v[k]) {
+      if (!a || !a->contour_is_entry_set) continue;
+      EntrySet *aes = (EntrySet *)a->contour;
+      if (cands.set_in(aes) || aes->split || !es_is_formal(aes, a)) continue;
+      int nin = 0;
+      for (AEdge *e : aes->edges) if (e && e->args.n && ++nin > 1) break;
+      if (nin > 1) cands.set_add(aes);
+    }
+  Vec<EntrySet *> ordered;
+  for (EntrySet *e : cands) if (e) ordered.add(e);
+  if (ordered.n > 1)
+    qsort(ordered.v, ordered.n, sizeof(ordered[0]), [](const void *x, const void *y) {
+      int a = (*(EntrySet *const *)x)->id, b = (*(EntrySet *const *)y)->id;
+      return a > b ? 1 : (a < b ? -1 : 0);
+    });
+  if (dbg) {
+    fprintf(stderr, "[esblock] p=%d cs=%d candidates=%d:", analysis_pass, cs->id, ordered.n);
+    for (EntrySet *e : ordered)
+      fprintf(stderr, " es%d/%s", e->id, (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?");
+    fprintf(stderr, "\n");
+  }
+  for (EntrySet *e : ordered) {
+    Vec<AEdge *> all_edges;
+    Vec<Vec<AEdge *> *> groups;
+    if (!es_blocking_edge_groups(cs, e, defs, all_edges, groups)) continue;
+    if (cs_def_groups_after_es_split(cs, e, *groups.v[0], *groups.v[1], defs) < 2) continue;
+    if (dbg)
+      fprintf(stderr, "[esblock] p=%d cs=%d BLOCKER es=%d fun=%s\n", analysis_pass, cs->id, e->id,
+              (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?");
+    return e;
+  }
+  return nullptr;
+}
+
+// ifa/133: split the blocking contour, grouping its in-edges by WHICH
+// CREATION POINTS of `cs` each one can reach.
+//
+// Demand decides whether (route 4 was reached on a demand and its key just
+// declined); the creation points -- the demand's own objects, the things
+// being separated -- name the parts. The partition is bounded by the
+// number of creation points, not by the number of callers, so it cannot
+// become ifa/144's fan: when every edge reaches the same set there is
+// nothing to separate and this refuses.
+[[nodiscard]] static int split_blocking_es(CreationSet *cs, EntrySet *bes, Vec<AVar *> &defs, AVar *demand_av,
+                                           bool dbg) {
+  Vec<AEdge *> all_edges;
+  Vec<Vec<AEdge *> *> groups;
+  bool coalesced = false;
+  if (!es_blocking_edge_groups(cs, bes, defs, all_edges, groups, &coalesced)) {
+    if (dbg && bes && !bes->split && all_edges.n >= 2)
+      fprintf(stderr, "[esblock] p=%d cs=%d es=%d DECLINED: all %d edge(s) reach the same creation points\n",
+              analysis_pass, cs->id, bes->id, all_edges.n);
+    return 0;
+  }
+  if (coalesced && dbg)
+    fprintf(stderr, "[esblock] p=%d cs=%d es=%d coalesced to 2 group(s)\n", analysis_pass, cs->id, bes->id);
   ESSplitDecision *dec = new ESSplitDecision;
   dec->av = demand_av;
   dec->es = bes;
