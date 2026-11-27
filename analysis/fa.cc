@@ -92,7 +92,7 @@ static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, Vec<AV
                        int is_closure, Partial_kind partial, PNode *visibility_point, Vec<CreationSet *> *closures);
 
 // ESBLOCK's outcome ledger; see esblock_note_merge.
-static std::map<EntrySet *, std::pair<CreationSet *, EntrySet *>> esblock_product;
+static std::map<EntrySet *, std::set<std::pair<CreationSet *, EntrySet *>>> esblock_product;
 static std::set<std::pair<CreationSet *, EntrySet *>> esblock_futile;
 
 // Reset all module-level analysis state. Called by ifa_reset() so test
@@ -7903,14 +7903,42 @@ static int cs_def_groups(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &defs, Ent
 // (esblock_product / esblock_futile are declared above fa_reset.)
 
 static void esblock_note_merge(EntrySet *gone, EntrySet *kept) {
-  for (EntrySet *es : {gone, kept}) {
-    auto it = esblock_product.find(es);
-    if (it == esblock_product.end()) continue;
-    esblock_futile.insert(it->second);
-    if (getenv("IFA_DBG_CSDEFSPLIT"))
-      fprintf(stderr, "[esblock] p=%d cs=%d es=%d FUTILE: product es=%d merged into es=%d\n", analysis_pass,
-              it->second.first->id, it->second.second->id, es->id, kept->id);
+  if (!gone || !kept || esblock_product.empty()) return;
+  if (auto it = esblock_product.find(gone); it != esblock_product.end()) {
+    auto &dst = esblock_product[kept];
+    dst.insert(it->second.begin(), it->second.end());
     esblock_product.erase(it);
+  }
+  for (auto &kv : esblock_product) {
+    std::set<std::pair<CreationSet *, EntrySet *>> updated;
+    bool changed = false;
+    for (const auto &p : kv.second) {
+      if (p.second == gone) {
+        updated.insert({p.first, kept});
+        changed = true;
+      } else {
+        updated.insert(p);
+      }
+    }
+    if (changed) kv.second.swap(updated);
+  }
+  if (auto it = esblock_product.find(kept); it != esblock_product.end()) {
+    std::vector<CreationSet *> futile_css;
+    for (auto pit = it->second.begin(); pit != it->second.end();) {
+      if (pit->second == kept) {
+        if (esblock_futile.insert(*pit).second) futile_css.push_back(pit->first);
+        pit = it->second.erase(pit);
+      } else {
+        ++pit;
+      }
+    }
+    if (it->second.empty()) esblock_product.erase(it);
+    if (!futile_css.empty() && getenv("IFA_DBG_CSDEFSPLIT")) {
+      std::sort(futile_css.begin(), futile_css.end(), [](CreationSet *a, CreationSet *b) { return a->id < b->id; });
+      for (CreationSet *fcs : futile_css)
+        fprintf(stderr, "[esblock] p=%d cs=%d es=%d FUTILE: product es=%d merged into es=%d\n", analysis_pass, fcs->id,
+                kept->id, gone->id, kept->id);
+    }
   }
 }
 
@@ -7947,6 +7975,14 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
   }
   for (EntrySet *e : ordered) {
     if (cs_def_groups(cs, g, defs, e) < 2) continue;
+    Vec<AEdge *> all_edges;
+    Vec<Vec<AEdge *> *> groups;
+    if (!es_blocking_edge_groups(cs, e, defs, all_edges, groups)) {
+      if (dbg && !e->split && all_edges.n >= 2)
+        fprintf(stderr, "[esblock] p=%d cs=%d es=%d DECLINED: all %d edge(s) reach the same creation points\n",
+                analysis_pass, cs->id, e->id, all_edges.n);
+      continue;
+    }
     if (dbg)
       fprintf(stderr, "[esblock] p=%d cs=%d BLOCKER es=%d fun=%s\n", analysis_pass, cs->id, e->id,
               (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?");
@@ -7999,7 +8035,7 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
   if (r)
     for (int i = 1; i < groups.n; i++)
       for (AEdge *e : *groups.v[i])
-        if (e && e->to && e->to != bes) esblock_product[e->to] = {cs, bes};
+        if (e && e->to && e->to != bes) esblock_product[e->to].insert({cs, bes});
   return r;
 }
 
