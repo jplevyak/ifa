@@ -145,6 +145,13 @@ void show_call_tree(FILE *fp, PNode *p, EntrySet *es, int depth = 0);
 void show_avar_call_tree(FILE *fp, AVar *av);
 void show_candidates(FILE *fp, PNode *pn, Sym *arg0);
 void show_violations(FA *fa, FILE *fp);
+// Renders each reported violation (sorted, uninformative ones skipped,
+// duplicates removed, exactly as show_violations prints them) and passes it to
+// `report` with its user-facing location (`filename` may be null, `line` 0 when
+// unknown), whether it is an error (else a warning), and its rendered text.
+typedef void (*ViolationReportFn)(void *ctx, ATypeViolation *v, cchar *filename, int line, int col,
+                                  bool is_error, cchar *text);
+void show_violations_each(FA *fa, ViolationReportFn report, void *ctx);
 void show_numeric_coercions(FA *fa, FILE *fp);
 void dbg_confluence_probe(AVar *av, bool added);
 void dbg_dump_av(AVar *av);
