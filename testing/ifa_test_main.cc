@@ -442,6 +442,17 @@ static int run_one(Fixture &f, Phase *phase, int &out_failed) {
       out_failed++;
       return -1;
     }
+    // A `;; pass-limit: N` header line caps FA's outer loop for this fixture
+    // (as IFA_PASS_LIMIT does), so a fixture can stop the analysis while it
+    // is still splitting.
+    if (FILE *fp = fopen(f.path, "r")) {
+      char line[256];
+      while (fgets(line, sizeof line, fp) && line[0] == ';') {
+        int n = 0;
+        if (sscanf(line, ";; pass-limit: %d", &n) == 1 && pdb && pdb->fa) pdb->fa->pass_limit = n;
+      }
+      fclose(fp);
+    }
   } else {
     // FIXTURE_SYNTH: parse .synth config, dispatch to IRShape.
     cchar *shape_name = nullptr;

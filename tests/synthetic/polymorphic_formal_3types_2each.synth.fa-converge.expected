@@ -5,6 +5,7 @@
   total-passes:      1
   events:            1
   splits[type]: 1
+  unanalyzed-edges:  0
 )
 
 (history

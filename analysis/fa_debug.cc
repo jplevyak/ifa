@@ -342,7 +342,14 @@ void show_candidates(FILE *fp, PNode *pn, Sym *arg0) {
   }
 }
 
-void show_violations(FA *fa, FILE *fp) {
+static void print_violation_to(void *ctx, ATypeViolation *, cchar *, int, int, bool, cchar *text) {
+  fputs(text, (FILE *)ctx);
+}
+
+void show_violations(FA *fa, FILE *fp) { show_violations_each(fa, print_violation_to, fp); }
+
+void show_violations_each(FA *fa, ViolationReportFn report, void *ctx) {
+  FILE *fp = stderr;  // only used if open_memstream fails
   Vec<ATypeViolation *> vv;
   for (ATypeViolation *v : fa->type_violations) if (v) vv.add(v);
   qsort(vv.v, vv.n, sizeof(vv[0]), compar_tv);
@@ -642,7 +649,7 @@ void show_violations(FA *fa, FILE *fp) {
         }
         if (!dup) {
           printed.add(buf);
-          fputs(buf, fp);
+          report(ctx, v, filename, line, col, strcmp(severity, "error") == 0, buf);
         } else {
           free(buf);
         }

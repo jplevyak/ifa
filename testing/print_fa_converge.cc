@@ -95,6 +95,13 @@ void print_fa_converge_normalized(FILE *fp, IF1 *p) {
   for (int s = 0; s < num_stages; s++)
     if (total_by_stage[s])
       fprintf(fp, "  splits[%s]: %d\n", stage_name((FAPassStage)s), total_by_stage[s]);
+  // Every call edge of an analyzed contour leads to an analyzed contour: a
+  // pass that split and was then stopped (a stall guard, the pass cap) must
+  // still analyze what it split.
+  int unanalyzed = 0;
+  for (EntrySet *es : pdb->fa->ess) if (es)
+    for (AEdge *e : es->out_edges) if (e && (!e->to || !pdb->fa->ess.in(e->to))) ++unanalyzed;
+  fprintf(fp, "  unanalyzed-edges:  %d\n", unanalyzed);
   fputs(")\n\n", fp);
 
   fputs("(history\n", fp);

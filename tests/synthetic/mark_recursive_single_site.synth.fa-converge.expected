@@ -6,6 +6,7 @@
   events:            2
   splits[type]: 1
   splits[cs-def-partition]: 1
+  unanalyzed-edges:  0
 )
 
 (history

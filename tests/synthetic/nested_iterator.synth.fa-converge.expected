@@ -7,6 +7,7 @@
   splits[type]: 4
   splits[violation]: 1
   splits[cs-def-partition]: 2
+  unanalyzed-edges:  0
 )
 
 (history
