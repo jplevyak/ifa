@@ -4,6 +4,7 @@
   rc:                -1
   total-passes:      0
   events:            0
+  unanalyzed-edges:  0
 )
 
 (history

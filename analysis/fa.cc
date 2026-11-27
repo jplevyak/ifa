@@ -51,6 +51,15 @@ static cchar *cur_split_note = nullptr;
 bool fgraph_pass_contours = false;
 int write_code_exit = 0;
 int analysis_pass = 0;
+// Set when extend_analysis stops splitting (a stall guard or the pass cap)
+// after this pass's split stages already ran: their splits rebound edges to
+// new, not yet analyzed contours, so one more pass -- with splitting
+// suppressed (`pass_limit_hit`) -- must run before the result is used, even
+// past the pass cap. Stopping instead left edges bound to argless EntrySets
+// that clone() then attached to an arbitrary clone of the callee: a call
+// dispatched to the wrong function in the generated code (a list-length
+// fold called the list-reversing fold's clone and returned a pointer).
+static bool settle_pass_pending = false;
 FA *fa = nullptr;
 static Timer pass_timer, match_timer, extend_timer;
 static long fa_rounds_total();  // ifa/207
@@ -87,6 +96,7 @@ static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, Vec<AV
 // from a prior run leaking in.
 void fa_reset() {
   analysis_pass = 0;
+  settle_pass_pending = false;
   // Canonical types now live on TypeWorld per FA; FA destruction
   // handles them.
   // id counters live on FA now; FA destruction handles them.
@@ -12452,8 +12462,15 @@ static void probe_invalidation_closure() {
 
 
 
+
 [[nodiscard]] static int extend_analysis() {
   int analyze_again = 0;
+  if (settle_pass_pending) {
+    // This is the settling pass: it analyzed the last splits. Done.
+    settle_pass_pending = false;
+    ++analysis_pass;
+    return 0;
+  }
   extend_timer.restart();
   // Issue 033: the stall guard is STICKY. pass_limit_hit is set by
   // the stall guard and the pass cap below; without this entry
@@ -12489,6 +12506,7 @@ static void probe_invalidation_closure() {
     }
   }
   if (!fa->pass_limit_hit) analyze_again = run_split_stages();
+  const bool split_this_pass = analyze_again != 0;
   probe_invalidation_closure();  // ifa/issues/111 M1 (IFA_DBG_CLOSURE)
   extend_timer.stop();
   if (analyze_again) {
@@ -12598,6 +12616,11 @@ static void probe_invalidation_closure() {
   // now clears before every pass instead, which is also the only place
   // that can do it without wiping the converged results the caller
   // needs when this returns 0.
+  if (split_this_pass && !analyze_again) {
+    // A guard stopped the analysis after this pass split: settle first.
+    settle_pass_pending = true;
+    analyze_again = 1;
+  }
   pass_timer.stop();
   ++analysis_pass;
   // ifa/issues/112: COARSE per-pass trace of FA's computed state, for
@@ -14374,7 +14397,7 @@ static void analyze_to_convergence() {
       }
       loop_again = (ext || rea || fil || ret || ow || raise_grew || arity_flipped);
     }
-  } while (loop_again && analysis_pass <= fa->pass_limit);
+  } while (loop_again && (analysis_pass <= fa->pass_limit || settle_pass_pending));
   if (getenv("PYC_DBG_OSC"))
     fprintf(stderr, "OSC final_pass=%d pass_limit_hit=%d violations=%d ess=%d css=%d selective=%d\n", analysis_pass,
             fa->pass_limit_hit ? 1 : 0, fa->type_violations.set_count(), fa->ess.n, fa->css.n, ifa_selective);
