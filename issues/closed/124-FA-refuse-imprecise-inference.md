@@ -1,6 +1,6 @@
 # 124 — `--refuse-imprecise`: refuse where inference left a type untyped, instead of emitting codegen's guess
 
-**CLOSED 2026-11-03.** Residual 1 (the C naming gap read as imprecision) was fixed 2026-10-17 and stays fixed. Residual 2 (`go`'s six sites, a SETTER split nothing demanded) is the subject of [196](../196-the-setter-stage-splits-on-a-fact.md), which carries the four measured gate formulations below as its dead ends. Residual 3 (base the check on FA types, not C strings) is a row of [201](../201-representation-oracle.md). `--refuse-imprecise` stays as a flag.
+**CLOSED 2026-11-03.** Residual 1 (the C naming gap read as imprecision) was fixed 2026-10-17 and stays fixed. Residual 2 (`go`'s six sites, a SETTER split nothing demanded) is the subject of [196](196-the-setter-stage-splits-on-a-fact.md), which carries the four measured gate formulations below as its dead ends. Residual 3 (base the check on FA types, not C strings) is a row of [201](../201-representation-oracle.md). `--refuse-imprecise` stays as a flag.
 
 **Status:** open on one residual: 6 sites in `go`, caused by a SETTER split; a demand gate for SETTER was tried and needs a redesign (below). Residual 1 is fixed
 (2026-10-17, below). The option landed 2026-09-01 (off by default). The root

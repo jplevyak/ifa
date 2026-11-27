@@ -55,7 +55,7 @@ creation point per closure CS).
 Every merged pair is split straight back on the next pass, to the pass
 cap, by the SETTER stage, which separates two creation points whenever the
 writes into what they allocate differ at all. That is a split on a fact,
-and it is [196](196-the-setter-stage-splits-on-a-fact.md). Adding a guard
+and it is [196](closed/196-the-setter-stage-splits-on-a-fact.md). Adding a guard
 against the re-split would be the hysteresis this issue forbids. **Do not
 attempt step 3 before 196.**
 

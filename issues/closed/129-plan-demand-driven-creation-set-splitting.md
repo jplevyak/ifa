@@ -1,6 +1,6 @@
 # 129 — THE PLAN: demand-driven CreationSet splitting
 
-**CLOSED 2026-11-03: the plan landed.** Every piece in "Landed" is default-on, and no corpus program is attributed to the residual family (one creation point whose element takes two types). The residual, its regression table and the "do not restart from these" list moved to [196](../196-the-setter-stage-splits-on-a-fact.md)'s watch list. The "Settled" section below is still the rule and AGENTS.md states it; this file is the record.
+**CLOSED 2026-11-03: the plan landed.** Every piece in "Landed" is default-on, and no corpus program is attributed to the residual family (one creation point whose element takes two types). The residual, its regression table and the "do not restart from these" list moved to [196](196-the-setter-stage-splits-on-a-fact.md)'s watch list. The "Settled" section below is still the rule and AGENTS.md states it; this file is the record.
 
 **Status: open, on one residual family (below). The plan has landed.**
 Condensed 2026-10-15; the full record, including the shared-writer

@@ -34,10 +34,14 @@ frontend see [../PIPELINE.md](../PIPELINE.md).
 
 ## Analysis pipeline
 
-- [IFA.md](IFA.md) — Iterative Flow Analysis (`analysis/fa.cc`):
-  paper synthesis, data structures (`AType`, `CreationSet`,
-  `EntrySet`, `AEdge`, `AVar`), the flow loop, the 5 splitting
-  strategies, hooks, gotchas.
+- [IFA_2026.md](IFA_2026.md) — Journal-article successor to
+  [../ifa-submit.pdf](../ifa-submit.pdf): formal presentation of the 2026
+  demand-driven, provenance-free IFA algorithm (minimal start on both ES and
+  CS, unified `CS_DEF_PARTITION`, call-context-matched heap walks, split
+  ledger, quiescent re-merge, and 77-program corpus evaluation).
+- [IFA.md](IFA.md) — Iterative Flow Analysis (`analysis/fa.cc`) implementation
+  map: data structures (`AType`, `CreationSet`, `EntrySet`, `AEdge`, `AVar`),
+  the four-queue flow loop, the active splitting stages, hooks, and gotchas.
 - [CLONE.md](CLONE.md) — Type-directed cloning
   (`analysis/clone.cc`): paper synthesis, partition refinement
   (`determine_clones`), equivalence functions, concrete-type

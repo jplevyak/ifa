@@ -683,10 +683,12 @@ void cg_build_new_to_val_map(FA *fa) {
             slots = new Vec<PolymorphicSlot>();
             cg_new_to_val_map.put(fun_new, slots);
           }
-          // Find existing registration for this (slot) — replace if less specific.
+          // Find existing registration for this (slot, ct) — replace if less specific.
+          // Keying on (slot, ct) prevents two unrelated classes constructed in the
+          // same function (e.g. __main__) from colliding when they share a slot index.
           int existing = -1;
           for (int k = 0; k < slots->n; k++)
-            if ((*slots)[k].slot == slot) {
+            if ((*slots)[k].slot == slot && (*slots)[k].classes && (*slots)[k].classes->set_in(ct)) {
               existing = k;
               break;
             }
@@ -1537,8 +1539,20 @@ void poly_dispatch_classtag_targets(Fun *candidate, PNode *pn, Vec<cchar *> &dir
       // candidate keeps using that candidate's own override -- this
       // candidate's (looser, unioned) match must not steal it.
       if (from_union && ccls->name && directly_owned.set_in(ccls->name)) continue;
+      auto is_fn_sym = [](Sym *x) { return x && (x->is_fun || x->fun || x->type_kind == Type_FUN); };
+      auto slot_is_fn = [&](Sym *t) {
+        if (!t) return false;
+        if (is_fn_sym(t)) return true;
+        if (t->type_kind == Type_SUM && t->has.n) {
+          for (Sym *x : t->has)
+            if (!is_fn_sym(x)) return false;
+          return true;
+        }
+        return false;
+      };
       for (int k = 0; k < ccls->has.n; k++) {
-        if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k)) {
+        if (ccls->has[k] && ccls->has[k]->name == method_name && cg_field_live(ccls, k) &&
+            slot_is_fn(ccls->has[k]->type)) {
           classes.add(ccls);
           slots.add(k);
           rval_idxs.add((int)Position2int(cp->pos[0]) - 1);
@@ -2969,6 +2983,13 @@ cchar *cg_trap_c_at(cchar *s, int line) {
 // found, fall back to the historical `obj->has[0]` so
 // the getter's "not a field" refusal still fires for
 // genuinely-unresolvable cases.
+Var *cg_meta_proto_var(Sym *meta) {
+  if (!meta || !meta->is_meta_type) return nullptr;
+  Sym *cls = meta->meta_type;
+  if (!cls || cls == meta || !cls->self || cls->self == cls) return nullptr;
+  return cls->self->var;
+}
+
 Sym *resolve_union_receiver(Sym *obj, cchar *symbol) {
   if (!obj || obj->type_kind != Type_SUM) return obj;
   if (symbol) {

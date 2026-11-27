@@ -99,8 +99,6 @@ AVar::AVar(Var *v, void *acontour)
       restrict_pred(RP_None),
       restrict_pred_cls(nullptr),
       container(nullptr),
-      setters(nullptr),
-      setter_class(nullptr),
       cs_map(nullptr),
       match_cache(nullptr),
       type(nullptr),
@@ -1671,12 +1669,11 @@ void report_element_setters() {
     for (AVar *b : e->backward) if (b) {
       EntrySet *bes = b->contour_is_entry_set ? (EntrySet *)b->contour : nullptr;
       cchar *fn = bes && bes->fun && bes->fun->sym && bes->fun->sym->name ? bes->fun->sym->name : "?";
-      fprintf(stderr, "   <- av=%d in_fun=%s es=%d container=%d setter_class=%d\n", b->id, fn,
-              bes ? bes->id : -1, b->container ? b->container->id : -1, b->setter_class ? 1 : 0);
+      fprintf(stderr, "   <- av=%d in_fun=%s es=%d container=%d\n", b->id, fn,
+              bes ? bes->id : -1, b->container ? b->container->id : -1);
     }
     for (AVar *d : cs->defs) if (d)
-      fprintf(stderr, "   def av=%d setters=%d cs_map=%d\n", d->id, d->setters ? d->setters->n : -1,
-              d->cs_map ? 1 : 0);
+      fprintf(stderr, "   def av=%d cs_map=%d\n", d->id, d->cs_map ? 1 : 0);
   }
 }
 
@@ -1849,9 +1846,8 @@ void dbg_dump_contours(int pass) {
     // AVar that split_css needs as a "setter starter" (setters are
     // registered on x->container, i.e. the object, not on the field).
     AVar *rv = es->rets.n ? es->rets.v[0] : nullptr;
-    fprintf(stderr, "CONTOUR pass=%d %s es=%d args=[%s] ret=%s ret_setters=%d ret_class=%d ret_cs_map=%d\n", pass,
-            want, es->id, args, ret, (rv && rv->setters) ? rv->setters->set_count() : -1,
-            (rv && rv->setter_class) ? rv->setter_class->set_count() : -1, (rv && rv->cs_map) ? 1 : 0);
+    fprintf(stderr, "CONTOUR pass=%d %s es=%d args=[%s] ret=%s ret_cs_map=%d\n", pass,
+            want, es->id, args, ret, (rv && rv->cs_map) ? 1 : 0);
   }
   // PYC_DBG_CONTOURS=* : which functions own the contour growth.
   if (!strcmp(want, "*")) {
@@ -1907,9 +1903,7 @@ void dbg_dump_contours(int pass) {
       // (the demand-driven CS split) only ever sees AVars that carry
       // setters -- an empty `setters` here means the back-flow never
       // reached this field and the CS can never be split from it.
-      fu += snprintf(flds + fu, (int)sizeof flds - fu, "%s%s=%s[setters=%d class=%d]", fu ? " " : "", fn, t,
-                     av->setters ? av->setters->set_count() : -1,
-                     av->setter_class ? av->setter_class->set_count() : -1);
+      fu += snprintf(flds + fu, (int)sizeof flds - fu, "%s%s=%s", fu ? " " : "", fn, t);
       if (fu >= (int)sizeof flds - 1) break;
     }
     // ifa/issues/055: defs is the number of AVars that created this CS.
@@ -1923,7 +1917,6 @@ void dbg_dump_contours(int pass) {
   // partition, which is what would make three separate sets appear to
   // share all three backing lists.
   {
-    Vec<void *> classes;
     int n_items = 0;
     for (CreationSet *cs : fa->css) {
       if (!cs || !cs->sym || !cs->sym->name || strcmp(cs->sym->name, cssym)) continue;
@@ -1933,8 +1926,7 @@ void dbg_dump_contours(int pass) {
         ++n_items;
         char ft[256];
         dbg_atype_str(av->out, ft, (int)sizeof ft, 0);
-        fprintf(stderr, "  ITEMS pass=%d setcs=%d av=%d out=%s setter_class=%p\n", pass, cs->id, av->id, ft,
-                (void *)av->setter_class);
+        fprintf(stderr, "  ITEMS pass=%d setcs=%d av=%d out=%s\n", pass, cs->id, av->id, ft);
         // ifa/issues/055 next step: WHO contributes each CreationSet.
         // Walk the incoming flow edges and name each source AVar by its
         // Var, its contour, and what it carries.
@@ -1956,28 +1948,19 @@ void dbg_dump_contours(int pass) {
           fprintf(stderr, "    <- src av=%d %s@%s line=%d out=%s\n", src->id, vn, where,
                   src->var && src->var->def && src->var->def->code ? src->var->def->code->line() : -1, st);
         }
-        if (av->setter_class) classes.set_add((void *)av->setter_class);
         if (getenv("PYC_DBG_BACKWALK")) {
           Vec<AVar *> seen;
           dbg_backwalk(av, 0, atoi(getenv("PYC_DBG_BACKWALK")), seen);
         }
       }
     }
-    fprintf(stderr, "  ITEMS pass=%d SUMMARY _items_avars=%d distinct_setter_classes=%d\n", pass, n_items,
-            classes.n);
+    fprintf(stderr, "  ITEMS pass=%d SUMMARY _items_avars=%d\n", pass, n_items);
   }
-  // ifa/issues/055: how much of the setter machinery is engaged at all.
-  int with_setters = 0, with_class = 0, cs_with_multidef = 0;
-  foreach_avar([&](AVar *a) {
-    if (!a) return;
-    if (a->setters) ++with_setters;
-    if (a->setter_class) ++with_class;
-  });
+  int cs_with_multidef = 0;
   for (CreationSet *c : fa->css) if (c && c->defs.set_count() > 1) ++cs_with_multidef;
   fprintf(stderr,
-          "CONTOUR pass=%d SUMMARY %s_contours=%d %s_CSs=%d total_ess=%d avars_with_setters=%d "
-          "avars_with_setter_class=%d css_with_multiple_defs=%d\n",
-          pass, want, n_es, cssym, n_cs, fa->ess.n, with_setters, with_class, cs_with_multidef);
+          "CONTOUR pass=%d SUMMARY %s_contours=%d %s_CSs=%d total_ess=%d css_with_multiple_defs=%d\n",
+          pass, want, n_es, cssym, n_cs, fa->ess.n, cs_with_multidef);
 }
 
 // ifa/133: name the container whose element has no representation, and
@@ -2166,15 +2149,11 @@ void report_mixed_element_owners() {
     if (!cs || !cs->sym || !cs->sym->element || !cs->sym->element->var || !cs->added_element_var) continue;
     AVar *elem = unique_AVar(cs->sym->element->var, cs);
     if (!elem || !elem->out || !mixed_basics(elem)) continue;
-    int fwd = 0, fwd_setters = 0;
+    int fwd = 0;
     for (AVar *x : elem->forward)
-      if (x) {
-        ++fwd;
-        if (x->setters) ++fwd_setters;
-      }
-    fprintf(stderr, "MIXELEM p=%d cs=%d sym=%s defs=%d elem_setters=%d fwd=%d fwd_with_setters=%d elem=",
-            analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", cs->defs.set_count(),
-            elem->setters ? elem->setters->n : -1, fwd, fwd_setters);
+      if (x) ++fwd;
+    fprintf(stderr, "MIXELEM p=%d cs=%d sym=%s defs=%d fwd=%d elem=",
+            analysis_pass, cs->id, cs->sym->name ? cs->sym->name : "?", cs->defs.set_count(), fwd);
     for (CreationSet *c : elem->out->type->sorted)
       if (c && c->sym) fprintf(stderr, " %s#%d", c->sym->name ? c->sym->name : "?", c->id);
     fprintf(stderr, "\n");

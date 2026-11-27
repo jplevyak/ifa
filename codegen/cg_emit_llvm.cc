@@ -971,6 +971,18 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   // Struct getter case.  Resolve union → concrete component,
   // find field index by name, GEP + Load.
   Sym *obj_sym = pn->rvals.v[1]->type;
+  Var *obj_var = pn->rvals.v[1];
+  if (obj_sym && obj_sym->is_meta_type) {
+    // issues/184: a read through a CLASS VALUE reads the class's prototype
+    // global (one class per contour; mirrors cg.cc).
+    Var *pv = cg_meta_proto_var(obj_sym);
+    if (!pv || !pv->type) {
+      if (!dst_var->live) return true;
+      codegen_fail(pn, "the class attribute '%s' has no prototype to read (issues/184)", symbol);
+    }
+    obj_sym = pv->type;
+    obj_var = pv;
+  }
   obj_sym = resolve_union_receiver(obj_sym, symbol);
   if (!obj_sym) {
     return false;
@@ -988,7 +1000,7 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   // ifa/200 A1: the same blind-cast obligation the C backend records at
   // its field read (cg.cc), checked by cg_check_layout_contract at the end
   // of cg_emit_llvm.
-  cg_note_field_access(ctx.fn, pn->rvals.v[1], obj_sym, field_idx);
+  cg_note_field_access(ctx.fn, obj_var, obj_sym, field_idx);
   // ifa/201: a member that does not exist has nothing to load. A read kept
   // live only for its None check has a dead result (the check is already
   // emitted); any other read of it is refused, as the C backend refuses it.
@@ -1003,7 +1015,7 @@ bool emit_send_period(EmitCtx &ctx, PNode *pn) {
   if (!obj_struct || slot_idx >= (int)obj_struct->getNumElements()) {
     return false;
   }
-  llvm::Value *obj = value_for_var(ctx, pn->rvals.v[1]);
+  llvm::Value *obj = value_for_var(ctx, obj_var);
   if (!obj) {
     return false;
   }
@@ -2206,6 +2218,7 @@ static bool emit_send_clone(EmitCtx &ctx, PNode *pn) {
       for (int si = 0; si < pslots->n; si++) {
         int slot = (*pslots)[si].slot;
         Fun *fun_val = (*pslots)[si].fun_val;
+        if ((*pslots)[si].classes && !(*pslots)[si].classes->set_in(dt)) continue;
         if (!cg_field_live(dt, slot)) continue;
         if (!fun_val->cg_string) continue;
         llvm::Function *fv = TheModule->getFunction(fun_val->cg_string);
@@ -4051,8 +4064,23 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
         Builder->CreateBr(merge_bb);
         Builder->SetInsertPoint(nonnull_bb);
       }
+      // Check plain function-pointer identities BEFORE loading the classtag:
+      // a plain function address lives in .text, not a heap record.
+      for (int pi = 0; pi < plains.n; pi++) {
+        Fun *pfun = plains[pi];
+        llvm::Function *plf = TheModule->getFunction(pfun->cg_string);
+        if (!plf) continue;
+        llvm::BasicBlock *phit_bb = llvm::BasicBlock::Create(*TheContext, "poly.phit", cur_fn);
+        llvm::BasicBlock *pnext_bb = llvm::BasicBlock::Create(*TheContext, "poly.pnext", cur_fn);
+        llvm::Value *pcmp = Builder->CreateICmpEQ(recv, plf, "fncmp");
+        Builder->CreateCondBr(pcmp, phit_bb, pnext_bb);
+        Builder->SetInsertPoint(phit_bb);
+        emit_direct_call(pfun);
+        Builder->CreateBr(merge_bb);
+        Builder->SetInsertPoint(pnext_bb);
+      }
       // Load the instance's classtag (slot 0 of any tagged struct).
-      llvm::Value *tag = Builder->CreateLoad(ptr_ty, recv, "classtag");
+      llvm::Value *tag = classes.n ? Builder->CreateLoad(ptr_ty, recv, "classtag") : nullptr;
       for (int ci = 0; ci < classes.n; ci++) {
         llvm::BasicBlock *hit_bb = llvm::BasicBlock::Create(*TheContext, "poly.hit", cur_fn);
         llvm::BasicBlock *next_bb = llvm::BasicBlock::Create(*TheContext, "poly.next", cur_fn);
@@ -4145,20 +4173,6 @@ static void emit_send_call_impl(EmitCtx &ctx, PNode *pn) {
       // ifa/issues/030(a): plain-function value-identity partition,
       // sharing this same combined dispatch chain (see the plains[]
       // comment at its declaration above for why this can't just be
-      // left to the separate "bare callable value" pass below).
-      for (int pi = 0; pi < plains.n; pi++) {
-        Fun *pfun = plains[pi];
-        llvm::Function *plf = TheModule->getFunction(pfun->cg_string);
-        if (!plf) continue;
-        llvm::BasicBlock *phit_bb = llvm::BasicBlock::Create(*TheContext, "poly.phit", cur_fn);
-        llvm::BasicBlock *pnext_bb = llvm::BasicBlock::Create(*TheContext, "poly.pnext", cur_fn);
-        llvm::Value *pcmp = Builder->CreateICmpEQ(recv, plf, "fncmp");
-        Builder->CreateCondBr(pcmp, phit_bb, pnext_bb);
-        Builder->SetInsertPoint(phit_bb);
-        emit_direct_call(pfun);
-        Builder->CreateBr(merge_bb);
-        Builder->SetInsertPoint(pnext_bb);
-      }
       // Fallthrough (unknown tag / no plains[] match): call
       // default_fn unconditionally if one was claimed (ifa/issues/088
       // -- see its declaration comment: the only candidate left once

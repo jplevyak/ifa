@@ -110,6 +110,9 @@ void cg_elide_unread_slots(FA *fa);
 // one that has the field, else the first that is not None. Not a union:
 // `obj` itself.
 Sym *resolve_union_receiver(Sym *obj, cchar *symbol);
+// issues/184: the prototype global of the class a class value (a receiver
+// typed by a META type) names -- where `cls.attr` is read -- or null.
+Var *cg_meta_proto_var(Sym *meta);
 void cg_note_slot_use(Sym *t, int i, int is_read);
 
 // ifa/200 A3: how a Code_IF is emitted, decided once for both backends.

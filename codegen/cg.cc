@@ -661,8 +661,11 @@ static int c_prim_make(FILE *fp, FA *fa, Fun *f, PNode *n) {
           }
           if (rec_fields && !cg_field_live(rec, i - 3)) continue;
           cg_note_slot_use(rec, i - 3, 0);
+          Sym *mtype = rec_fields ? rec->has[i - 3]->type : nullptr;
           cchar *mt = rec_fields ? cg_member_ctype(rec, i - 3) : nullptr;
-          if (cg_needs_nil_union_cast(rec_fields ? rec->has[i - 3]->type : nullptr, mt, n->rvals.v[i]))
+          bool voidish_to_ptr = mt && mtype && !mtype->num_kind && !cg_voidish(mtype) &&
+                                cg_voidish(n->rvals.v[i]->type);
+          if (voidish_to_ptr || cg_needs_nil_union_cast(mtype, mt, n->rvals.v[i]))
             fprintf(fp, "  %s->e%d = (%s)%s;\n", cg_get_string(n->lvals[0]), i - 3, mt, c_rhs(n->rvals.v[i]));
           else
             fprintf(fp, "  %s->e%d = %s;\n", cg_get_string(n->lvals[0]), i - 3, c_rhs(n->rvals.v[i]));
@@ -760,6 +763,28 @@ static int c_prim_period(FILE *fp, FA *fa, Fun *f, PNode *n) {
             fprintf(fp, "  %sif ((*(_CG_TypeObject**)(void*)%s) == &%s)\n  ", k ? "else " : "", rv, cg_tag_name(arms[k]));
           fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s, ifa/206 */\n", cg_get_string(n->lvals[0]), t,
                   cg_get_string(arms[k]), rv, arm_slots[k], symbol);
+        }
+      } else if (obj && obj->is_meta_type) {
+        // issues/184: a read through a CLASS VALUE (`cls.attr` in a
+        // @classmethod or a metamethod) reads the class's prototype, where
+        // its attributes live (FA's P_prim_period reads it the same way).
+        // Inside a contour the class value is one class -- FA splits a
+        // contour per receiver class -- so this is the prototype global.
+        Var *pv = cg_meta_proto_var(obj);
+        Sym *pt = pv ? pv->type : nullptr;
+        int slot = -1;
+        if (pt)
+          for (int i = 0; i < pt->has.n; i++)
+            if (pt->has[i] && symbol == pt->has[i]->name) slot = i;
+        if (slot < 0) {
+          if (!cg_get_string(n->lvals[0]) || !n->lvals[0]->live) goto Lgetter_found;
+          codegen_fail(n, "the class attribute '%s' is not a field of class '%s' (issues/184)", symbol,
+                       obj->meta_type && obj->meta_type->name ? obj->meta_type->name : "?");
+        }
+        if (cg_get_string(n->lvals[0]) && cg_field_live(pt, slot)) {
+          cg_note_slot_use(pt, slot, 1);
+          fprintf(fp, "  %s = (%s)((%s)%s)->e%d; /* %s, class attribute */\n", cg_get_string(n->lvals[0]), t,
+                  cg_get_string(pt), cg_get_string(pv), slot, symbol);
         }
       } else {
         for (int i = 0; i < obj->has.n; i++) {
@@ -1291,6 +1316,7 @@ static int c_prim_clone(FILE *fp, FA *fa, Fun *f, PNode *n) {
           for (int si = 0; si < pslots->n; si++) {
             int slot = (*pslots)[si].slot;
             Fun *fun_val = (*pslots)[si].fun_val;
+            if ((*pslots)[si].classes && !(*pslots)[si].classes->set_in(n->lvals[0]->type)) continue;
             if (!cg_field_live(n->lvals[0]->type, slot)) continue;
             if (!cg_get_string(fun_val)) continue;
             cg_note_slot_use(n->lvals[0]->type, slot, 0);
@@ -2696,7 +2722,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
               if (wrote_one) fputs(", ", fp);
               wrote_one = 1;
-              if (!strcmp(ft, at))
+              if (!strcmp(ft, at) && !pn->rvals[i]->sym->is_fun)
                 fputs(cg_get_string(pn->rvals[i]), fp);
               else if (cg_repr(av).scalar())
                 fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
@@ -2772,6 +2798,33 @@ class CBackendEmitter : public VirtualCGEmitter {
             fputs("  }\n", fp);
             return;
           }
+          // Check plain function-pointer identities BEFORE dereferencing recv's
+          // classtag slot: a plain function address lives in .text, not a heap
+          // record, so comparing pointer identity first avoids reading through a
+          // function pointer.
+          for (int fi = 0; fi < plains.n; fi++, nb++) {
+            Fun *fv = plains[fi];
+            fprintf(fp, "  %sif ((void*)%s == (void*)&%s) {\n", nb ? "else " : "", recv_str, cg_get_string(fv));
+            fputs("    ", fp);
+            emit_lhs();
+            fprintf(fp, "%s(", cg_get_string(fv));
+            int wrote_one = 0;
+            for (MPosition *p : fv->positional_arg_positions) {
+              Var *av = fv->args.get(p);
+              if (!av->live) continue;
+              int i = (int)Position2int(p->pos[0]) - 1;
+              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
+              if (wrote_one) fputs(", ", fp);
+              wrote_one = 1;
+              if (!strcmp(ft, at) && !pn->rvals[i]->sym->is_fun)
+                fputs(cg_get_string(pn->rvals[i]), fp);
+              else if (cg_repr(av).scalar())
+                fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
+              else
+                fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
+            }
+            fputs(");\n  }\n", fp);
+          }
           for (int ci = 0; ci < classes.n; ci++, nb++) {
             {
               Vec<Sym *> ms;
@@ -2842,29 +2895,6 @@ class CBackendEmitter : public VirtualCGEmitter {
                     cg_get_string(classes[ci]), recv_str, slots[ci], call_args.c_str());
             fputs("  }\n", fp);
           }
-          for (int fi = 0; fi < plains.n; fi++, nb++) {
-            Fun *fv = plains[fi];
-            fprintf(fp, "  %sif ((void*)%s == (void*)&%s) {\n", nb ? "else " : "", recv_str, cg_get_string(fv));
-            fputs("    ", fp);
-            emit_lhs();
-            fprintf(fp, "%s(", cg_get_string(fv));
-            int wrote_one = 0;
-            for (MPosition *p : fv->positional_arg_positions) {
-              Var *av = fv->args.get(p);
-              if (!av->live) continue;
-              int i = (int)Position2int(p->pos[0]) - 1;
-              cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
-              if (wrote_one) fputs(", ", fp);
-              wrote_one = 1;
-              if (!strcmp(ft, at))
-                fputs(cg_get_string(pn->rvals[i]), fp);
-              else if (cg_repr(av).scalar())
-                fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
-              else
-                fprintf(fp, "(%s)(void*)%s", ft, cg_get_string(pn->rvals[i]));
-            }
-            fputs(");\n  }\n", fp);
-          }
           if (directs.n == 1) {
             // The single untagged candidate is everything the nil
             // test / tag compares above didn't claim -- direct call,
@@ -2882,7 +2912,7 @@ class CBackendEmitter : public VirtualCGEmitter {
               cchar *ft = c_type(av), *at = c_type(pn->rvals[i]);
               if (wrote_one) fputs(", ", fp);
               wrote_one = 1;
-              if (!strcmp(ft, at))
+              if (!strcmp(ft, at) && !pn->rvals[i]->sym->is_fun)
                 fputs(cg_get_string(pn->rvals[i]), fp);
               else if (cg_repr(av).scalar())
                 fprintf(fp, "(%s)%s", ft, cg_get_string(pn->rvals[i]));
