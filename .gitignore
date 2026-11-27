@@ -1,0 +1,29 @@
+# Objects, dependency files, libraries
+*.o
+*.d
+*.a
+*.exe
+
+# Executables
+/ifa
+/ifa-test
+/make_cast_code
+/make_prims
+
+# Generated sources and assets
+/ifa.cat
+/LICENSE.i
+/COPYRIGHT.i
+/if1/check_cast.cc
+/common/explorer/*.inc
+/frontend/*.d_parser.cc
+/frontend/*.d_parser.h
+
+# Test outputs
+/tests/*.out
+/tests/*.c
+
+# Profiling and core dumps
+core
+*.core
+*.gmon
