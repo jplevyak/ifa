@@ -91,11 +91,17 @@ static Vec<EntrySet *> fa_pass_retargeted;
 static int application(PNode *p, EntrySet *es, AVar *fun, CreationSet *s, Vec<AVar *> &args, Vec<cchar *> &names,
                        int is_closure, Partial_kind partial, PNode *visibility_point, Vec<CreationSet *> *closures);
 
+// ESBLOCK's outcome ledger; see esblock_note_merge.
+static std::map<EntrySet *, std::pair<CreationSet *, EntrySet *>> esblock_product;
+static std::set<std::pair<CreationSet *, EntrySet *>> esblock_futile;
+
 // Reset all module-level analysis state. Called by ifa_reset() so test
 // runners can use a fresh IF1 without stale ATypes, worklists, or IDs
 // from a prior run leaking in.
 void fa_reset() {
   analysis_pass = 0;
+  esblock_product.clear();
+  esblock_futile.clear();
   settle_pass_pending = false;
   // Canonical types now live on TypeWorld per FA; FA destruction
   // handles them.
@@ -7853,167 +7859,67 @@ static bool es_blocking_edge_groups(CreationSet *cs, EntrySet *bes, Vec<AVar *> 
   return true;
 }
 
-// Simulate `build_cs_flow_graph`'s assign-set partition as if `bes` were split
-// into two contours `bes_0` (receiving `g0`) and `bes_1` (receiving `g1`).
+// The per-def signature over `g`'s assign sets, computed with `stop_es`
+// held terminal. Returns the number of distinct signatures.
 //
-// Holding `bes`'s formals terminal instead (the old test) treated a write
-// INSIDE `bes` as reaching NO creation points rather than reaching `g0` in
-// `bes_0` and `g1` in `bes_1`. With a single assign set (`KEY sets=1`), cutting
-// `bes` out of that one set separated defs written through `bes` ("0") from
-// defs written elsewhere ("1"), predicting 2 groups where the real split leaves
-// both `bes_0` and `bes_1` writing into the same single assign set ("1" for
-// every def -> 1 group), oscillating with `merge_equivalent_entry_sets`.
-static int cs_def_groups_after_es_split(CreationSet *cs, EntrySet *bes, Vec<AEdge *> &g0, Vec<AEdge *> &g1,
-                                        Vec<AVar *> &defs) {
-  Vec<AVar *> content;
-  cs_content_avars(cs, content);
-  if (!content.n) return 0;
-
-  std::unordered_map<AVar *, int> filt_grp;
-  std::unordered_set<AVar *> bes_rets;
-  std::map<std::pair<AVar *, AVar *>, int> ret_mask;
-  for (AVar *r : bes->rets) if (r) bes_rets.insert(r);
-  for (int grp = 0; grp < 2; grp++) {
-    Vec<AEdge *> &eg = grp ? g1 : g0;
-    for (AEdge *ee : eg) {
-      if (!ee) continue;
-      form_Map(MapElemMPositionAVarPair, mp, ee->filtered_args) if (mp->value) filt_grp[mp->value] = grp;
-      int rr = ee->pnode ? ee->pnode->lvals.n : 0;
-      for (int i = 0; i < rr && i < bes->rets.n && i < ee->rets.n; i++)
-        if (ee->rets.v[i] && bes->rets.v[i]) ret_mask[{ee->rets.v[i], bes->rets.v[i]}] |= (1 << grp);
-      if (ee->match && ee->match->fun)
-        for (int o = 0; o < ee->match->fun->out_positions.n && rr + o < bes->rets.n; o++)
-          if (AVar *act = ee->args.get(ee->match->fun->out_positions[o]))
-            if (bes->rets.v[rr + o]) ret_mask[{act, bes->rets.v[rr + o]}] |= (1 << grp);
-    }
-  }
-
-  auto in_bes = [&](AVar *a) { return a && a->contour_is_entry_set && (EntrySet *)a->contour == bes; };
-
-  // Type written by `b` (inside `bes`) in copy `grp` when `b` flows purely
-  // from `bes`'s formals (e.g. `value` in `list.__setitem__`); otherwise `b`'s
-  // existing converged type.
-  auto bes_write_type = [&](AVar *b, int grp) -> AType * {
-    Vec<MPosition *> fpos;
-    Vec<AVar *> seen, wk;
-    seen.set_add(b);
-    wk.add(b);
-    for (int i = 0; i < wk.n && i < 32; i++) {
-      AVar *y = wk.v[i];
-      MPosition *fp = nullptr;
-      form_Map(MapElemMPositionAVarPair, mp, bes->args) if (mp->value == y) { fp = mp->key; break; }
-      if (fp) { fpos.set_add(fp); continue; }
-      if (y->gen || !y->backward.n) return b->out->type;
-      for (AVar *z : y->backward) {
-        if (!z || !in_bes(z)) return b->out->type;
-        if (seen.set_add(z)) wk.add(z);
-      }
-    }
-    if (!fpos.n) return b->out->type;
-    Vec<AEdge *> &eg = grp ? g1 : g0;
-    AType *u = fa->type_world.bottom_type;
-    for (MPosition *fp : fpos)
-      for (AEdge *ee : eg) {
-        AVar *fa_av = ee->filtered_args.get(fp);
-        if (!fa_av) fa_av = ee->args.get(fp);
-        if (fa_av && fa_av->out && fa_av->out->type) u = type_union(u, fa_av->out->type);
-      }
-    return u != fa->type_world.bottom_type ? u : b->out->type;
-  };
-
-  // Post-split assign sets: (AVar *target, int copy), where copy is 0/1 inside
-  // `bes` and -1 outside `bes`.
-  Vec<AType *> keys;
-  std::vector<std::vector<std::pair<AVar *, int>>> targets;
-  auto add_target = [&](AType *kt, AVar *t, int copy) {
-    if (!kt || !t) return;
-    int gi = -1;
-    for (int i = 0; i < keys.n; i++) if (keys.v[i] == kt) { gi = i; break; }
-    if (gi < 0) { keys.add(kt); targets.emplace_back(); gi = keys.n - 1; }
-    targets[(size_t)gi].push_back({t, copy});
-  };
-  for (AVar *cv : content) {
-    if (!cv || !cv->out) continue;
-    for (AVar *b : cv->backward) {
-      if (!b || !b->container || !b->out || !b->out->type) continue;
-      if (in_bes(b) && in_bes(b->container)) {
-        add_target(bes_write_type(b, 0), b->container, 0);
-        add_target(bes_write_type(b, 1), b->container, 1);
-      } else if (in_bes(b->container)) {
-        add_target(b->out->type, b->container, 0);
-        add_target(b->out->type, b->container, 1);
-      } else {
-        add_target(b->out->type, b->container, -1);
-      }
-    }
-  }
-  if (!keys.n) return 0;
-
+// This is a PREDICTION, and an optimistic one: holding `stop_es`'s formals
+// terminal cuts every path through it, where a real split keeps both copies'
+// paths. It is right when the split separates writers (plcfrs:
+// `process_edge` es=464 for ChartItem, which route 4 partitions into 3 the
+// pass after), and wrong when both copies still feed the one assign set
+// (pathlib_glob: `__setitem__` es=820 with `KEY sets=1`). The wrong case is
+// caught by its OUTCOME, `esblock_futile` below, not by a better prediction:
+// what a split separates can depend on callees it re-derives -- plcfrs's
+// ChartItems are allocated in `__new__` contours the split itself mints
+// (defs 3 -> 4) -- so no walk over the current graph can answer it. A walk
+// that simulated the post-split graph (cd6a26ee) predicted 1 group for 723
+// of 724 candidates on plcfrs, refusing the splits it needs.
+static int cs_def_groups(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &defs, EntrySet *stop_es) {
   std::vector<std::string> sig((size_t)defs.n);
-  for (int k = 0; k < keys.n; k++) {
-    std::set<std::pair<AVar *, int>> seen;
-    std::vector<std::pair<AVar *, int>> work;
-    Vec<AVar *> reached;
-    auto push = [&](AVar *x, int c) {
-      if (x && seen.insert({x, c}).second) {
-        reached.set_add(x);
-        work.push_back({x, c});
-      }
-    };
-    for (auto &tc : targets[(size_t)k]) push(tc.first, tc.second);
-    for (size_t h = 0; h < work.size() && h < 100000; h++) {
-      AVar *a = work[h].first;
-      int copy = work[h].second;
-      bool a_is_bes_filt = in_bes(a) && a->var && a->var->is_filtered && filt_grp.count(a);
-      auto step_to = [&](AVar *x) {
-        if (!x || !x->out || !x->out->type || !x->out->type->set_in(cs)) return;
-        if (a_is_bes_filt) {
-          if (in_bes(x)) { push(x, 0); push(x, 1); }
-          else push(x, -1);
-          return;
-        }
-        auto fg = filt_grp.find(x);
-        if (fg != filt_grp.end()) {
-          if (copy == -1 || copy == fg->second) push(x, fg->second);
-          return;
-        }
-        if (!in_bes(a) && in_bes(x)) {
-          if (bes_rets.count(x)) {
-            auto rm = ret_mask.find({a, x});
-            int m = rm != ret_mask.end() ? rm->second : 3;
-            if ((m & 1) && (copy == -1 || copy == 0)) push(x, 0);
-            if ((m & 2) && (copy == -1 || copy == 1)) push(x, 1);
-          } else if (copy == -1) {
-            push(x, 0);
-            push(x, 1);
-          } else {
-            push(x, copy);
-          }
-          return;
-        }
-        push(x, copy);
-      };
-      if (AVar *src = folded_load_source(a))
-        if (src->out && src->out->type && src->out->type->set_in(cs)) {
-          step_to(src);
-          continue;
-        }
-      for (AVar *x : a->backward) step_to(x);
-    }
-    for (int i = 0; i < defs.n; i++) sig[(size_t)i] += reached.set_in(defs.v[i]) ? '1' : '0';
+  for (int k = 0; k < g->keys.n; k++) {
+    Vec<AVar *> path;
+    cs_backflow(cs, *g->targets.v[k], stop_es, path);
+    for (int i = 0; i < defs.n; i++) sig[(size_t)i] += path.set_in(defs.v[i]) ? '1' : '0';
   }
   int n = 0;
   for (int i = 0; i < defs.n; i++) {
-    bool dup = false;
-    for (int j = 0; j < i; j++) if (sig[(size_t)j] == sig[(size_t)i]) { dup = true; break; }
-    if (!dup) ++n;
+    bool seen = false;
+    for (int j = 0; j < i; j++) if (sig[(size_t)j] == sig[(size_t)i]) { seen = true; break; }
+    if (!seen) ++n;
   }
   return n;
 }
 
-// The contour whose sharing hides the partition: split its in-edges into the
-// two creation-point groups `split_blocking_es` would form, and check whether
-// `build_cs_flow_graph` then separates `defs` into >= 2 groups.
+// ESBLOCK's outcome ledger. An ESBLOCK product that
+// `merge_equivalent_entry_sets` folds back into a sibling converged to the
+// SAME state: the split separated nothing, and the re-derivation is the
+// proof. Re-splitting the same contour for the same CreationSet on the next
+// pass would mint the same product and lose it to the same merge -- on
+// pathlib_glob, `__setitem__` es=820 for list cs=5619, every other pass from
+// pass 21 to the cap at 101 (4.7 s of FA -> 16.7 s, a CI timeout). So the
+// pair is recorded and `find_blocking_es` skips it. The merge stays right
+// (no distinction is observable), and the demand stays live for every
+// other candidate contour.
+// (esblock_product / esblock_futile are declared above fa_reset.)
+
+static void esblock_note_merge(EntrySet *gone, EntrySet *kept) {
+  for (EntrySet *es : {gone, kept}) {
+    auto it = esblock_product.find(es);
+    if (it == esblock_product.end()) continue;
+    esblock_futile.insert(it->second);
+    if (getenv("IFA_DBG_CSDEFSPLIT"))
+      fprintf(stderr, "[esblock] p=%d cs=%d es=%d FUTILE: product es=%d merged into es=%d\n", analysis_pass,
+              it->second.first->id, it->second.second->id, es->id, kept->id);
+    esblock_product.erase(it);
+  }
+}
+
+// The contour whose sharing hides the partition: hold its formals terminal
+// and the creation points separate. Candidates are only contours that are
+// actually ON the walk, actually shared (more than one in-edge), not
+// already split, and not already shown futile for `cs`; the test is the
+// one that matters -- does removing this contour's sharing make the
+// demanded partition visible?
 static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &defs, bool dbg) {
   Vec<EntrySet *> cands;
   for (int k = 0; k < g->keys.n; k++)
@@ -8021,6 +7927,7 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
       if (!a || !a->contour_is_entry_set) continue;
       EntrySet *aes = (EntrySet *)a->contour;
       if (cands.set_in(aes) || aes->split || !es_is_formal(aes, a)) continue;
+      if (esblock_futile.count({cs, aes})) continue;
       int nin = 0;
       for (AEdge *e : aes->edges) if (e && e->args.n && ++nin > 1) break;
       if (nin > 1) cands.set_add(aes);
@@ -8039,10 +7946,7 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
     fprintf(stderr, "\n");
   }
   for (EntrySet *e : ordered) {
-    Vec<AEdge *> all_edges;
-    Vec<Vec<AEdge *> *> groups;
-    if (!es_blocking_edge_groups(cs, e, defs, all_edges, groups)) continue;
-    if (cs_def_groups_after_es_split(cs, e, *groups.v[0], *groups.v[1], defs) < 2) continue;
+    if (cs_def_groups(cs, g, defs, e) < 2) continue;
     if (dbg)
       fprintf(stderr, "[esblock] p=%d cs=%d BLOCKER es=%d fun=%s\n", analysis_pass, cs->id, e->id,
               (e->fun && e->fun->sym && e->fun->sym->name) ? e->fun->sym->name : "?");
@@ -8092,6 +7996,10 @@ static EntrySet *find_blocking_es(CreationSet *cs, CSFlowGraph *g, Vec<AVar *> &
   int r = apply_entry_set_split(dec);
   cur_split_subkind = nullptr;
   cur_split_demand_cs = nullptr;
+  if (r)
+    for (int i = 1; i < groups.n; i++)
+      for (AEdge *e : *groups.v[i])
+        if (e && e->to && e->to != bes) esblock_product[e->to] = {cs, bes};
   return r;
 }
 
@@ -11405,6 +11313,7 @@ static uint es_state_hash(EntrySet *es) {
         form_Map(RouteAdjElem, m, fa->route_adj) if (m->value)
             for (int k = 0; k < m->value->n; k++) if (m->value->v[k] == Y) m->value->v[k] = X;
         Y->split = X;
+        esblock_note_merge(Y, X);
         gone[j] = true;
         ++merged;
         log(LOG_SPLITTING, "MERGE ES %d into %d (%s) edges %d\n", Y->id, X->id,
